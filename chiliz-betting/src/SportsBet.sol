@@ -64,7 +64,7 @@ contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 _oddsDraw,
         address _owner
     ) public initializer {
-        __Ownable_init();
+        __Ownable_init(_owner);
         __UUPSUpgradeable_init();
         eventId    = _eventId;
         eventName  = _eventName;
@@ -73,7 +73,6 @@ contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         oddsDraw   = _oddsDraw;
         result     = Outcome.Undecided;
         state      = State.Not_started;
-        transferOwnership(_owner);
     }
 
     /// @notice Permet à l’owner de définir l’adresse du token WCHZ à utiliser

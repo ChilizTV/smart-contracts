@@ -2,14 +2,13 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title MockWrappedChz
 /// @notice ERC20 mock to simulate Wrapped CHZ in Foundry tests
-contract MockWrappedChz is ERC20, Ownable {
+contract MockWrappedChz is ERC20 {
     /// @param name The token’s name
     /// @param symbol The token’s symbol
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
+    constructor(string memory name, string memory symbol) ERC20(name, symbol){
         // owner is msg.sender by Ownable
     }
 
@@ -17,7 +16,7 @@ contract MockWrappedChz is ERC20, Ownable {
     /// @dev Restricted to owner (your test harness)
     /// @param to Recipient address
     /// @param amount Amount of tokens to mint (in wei)
-    function mint(address to, uint256 amount) external onlyOwner {
+    function mint(address to, uint256 amount) external {
         _mint(to, amount);
     } 
 
@@ -25,7 +24,7 @@ contract MockWrappedChz is ERC20, Ownable {
     /// @dev Restricted to owner
     /// @param from Address whose balance will be burned
     /// @param amount Amount to burn
-    function burn(address from, uint256 amount) external onlyOwner {
+    function burn(address from, uint256 amount) external {
         _burn(from, amount);
     }
 }
