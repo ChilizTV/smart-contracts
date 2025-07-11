@@ -1,66 +1,100 @@
-## Foundry
+# Chiliz Betting (Foundry)
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Une suite de smart-contracts upgradeables pour créer des paris sportifs tokenisés sur le réseau Chiliz (testnet/local), développée et testée avec [Foundry](https://github.com/foundry-rs/foundry).
 
-Foundry consists of:
+---
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## 📝 Aperçu
 
-## Documentation
+- **SportsBet.sol** — logique de pari UUPS-upgradeable
+- **SportsBetFactory.sol** — factory ERC-1967 pour déployer des clones de SportsBet
+- **MockWrappedChz.sol** — mock ERC-20 “Wrapped CHZ” pour les tests
+- **Tests** — harness Foundry pour valider les flows de pari, résolution, et paiement
 
-https://book.getfoundry.sh/
+---
 
-## Usage
+## ⚙️ Prérequis
 
-### Build
+- **Foundry** (forge, cast) v0.7+  
+- **Git**  
+- **lib/openzeppelin-contracts** et **lib/openzeppelin-contracts-upgradeable** installés via `forge install`  
+- **Rust** toolchain pour forge (si utilisé)  
 
-```shell
-$ forge build
+---
+
+## 📁 Structure du projet
+
+├── foundry.toml
+├── src
+│ ├── SportsBet.sol
+│ ├── SportsBetFactory.sol
+│ └── MockWrappedChz.sol
+└── test
+├── SportsBet.t.sol
+└── Factory.t.sol
+
+
+## 🚀 Installation et build
+
+git clone <repo-url>
+cd chiliz-betting
+forge install 
+
+## ✅ Tests 
+
+```bash
+forge test --match-path test/*.t.sol -vvv
 ```
-
-### Test
-
-```shell
-$ forge test
+Coverage :
+```bash
+forge coverage --report debug > debug.log
 ```
+## 📦 Déploiement (local / testnet)
 
-### Format
+Déployer la logique SportsBet :
+```bash
+forge create src/SportsBet.sol:SportsBet \
+  --rpc-url <RPC_URL> \
+  --private-key $PK \
+  --broadcast
 
-```shell
-$ forge fmt
 ```
+Récupérez l’adresse de l’implémentation (IMPL).
 
-### Gas Snapshots
+Déployer la factory :
 
-```shell
-$ forge snapshot
+```bash
+forge create src/SportsBetFactory.sol:SportsBetFactory \
+  --rpc-url <RPC_URL> \
+  --private-key $PK \
+  --broadcast \
+  --constructor-args $IMPL
 ```
+Créer un pari via la factory :
 
-### Anvil
-
-```shell
-$ anvil
+```bash
+cast send \
+  --rpc-url <RPC_URL> \
+  --private-key $PK \
+  <FACTORY_ADDR> \
+  "createSportsBet(uint256,string,uint256,uint256,uint256)" \
+  42 "TeamA vs TeamB" 150 200 180
 ```
+ ## 🔧 Utilisation en tests
+Dans vos scripts/tests Forge :
 
-### Deploy
+```solidity
+// déployer le mock WCHZ
+MockWrappedChz wChz = new MockWrappedChz("Wrapped CHZ", "WCHZ");
+wChz.mint(USER, 1_000 * 1e18);
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+// deploy SportsBet logic & factory, set le token
+SportsBet bet = SportsBet(payable(factory.createSportsBet(...)));
+bet.setToken(address(wChz));
 
-### Cast
+// simulate user approve + pari
+vm.prank(USER);
+wChz.approve(address(bet), 1e21);
+bet.placeBet(SportsBet.Outcome.Home, 100 * 1e18);
 
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
 ```
