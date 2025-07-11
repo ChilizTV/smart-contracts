@@ -1,0 +1,3 @@
+[submodule "chiliz-betting/lib/forge-std"]
+	path = chiliz-betting/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
