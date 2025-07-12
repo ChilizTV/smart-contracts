@@ -7,32 +7,41 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "./IMockWrappedChz.sol";
 /// @notice Interface du MockWrappedChz pour appeler les méthodes ERC-20 et utilitaires de mint/burn
 
-
 /*
  * @title SportsBet
  * @notice Contrat de pari sportif, upgradeable via UUPS
  */
 contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
-    enum Outcome { Undecided, Home, Away, Draw }
-    enum State   { Not_started, Live, Ended, Blocked }
+    enum Outcome {
+        Undecided,
+        Home,
+        Away,
+        Draw
+    }
+    enum State {
+        Not_started,
+        Live,
+        Ended,
+        Blocked
+    }
 
     struct Bet {
         Outcome outcome;
-        State   state;
+        State state;
         uint256 amount;
-        bool    claimed;
+        bool claimed;
     }
 
     /// @notice ID de l’événement, nom, et cotes
     uint256 public eventId;
-    string  public eventName;
+    string public eventName;
     uint256 public oddsHome;
     uint256 public oddsAway;
     uint256 public oddsDraw;
 
     /// @notice Résultat et état du pari
     Outcome public result;
-    State   public state;
+    State public state;
 
     /// @notice Mapping des paris par utilisateur
     mapping(address => Bet) public bets;
@@ -60,13 +69,13 @@ contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ) public initializer {
         __Ownable_init(_owner);
         __UUPSUpgradeable_init();
-        eventId    = _eventId;
-        eventName  = _eventName;
-        oddsHome   = _oddsHome;
-        oddsAway   = _oddsAway;
-        oddsDraw   = _oddsDraw;
-        result     = Outcome.Undecided;
-        state      = State.Not_started;
+        eventId = _eventId;
+        eventName = _eventName;
+        oddsHome = _oddsHome;
+        oddsAway = _oddsAway;
+        oddsDraw = _oddsDraw;
+        result = Outcome.Undecided;
+        state = State.Not_started;
     }
 
     /// @notice Permet à l’owner de définir l’adresse du token WCHZ à utiliser
@@ -88,19 +97,14 @@ contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         bool ok = wChz.transferFrom(msg.sender, address(this), _amount);
         require(ok, "Transfer failed");
 
-        bets[msg.sender] = Bet({
-            outcome: _outcome,
-            state:   State.Live,
-            amount:  _amount,
-            claimed: false
-        });
+        bets[msg.sender] = Bet({outcome: _outcome, state: State.Live, amount: _amount, claimed: false});
         emit BetPlaced(msg.sender, _outcome, _amount);
     }
 
     /// @notice Résoudre le pari (appelable par owner only)
     function resolveBet(Outcome _result) external onlyOwner isLive {
         result = _result;
-        state  = State.Ended;
+        state = State.Ended;
         emit BetResolved(_result);
     }
 
@@ -113,9 +117,7 @@ contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(userBet.outcome == result, "No winnings");
 
         // Calcul du payout selon la cote
-        uint256 mult = (result == Outcome.Home) ? oddsHome
-                      : (result == Outcome.Away) ? oddsAway
-                      : oddsDraw;
+        uint256 mult = (result == Outcome.Home) ? oddsHome : (result == Outcome.Away) ? oddsAway : oddsDraw;
         uint256 payout = userBet.amount * mult / 100;
 
         userBet.claimed = true;

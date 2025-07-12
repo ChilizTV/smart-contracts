@@ -9,6 +9,5 @@ contract SportsBetTest is Test {
 
     function setUp() public {
         sportsBet = new SportsBet();
-        
     }
 }

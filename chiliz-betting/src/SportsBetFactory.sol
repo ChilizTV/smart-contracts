@@ -19,17 +19,19 @@ contract SportsBetFactory is Ownable {
 
     error ImplementationAddressWrong(address addr);
     /// @param _implementation adresse du logic contract (SportsBet déployé via `forge create`)
+
     constructor(address _implementation) Ownable(msg.sender) ImplementationAddressCheck(_implementation) {
         implementation = _implementation;
     }
 
-    modifier ImplementationAddressCheck(address _impl){
-        if(_impl == address(0)) revert ImplementationAddressWrong(address(0));
+    modifier ImplementationAddressCheck(address _impl) {
+        if (_impl == address(0)) revert ImplementationAddressWrong(address(0));
         _;
     }
     /// @notice Met à jour l’implémentation logic pour les futurs déploiements
     /// @param _newImpl nouvelle adresse logic
-    function setImplementation(address _newImpl) external onlyOwner ImplementationAddressCheck(_newImpl){
+
+    function setImplementation(address _newImpl) external onlyOwner ImplementationAddressCheck(_newImpl) {
         implementation = _newImpl;
         emit ImplementationUpdated(_newImpl);
     }
@@ -50,13 +52,7 @@ contract SportsBetFactory is Ownable {
     ) external returns (address proxy) {
         // Prépare les données d'appel à initialize(...)
         bytes memory initData = abi.encodeWithSelector(
-            SportsBet.initialize.selector,
-            eventId,
-            eventName,
-            oddsHome,
-            oddsAway,
-            oddsDraw,
-            msg.sender
+            SportsBet.initialize.selector, eventId, eventName, oddsHome, oddsAway, oddsDraw, msg.sender
         );
 
         // Déploie le proxy ERC-1967 pointant vers `implementation`

@@ -9,7 +9,7 @@ import "./IMockWrappedChz.sol";
 contract MockWrappedChz is ERC20 {
     /// @param name The token’s name
     /// @param symbol The token’s symbol
-    constructor(string memory name, string memory symbol) ERC20(name, symbol){
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
         // owner is msg.sender by Ownable
     }
 
@@ -19,7 +19,7 @@ contract MockWrappedChz is ERC20 {
     /// @param amount Amount of tokens to mint (in wei)
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
-    } 
+    }
 
     /// @notice Burn tokens (optional)
     /// @dev Restricted to owner
