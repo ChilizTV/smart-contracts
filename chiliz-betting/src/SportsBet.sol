@@ -4,130 +4,139 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "./IMockWrappedChz.sol";
-/// @notice Interface du MockWrappedChz pour appeler les méthodes ERC-20 et utilitaires de mint/burn
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./IWCHZ.sol";
 
-/*
- * @title SportsBet
- * @notice Contrat de pari sportif, upgradeable via UUPS
- */
-contract SportsBet is Initializable, OwnableUpgradeable, UUPSUpgradeable {
-    enum Outcome {
-        Undecided,
-        Home,
-        Away,
-        Draw
-    }
-    enum State {
-        Not_started,
-        Live,
-        Ended,
-        Blocked
-    }
+/// @title SportsBet
+/// @notice Pari sportif en ERC-20 WCHZ, upgradable UUPS
+contract SportsBet is
+    Initializable,
+    OwnableUpgradeable,
+    UUPSUpgradeable,
+    ReentrancyGuard
+{
+    enum Outcome { Undecided, Home, Away, Draw }
+    enum State   { Not_started, Live, Ended, Blocked }
 
     struct Bet {
         Outcome outcome;
-        State state;
         uint256 amount;
-        bool claimed;
+        bool    claimed;
     }
 
-    /// @notice ID de l’événement, nom, et cotes
+    // --- Storage ---
     uint256 public eventId;
-    string public eventName;
+    string  public eventName;
     uint256 public oddsHome;
     uint256 public oddsAway;
     uint256 public oddsDraw;
-
-    /// @notice Résultat et état du pari
     Outcome public result;
-    State public state;
+    State   public state;
+    IWCHZ   public wchz;
 
-    /// @notice Mapping des paris par utilisateur
     mapping(address => Bet) public bets;
 
-    /// @notice Adresse du token Wrapped CHZ
-    IMockWrappedChz public wChz;
-
-    /// @notice Événements
+    // --- Events ---
+    event EventStarted(uint256 indexed eventId);
     event BetPlaced(address indexed user, Outcome outcome, uint256 amount);
     event BetResolved(Outcome result);
     event Payout(address indexed user, uint256 amount);
 
-    /// @notice Erreurs custom
-    error BetAlreadyLive(State currentState);
+    // --- Errors ---
+    error InvalidState(State currentState);
+    error ZeroValueUnauthorized();
+    error TransferIssue();
     error ClaimWhenBetNotEnded(State currentState);
+    error AlreadyClaimed();
+    error WrongOutcome();
 
-    /// @notice Initialisateur UUPS (remplace le constructeur)
+    /// @notice Initializer UUPS
+    /// @param _wchz L’adresse du token WCHZ (ERC-20)
     function initialize(
         uint256 _eventId,
         string memory _eventName,
         uint256 _oddsHome,
         uint256 _oddsAway,
         uint256 _oddsDraw,
-        address _owner
+        address _owner,
+        address _wchz
     ) public initializer {
-        __Ownable_init(_owner);
+        __Ownable_init(msg.sender);
         __UUPSUpgradeable_init();
-        eventId = _eventId;
-        eventName = _eventName;
-        oddsHome = _oddsHome;
-        oddsAway = _oddsAway;
-        oddsDraw = _oddsDraw;
-        result = Outcome.Undecided;
-        state = State.Not_started;
+        // transferOwnership(_owner);
+
+        eventId    = _eventId;
+        eventName  = _eventName;
+        oddsHome   = _oddsHome;
+        oddsAway   = _oddsAway;
+        oddsDraw   = _oddsDraw;
+        result     = Outcome.Undecided;
+        state      = State.Not_started;
+        wchz       = IWCHZ(_wchz);
     }
 
-    /// @notice Permet à l’owner de définir l’adresse du token WCHZ à utiliser
-    function setToken(address tokenAddress) external onlyOwner {
-        wChz = IMockWrappedChz(tokenAddress);
-    }
-
-    /// @notice Modificateur qui empêche de parier si le pari n’est pas démarré
-    modifier isLive() {
-        if (state != State.Not_started) revert BetAlreadyLive(state);
+    modifier onlyNotStarted() {
+        if (state != State.Not_started) revert InvalidState(state);
         _;
     }
 
-    /// @notice Placer un pari en WCHZ (il faut que le user ait préalablement `approve`)
-    function placeBet(Outcome _outcome, uint256 _amount) external isLive {
-        require(_amount > 0, "Must bet > 0");
+    modifier onlyLive() {
+        if (state != State.Live) revert InvalidState(state);
+        _;
+    }
 
-        // Transfert du token WCHZ depuis le joueur vers ce contrat
-        bool ok = wChz.transferFrom(msg.sender, address(this), _amount);
-        require(ok, "Transfer failed");
+    /// @notice Démarrer l'événement (passe en Live)
+    function startEvent() external onlyOwner onlyNotStarted {
+        state = State.Live;
+        emit EventStarted(eventId);
+    }
 
-        bets[msg.sender] = Bet({outcome: _outcome, state: State.Live, amount: _amount, claimed: false});
+    /// @notice Placer un pari (approve WCHZ puis transferFrom)
+    function placeBet(Outcome _outcome, uint256 _amount) external onlyLive {
+        if (_amount == 0) revert ZeroValueUnauthorized();
+
+        bool ok = wchz.transferFrom(msg.sender, address(this), _amount);
+        if (!ok) revert TransferIssue();
+
+        bets[msg.sender] = Bet({
+            outcome: _outcome,
+            amount:  _amount,
+            claimed: false
+        });
+
         emit BetPlaced(msg.sender, _outcome, _amount);
     }
 
-    /// @notice Résoudre le pari (appelable par owner only)
-    function resolveBet(Outcome _result) external onlyOwner isLive {
+    /// @notice Résoudre le pari (seulement en Live)
+    function resolveBet(Outcome _result) external onlyOwner onlyLive {
         result = _result;
-        state = State.Ended;
+        state  = State.Ended;
         emit BetResolved(_result);
     }
 
-    /// @notice Réclamer ses gains en WCHZ si victoire
-    function claim() external {
+    /// @notice Réclamer ses gains (non reentrancy)
+    function claim() external nonReentrant {
         if (state != State.Ended) revert ClaimWhenBetNotEnded(state);
 
         Bet storage userBet = bets[msg.sender];
-        require(!userBet.claimed, "Already claimed");
-        require(userBet.outcome == result, "No winnings");
+        if (userBet.claimed) revert AlreadyClaimed();
+        if (userBet.outcome != result) revert WrongOutcome();
 
-        // Calcul du payout selon la cote
-        uint256 mult = (result == Outcome.Home) ? oddsHome : (result == Outcome.Away) ? oddsAway : oddsDraw;
+        uint256 mult   = result == Outcome.Home
+            ? oddsHome
+            : result == Outcome.Away
+                ? oddsAway
+                : oddsDraw;
         uint256 payout = userBet.amount * mult / 100;
 
         userBet.claimed = true;
-        // Transfert des tokens WCHZ au parieur
-        bool ok = wChz.transfer(msg.sender, payout);
-        require(ok, "Payout failed");
+
+        bool sent = wchz.transfer(msg.sender, payout);
+        if (!sent) revert TransferIssue();
 
         emit Payout(msg.sender, payout);
     }
 
-    /// @dev Sécurise les upgrades UUPS
+    /// @dev UUPS authorisation
     function _authorizeUpgrade(address) internal override onlyOwner {}
 }

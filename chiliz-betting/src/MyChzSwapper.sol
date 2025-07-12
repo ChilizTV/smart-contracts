@@ -7,6 +7,8 @@ import "./IKayenRouter.sol";
 contract MyChzSwapper {
     IKayenRouter public immutable router = IKayenRouter(0xb82b0e988a1FcA39602c5079382D360C870b44c8);
 
+    event SwappedToken(address tokenA, address tokenB, uint256 amount);
+    
     /// @notice Swap du CHZ natif contre un FanToken via Kayen Router
     /// @param amountOutMin quantité minimum de FanToken (slippage)
     /// @param path         chemin [WCHZ, …, FanToken]
