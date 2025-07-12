@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./IMockWrappedChz.sol";
 
 /// @title MockWrappedChz
 /// @notice ERC20 mock to simulate Wrapped CHZ in Foundry tests
