@@ -1,100 +1,147 @@
 # Chiliz Betting (Foundry)
 
-Une suite de smart-contracts upgradeables pour créer des paris sportifs tokenisés sur le réseau Chiliz (testnet/local), développée et testée avec [Foundry](https://github.com/foundry-rs/foundry).
+A suite of upgradeable, UUPS-based sports-betting smart-contracts on Chiliz (Spicy Testnet or local fork), developed and tested with [Foundry](https://book.getfoundry.sh/).
 
 ---
 
-## 📝 Aperçu
+## 📋 Overview
 
-- **SportsBet.sol** — logique de pari UUPS-upgradeable
-- **SportsBetFactory.sol** — factory ERC-1967 pour déployer des clones de SportsBet
-- **MockWrappedChz.sol** — mock ERC-20 “Wrapped CHZ” pour les tests
-- **Tests** — harness Foundry pour valider les flows de pari, résolution, et paiement
+- **`SportsBet.sol`**  
+  UUPS-upgradeable logic contract for a sports bet (ETH staking, odds, resolution, payout).
 
----
+- **`SportsBetFactory.sol`**  
+  `Ownable` factory that deploys new ERC-1967 proxies pointing at `SportsBet` and calls its `initialize(...)`.
 
-## ⚙️ Prérequis
+- **`MyChzSwapper.sol`**  
+  Router contract to call our token swap from FanX (ex-Kayen please update documentation <3)
 
-- **Foundry** (forge, cast) v0.7+  
-- **Git**  
-- **lib/openzeppelin-contracts** et **lib/openzeppelin-contracts-upgradeable** installés via `forge install`  
-- **Rust** toolchain pour forge (si utilisé)  
+- **`Tests`**  
+  Forge tests validating betting flow, resolution, and payouts.
 
 ---
 
-## 📁 Structure du projet
+## ⚙️ Prerequisites
 
+- [Foundry](https://book.getfoundry.sh/) (`forge`, `cast`) v0.7+  
+- `lib/openzeppelin-contracts` and `lib/openzeppelin-contracts-upgradeable` via:
+  ```bash
+  forge install OpenZeppelin/openzeppelin-contracts
+  forge install OpenZeppelin/openzeppelin-contracts-upgradeable
+  ```
+Environment variable PRIVATE_KEY with your deployer key
+
+(Optional) CHILIZSCAN_API_KEY for on-chain verification via ChilizScan
+
+📁 Project Structure
+
+.
 ├── foundry.toml
 ├── src
-│ ├── SportsBet.sol
-│ ├── SportsBetFactory.sol
-│ └── MockWrappedChz.sol
+│   ├── SportsBet.sol
+│   ├── SportsBetFactory.sol
+│   └── MockWrappedChz.sol
+├── script
+│   └── DeploySportsBet.s.sol
 └── test
-├── SportsBet.t.sol
-└── Factory.t.sol
+    ├── SportsBet.t.sol
+    └── Factory.t.sol
+## 🔨 Installation & Build
 
-
-## 🚀 Installation et build
-
+ ```bash
 git clone <repo-url>
 cd chiliz-betting
-forge install 
+forge install
+forge build
+```
 
-## ✅ Tests 
-
-```bash
+## ✅ Tests & Coverage
+Run tests
+ ```bash
 forge test --match-path test/*.t.sol -vvv
 ```
-Coverage :
-```bash
-forge coverage --report debug > debug.log
-```
-## 📦 Déploiement (local / testnet)
 
-Déployer la logique SportsBet :
+Generate coverage
+```bash
+forge coverage --report debug
+```
+
+## 🚀 Deployment to Chiliz Spicy Testnet
+
+### Deploy SportsBet implementation
 ```bash
 forge create src/SportsBet.sol:SportsBet \
-  --rpc-url <RPC_URL> \
-  --private-key $PK \
-  --broadcast
-
+  --rpc-url https://spicy-rpc.chiliz.com \
+  --private-key $PRIVATE_KEY \
+  --broadcast \
+  --chain chiliz \
+  -vvvv
 ```
-Récupérez l’adresse de l’implémentation (IMPL).
+Note the returned implementation address IMPL_ADDR. But it's better to do it from SportsBetFactory.sol
 
-Déployer la factory :
+### Deploy the factory
 
 ```bash
 forge create src/SportsBetFactory.sol:SportsBetFactory \
-  --rpc-url <RPC_URL> \
-  --private-key $PK \
+  --rpc-url https://spicy-rpc.chiliz.com \
+  --private-key $PRIVATE_KEY \
   --broadcast \
-  --constructor-args $IMPL
-```
-Créer un pari via la factory :
+  --chain chiliz \
+  --constructor-args $IMPL_ADDR \
+  -vvvv
+  ```
+Note the factory address FACTORY_ADDR.
 
+(Optional) Verify sources on ChilizScan
+In foundry.toml:
+
+```toml
+[etherscan]
+api_key = { chiliz = "${CHILIZSCAN_API_KEY}" }
+endpoint = { chiliz = "https://api-testnet.chilizscan.com/api" }
+```
+Then add --verify --chain chiliz to your forge create commands.
+
+## 📦 Usage
+Create a new upgradeable bet
 ```bash
 cast send \
-  --rpc-url <RPC_URL> \
-  --private-key $PK \
-  <FACTORY_ADDR> \
+  --rpc-url https://spicy-rpc.chiliz.com \
+  --private-key $PRIVATE_KEY \
+  $FACTORY_ADDR \
   "createSportsBet(uint256,string,uint256,uint256,uint256)" \
   42 "TeamA vs TeamB" 150 200 180
+  ```
+  
+42 = eventId
+
+"TeamA vs TeamB" = eventName
+
+150, 200, 180 = odds ×100
+
+
+This deploys and initializes a new proxy, assigns you as owner, and adds it to allBets.
+
+### List all deployed bets
+
+```bash
+cast call \
+  --rpc-url https://spicy-rpc.chiliz.com \
+  $FACTORY_ADDR \
+  "getAllBets()"
 ```
- ## 🔧 Utilisation en tests
-Dans vos scripts/tests Forge :
 
-```solidity
-// déployer le mock WCHZ
-MockWrappedChz wChz = new MockWrappedChz("Wrapped CHZ", "WCHZ");
-wChz.mint(USER, 1_000 * 1e18);
+### 🔄 Upgrades with UUPS
+Upgrade an existing proxy (in console or script):
 
-// deploy SportsBet logic & factory, set le token
-SportsBet bet = SportsBet(payable(factory.createSportsBet(...)));
-bet.setToken(address(wChz));
+```bash
+SportsBet(proxyAddress).upgradeTo(newImplAddress);
+Update factory implementation for future deployments:
 
-// simulate user approve + pari
-vm.prank(USER);
-wChz.approve(address(bet), 1e21);
-bet.placeBet(SportsBet.Outcome.Home, 100 * 1e18);
 
-```
+cast send \
+  $FACTORY_ADDR \
+  "setImplementation(address)" $NEW_IMPL_ADDR \
+  --rpc-url https://spicy-rpc.chiliz.com \
+  --private-key $PRIVATE_KEY
+
+  ```

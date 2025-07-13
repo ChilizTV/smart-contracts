@@ -8,6 +8,7 @@ import "./SportsBet.sol";
 /// @title  Factory de déploiement de SportsBet UUPS proxies
 /// @notice Déploie un nouveau proxy ERC-1967 pointant vers l’implémentation SportsBet
 contract SportsBetFactory is Ownable {
+
     /// @notice Adresse de l’implémentation du logic contract SportsBet
     address public implementation;
 
