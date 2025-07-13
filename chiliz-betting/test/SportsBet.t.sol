@@ -6,9 +6,8 @@ import {SportsBet} from "../src/SportsBet.sol";
 
 contract SportsBetTest is Test {
     SportsBet public sportsBet;
-
+    
     function setUp() public {
         sportsBet = new SportsBet();
-        
     }
 }
