@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 /// @notice UUPS‑upgradeable contract representing one sports match with multiple bet markets
 contract MatchHub is Initializable, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuard {
     /// @notice Types of markets available in this match
-    enum MarketType { Winner, GoalsCount, FirstScorer }
+    enum MarketType { Winner, Points, FirstScorer }
     /// @notice State of each market
     enum State      { Live, Ended }
 
@@ -79,7 +79,7 @@ contract MatchHub is Initializable, OwnableUpgradeable, UUPSUpgradeable, Reentra
     function _authorizeUpgrade(address) internal override onlyOwner {}
 
     /// @notice Add a new bet market to this match
-    /// @param mtype type of market (Winner, GoalsCount, FirstScorer)
+    /// @param mtype type of market (Winner, Points, FirstScorer)
     /// @param odds  multiplier ×100 (e.g. 150 == 1.5×)
     function addMarket(MarketType mtype, uint256 odds) external onlyOwner {
         uint256 mid = marketCount++;

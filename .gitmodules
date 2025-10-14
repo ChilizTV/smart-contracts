@@ -22,3 +22,12 @@
 [submodule "chilli-tv/lib/openzeppelin-contracts-upgradeable"]
 	path = chilli-tv/lib/openzeppelin-contracts-upgradeable
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
+[submodule "chiliz-tv/lib/forge-std"]
+	path = chiliz-tv/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "chiliz-tv/lib/openzeppelin-contracts"]
+	path = chiliz-tv/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "chiliz-tv/lib/openzeppelin-contracts-upgradeable"]
+	path = chiliz-tv/lib/openzeppelin-contracts-upgradeable
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
