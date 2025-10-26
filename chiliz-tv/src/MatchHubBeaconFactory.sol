@@ -4,8 +4,9 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import "./SportBeaconRegistry.sol";
-import "../interfaces/IFootballInit.sol";
-import "../interfaces/IUFCInit.sol";
+import "./interfaces/IFootballInit.sol";
+import "./interfaces/IUFCInit.sol";
+
 contract MatchHubBeaconFactory is Ownable{
     SportBeaconRegistry public immutable registry;
 

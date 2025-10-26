@@ -157,7 +157,7 @@ abstract contract MatchBettingBase is
     /// @param outcome outcome index [0..outcomesCount-1]
     /// @param amount  stake in betToken (approve required)
     function placeBet(uint8 outcome, uint256 amount)
-        external
+        internal
         whenNotPaused
         onlyBeforeCutoff
         nonReentrant

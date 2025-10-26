@@ -11,4 +11,8 @@ interface IUFCInit {
         address treasury_,
         bool allowDraw_
     ) external;
+
+    function betRed(uint256 amount) external ;
+    function betBlue(uint256 amount) external ;
+    function betDraw(uint256 amount) external ;
 }

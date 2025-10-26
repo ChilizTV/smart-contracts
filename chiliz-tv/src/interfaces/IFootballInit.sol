@@ -10,4 +10,9 @@ interface IFootballInit {
         uint16 feeBps_,
         address treasury_
     ) external;
+
+        // Convenience wrappers
+    function betHome(uint256 amount) external ;
+    function betDraw(uint256 amount) external ;
+    function betAway(uint256 amount) external ;
 }

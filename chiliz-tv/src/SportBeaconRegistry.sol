@@ -17,15 +17,19 @@ contract SportBeaconRegistry is Ownable {
     /// @param initialOwner Owner of the registry (Gnosis Safe recommandé)
     constructor(address initialOwner) Ownable(initialOwner) {}
 
+    modifier checkNullAddress(address _addr){
+         if (_addr == address(0)) revert NullAddressImplementation();
+         _;
+    }
     /// @notice Create or upgrade the beacon for a sport
     /// @param sport A bytes32 tag (e.g., keccak256("FOOTBALL"))
     /// @param implementation New logic implementation address (non-zero)
-    function setSportImplementation(bytes32 sport, address implementation) external onlyOwner {
-        require(implementation != address(0), NullAddressImplementation());
+    function setSportImplementation(bytes32 sport, address implementation) external onlyOwner checkNullAddress(implementation){
+
         UpgradeableBeacon beacon = _beacons[sport];
 
         if (address(beacon) == address(0)) {
-            beacon = new UpgradeableBeacon(implementation);
+            beacon = new UpgradeableBeacon(implementation, msg.sender);
             // Optionnel: transférer plus tard la propriété au Safe/Timelock:
             // beacon.transferOwnership(owner());
             _beacons[sport] = beacon;
@@ -42,9 +46,7 @@ contract SportBeaconRegistry is Ownable {
     }
 
     /// @return Current implementation address for a sport (reverts if not set)
-    function getImplementation(bytes32 sport) external view returns (address) {
-        address beaconAddr = address(_beacons[sport]);
-        require(beaconAddr != address(0), NullAddressImplementation());
-        return UpgradeableBeacon(beaconAddr).implementation();
+    function getImplementation(bytes32 sport) external view checkNullAddress(address(_beacons[sport])) returns (address) {
+        return UpgradeableBeacon(address(_beacons[sport])).implementation();
     }
 }
