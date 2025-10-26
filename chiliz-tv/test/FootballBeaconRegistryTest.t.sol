@@ -285,7 +285,7 @@ contract FootballBeaconRegistryTest is Test {
         token.mint(user1, 1e18);
         token.approve(proxy, 1e18);
         vm.expectRevert(MatchBettingBase.BettingClosed.selector);
-        _betOnOutcome(fb, fb.HOME(), 1e18);
+        fb.betHome(1e18);
         vm.stopPrank();
     }
 
