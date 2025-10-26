@@ -151,40 +151,6 @@ cast send <HUB_PROXY_ADDR> "claim(uint256)" <marketId> \
 
 ---
 
-## Betting contracts & extension guide
-
-Important: all new sport-specific betting contracts must inherit from `MatchBettingBase`.
-
-Why: `MatchBettingBase` centralizes pari-mutuel staking, settlement, claims, role-based access, and critical storage layout. To ensure compatibility with the BeaconProxy/initializer pattern and preserve upgradability you must:
-
-- import the base: `import "./MatchBettingBase.sol";`
-- declare the contract as `contract MySportBetting is MatchBettingBase { ... }`
-- call the internal initializer `_initSport(...)` from your `initialize(...) external initializer` function supplying the owner, token, matchId, cutoff, feeBps, treasury and the number of outcomes for that sport.
-
-Example (pattern used by existing implementations):
-
-```solidity
-import "./MatchBettingBase.sol";
-
-contract FootballBetting is MatchBettingBase {
-  function initialize(address owner_, address token_, bytes32 matchId_, uint64 cutoffTs_, uint16 feeBps_, address treasury_) external initializer {
-    // Football: 3 outcomes (Home/Draw/Away)
-    _initSport(owner_, token_, matchId_, cutoffTs_, feeBps_, treasury_, 3);
-  }
-}
-```
-
-Current sport-specific betting contracts included in this repo:
-
-- `src/betting/FootballBetting.sol` — 1x2 (Home/Draw/Away) wrapper around `MatchBettingBase`.
-- `src/betting/UFCBetting.sol` — 2/3-outcome wrapper (Red/Blue[/Draw]) using `allowDraw` flag.
-
-Notes:
-
-- Keep `MatchBettingBase` storage append-only when adding fields in future versions to avoid storage collisions in upgradeable deployments.
-- Add sport-specific convenience wrappers (e.g., `betHome`, `betAway`) that call `placeBet(outcome, amount)`.
-- If you add new external config interfaces, put them under `src/interfaces/` and keep them small and decoupled from the base logic.
-
 ## 6. Roadmap
 
 * Oracle externe pour automatiser la résolution (`resolveMarket`).

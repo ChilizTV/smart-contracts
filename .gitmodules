@@ -31,3 +31,18 @@
 [submodule "chiliz-tv/lib/openzeppelin-contracts-upgradeable"]
 	path = chiliz-tv/lib/openzeppelin-contracts-upgradeable
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
+[submodule "chilli-tv/lib/forge-std"]
+	path = chilli-tv/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "lib/openzeppelin-contracts"]
+	path = lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "lib/openzeppelin-contracts-upgradeable"]
+	path = lib/openzeppelin-contracts-upgradeable
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
+[submodule "chilli-tv/lib/openzeppelin-contracts"]
+	path = chilli-tv/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "chilli-tv/lib/openzeppelin-contracts-upgradeable"]
+	path = chilli-tv/lib/openzeppelin-contracts-upgradeable
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
