@@ -1,0 +1,22 @@
+Compiling 40 files with Solc 0.8.30
+Solc 0.8.30 finished in 2.47s
+Compiler run successful!
+Analysing contracts...
+Running tests...
+
+Ran 6 tests for test/MatchHub.t.sol:MatchHubFactoryTest
+[PASS] test_constructor_revertsOnZeroImplementation() (gas: 61208)
+[PASS] test_constructor_setsImplementation() (gas: 10252)
+[FAIL: FailedCall()] test_createHub_multiple() (gas: 74027)
+[PASS] test_setImplementation_onlyOwner() (gas: 16916)
+[PASS] test_setImplementation_revertsOnZeroAddress() (gas: 13907)
+[PASS] test_setImplementation_updates_and_emits() (gas: 178627)
+Suite result: FAILED. 5 passed; 1 failed; 0 skipped; finished in 29.05ms (9.20ms CPU time)
+
+Ran 1 test suite in 104.24ms (29.05ms CPU time): 5 tests passed, 1 failed, 0 skipped (6 total tests)
+
+Failing tests:
+Encountered 1 failing test in test/MatchHub.t.sol:MatchHubFactoryTest
+[FAIL: FailedCall()] test_createHub_multiple() (gas: 74027)
+
+Encountered a total of 1 failing tests, 5 tests succeeded
