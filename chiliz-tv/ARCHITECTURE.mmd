@@ -1,0 +1,67 @@
+%% ARCHITECTURE.mmd
+%% Mermaid diagram: how MatchHub contracts interact in chiliz-tv
+%% Generated: 2025-10-26
+
+%% Use `mmdc` or compatible renderer to convert to PNG/SVG, or view in editors that support Mermaid.
+
+```mermaid
+flowchart LR
+  %% Factory & Registry
+  subgraph FactoryAndRegistry [Factory & Registry]
+    MHBF[MatchHubBeaconFactory]\n("src/MatchHubBeaconFactory.sol")
+    SBR[SportBeaconRegistry]\n("src/SportBeaconRegistry.sol")
+  end
+
+  %% Beacon/Proxy layer
+  subgraph BeaconLayer [Beacon + Proxies]
+    BEACON[Beacon (holds impl address)]
+    PROXY[BeaconProxy per match]\n("deployed by factory")
+  end
+
+  %% Implementations
+  subgraph Implementations [Sport implementations]
+    MB[MatchBettingBase (abstract)]\n("src/betting/MatchBettingBase.sol")
+    FB[FootballBetting]\n("src/betting/FootballBetting.sol")
+    UFC[UFCBetting]\n("src/betting/UFCBetting.sol")
+  end
+
+  %% Off-chain & actors
+  subgraph Actors [Actors & External]
+    USER[User / Frontend]
+    TOKEN[ERC-20 Token (betToken)]
+    ORACLE[Oracle / SETTLER_ROLE]
+    TREASURY[Treasury (fee receiver)]
+    ADMIN[Owner / Admin / Factory Owner]
+  end
+
+  %% Relationships
+  MHBF -->|uses registry to find beacon| SBR
+  SBR -->|stores beacon addr per sport| BEACON
+  MHBF -->|deploys| PROXY
+  PROXY -->|delegatecall -> implementation pointed by beacon| BEACON
+  BEACON -.->|points to impl (Football/UFC)| FB
+  BEACON -.->|points to impl (Football/UFC)| UFC
+
+  FB -->|inherits| MB
+  UFC -->|inherits| MB
+
+  PROXY -->|initialize (calls implementation initialize)
+  _initSport -> initializeBase| MB
+
+  %% User flows
+  USER -->|approve & call bet wrappers (e.g., betHome)| PROXY
+  PROXY -->|placeBet(outcome,amount) -> transferFrom| TOKEN
+  TOKEN -->|funds stored in| PROXY
+
+  ORACLE -->|calls settle(winningOutcome)| PROXY
+  PROXY -->|on claim() -> compute payout & fee| TREASURY
+  PROXY -->|transfer payout| USER
+
+  ADMIN -->|calls createFootballMatch/createUFCMatch| MHBF
+  ADMIN -->|owner of proxy / roles ADMIN_ROLE etc.| PROXY
+
+  %% Notes
+  classDef notes fill:#f9f,stroke:#333,stroke-width:1px
+  NOTES([NOTE:\n- All sport contracts MUST inherit from MatchBettingBase.\n- Call _initSport(...) inside initialize(...).\n- Keep MatchBettingBase storage append-only for upgrades.]):::notes
+  NOTES --- MB
+```

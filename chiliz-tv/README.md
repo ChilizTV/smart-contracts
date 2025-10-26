@@ -12,6 +12,62 @@ La factory **MatchHubFactory** permet à toute adresse whitelisted de déployer 
 
 ---
 
+```mermaid
+flowchart LR
+  %% Factory & Registry
+  subgraph FactoryAndRegistry [Factory & Registry]
+    MHBF[MatchHubBeaconFactory src/MatchHubBeaconFactory.sol]
+    SBR[SportBeaconRegistry src/SportBeaconRegistry.sol]
+  end
+
+  %% Beacon/Proxy layer
+  subgraph BeaconLayer [Beacon and Proxies]
+    BEACON[Beacon stores implementation address]
+    PROXY[BeaconProxy per match deployed by factory]
+  end
+
+  %% Implementations
+  subgraph Implementations [Sport implementations]
+    MB[MatchBettingBase abstractsrc/betting/MatchBettingBase.sol]
+    FB[FootballBettingsrc/betting/FootballBetting.sol]
+    UFC[UFCBettingsrc/betting/UFCBetting.sol]
+  end
+
+  %% Actors
+  subgraph Actors [Actors and External]
+    USER[User / Frontend]
+    TOKEN[ERC20 betToken]
+    ORACLE[Oracle with SETTLER_ROLE]
+    TREASURY[Treasury - fee receiver]
+    ADMIN[Owner / Admin / Factory Owner]
+  end
+
+  %% Relationships
+  MHBF -->|uses registry to get sport beacon| SBR
+  SBR -->|stores beacon per sport| BEACON
+
+  MHBF -->|deploys| PROXY
+  PROXY -. reads impl address .-> BEACON
+
+  BEACON -. points to impl .-> FB
+  BEACON -. points to impl .-> UFC
+
+  FB -->|inherits| MB
+  UFC -->|inherits| MB
+
+  %% User flows
+  USER -->|approve and bet| PROXY
+  PROXY -->|transferFrom on bet| TOKEN
+  TOKEN -->|funds held by| PROXY
+
+  ORACLE -->|settle winning outcome| PROXY
+  PROXY -->|on claim: send fee| TREASURY
+  PROXY -->|on claim: send payout| USER
+
+  ADMIN -->|createFootballMatch / createUFCMatch| MHBF
+  ADMIN -->|grants roles on| PROXY
+```
+
 ## 2. Composants Principaux
 
 ### 2.1 MatchHubFactory
