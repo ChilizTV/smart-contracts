@@ -1,0 +1,55 @@
+.DS_Store
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node modules and package logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Foundry / Forge build artifacts and caches
+out/
+cache/
+broadcast/
+forge-debug.log
+
+# Hardhat / Truffle / TypeChain (if used alongside Foundry)
+artifacts/
+typechain/
+hh-data/
+
+# OpenZeppelin upgrades plugin
+.openzeppelin/
+
+# Test and coverage output
+coverage/
+*.profiler
+.solcover
+
+# Environment / secrets
+.env
+.env.*.local
+.envrc
+secret*
+*.key
+*.pem
+*.p12
+keystore/
+
+# OS generated files
+Thumbs.db
+
+# Misc
+*.log
+*.tmp
+*.bak
+
+# Ignore Python cache if present
+__pycache__/
+*.py[cod]
+
+# Keep remappings and foundry.toml tracked; do not ignore remappings.txt or foundry.toml
