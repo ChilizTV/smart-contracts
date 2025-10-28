@@ -49,3 +49,6 @@
 [submodule "chiliz-tv/lib/v4-core"]
 	path = chiliz-tv/lib/v4-core
 	url = https://github.com/uniswap/v4-core
+[submodule "chiliz-tv/lib/v4-periphery"]
+	path = chiliz-tv/lib/v4-periphery
+	url = https://github.com/uniswap/v4-periphery
