@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {StreamWallet} from "./StreamWallet.sol";
@@ -131,6 +132,53 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         emit SubscriptionProcessed(streamer, msg.sender, amount);
     }
 
+    /**
+     * @notice Subscribe to a streamer using EIP-2612 permit (single transaction, no prior approval needed)
+     * @param streamer The streamer address
+     * @param amount The subscription amount
+     * @param duration The subscription duration in seconds
+     * @param deadline The permit deadline timestamp
+     * @param v The recovery byte of the signature
+     * @param r Half of the ECDSA signature pair
+     * @param s Half of the ECDSA signature pair
+     * @return wallet The StreamWallet address
+     */
+    function subscribeToStreamWithPermit(
+        address streamer,
+        uint256 amount,
+        uint256 duration,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant returns (address wallet) {
+        // Execute permit (gasless approval)
+        IERC20Permit(address(token)).permit(
+            msg.sender,
+            address(this),
+            amount,
+            deadline,
+            v,
+            r,
+            s
+        );
+
+        // Get or create wallet
+        wallet = streamerWallets[streamer];
+        if (wallet == address(0)) {
+            wallet = _deployStreamWallet(streamer);
+            streamerWallets[streamer] = wallet;
+        }
+
+        // Transfer tokens from subscriber to wallet
+        token.safeTransferFrom(msg.sender, wallet, amount);
+
+        // Record subscription and split payment
+        StreamWallet(wallet).recordSubscription(msg.sender, amount, duration);
+
+        emit SubscriptionProcessed(streamer, msg.sender, amount);
+    }
+
     /*//////////////////////////////////////////////////////////////
                             DONATION LOGIC
     //////////////////////////////////////////////////////////////*/
@@ -149,6 +197,54 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     ) external nonReentrant returns (address wallet) {
         if (amount == 0) revert InvalidAmount();
         if (streamer == address(0)) revert InvalidAddress();
+
+        // Get or create wallet
+        wallet = streamerWallets[streamer];
+        if (wallet == address(0)) {
+            wallet = _deployStreamWallet(streamer);
+            streamerWallets[streamer] = wallet;
+        }
+
+        // Transfer tokens from donor to this contract, then approve wallet
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        token.forceApprove(wallet, amount);
+
+        // Process donation through wallet
+        StreamWallet(wallet).donate(amount, message);
+
+        emit DonationProcessed(streamer, msg.sender, amount, message);
+    }
+
+    /**
+     * @notice Send a donation to a streamer using EIP-2612 permit (single transaction, no prior approval needed)
+     * @param streamer The streamer address
+     * @param amount The donation amount
+     * @param message Optional message from donor
+     * @param deadline The permit deadline timestamp
+     * @param v The recovery byte of the signature
+     * @param r Half of the ECDSA signature pair
+     * @param s Half of the ECDSA signature pair
+     * @return wallet The StreamWallet address
+     */
+    function donateToStreamWithPermit(
+        address streamer,
+        uint256 amount,
+        string calldata message,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external nonReentrant returns (address wallet) {
+        // Execute permit (gasless approval)
+        IERC20Permit(address(token)).permit(
+            msg.sender,
+            address(this),
+            amount,
+            deadline,
+            v,
+            r,
+            s
+        );
 
         // Get or create wallet
         wallet = streamerWallets[streamer];
