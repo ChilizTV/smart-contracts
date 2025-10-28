@@ -68,11 +68,480 @@ flowchart LR
   ADMIN -->|grants roles on| PROXY
 ```
 
-## 2. Composants Principaux
+---
 
-### 2.1 MatchHubFactory
+## 2. Streaming & Smart Wallet Architecture
 
-* **Responsabilité** : déployer des proxies UUPS pointant vers la logique `MatchHub`.
+### 2.1 Sequence Diagram: Complete Interaction Flow
+
+```mermaid
+sequenceDiagram
+    participant Viewer as 👤 Viewer/Fan
+    participant Frontend as 🖥️ Frontend
+    participant WalletFactory as 🏭 StreamWalletFactory
+    participant StreamWallet as 💰 StreamWallet (Proxy)
+    participant Token as 🪙 ERC20 Token
+    participant Streamer as 🎥 Streamer
+    participant Treasury as 🏦 Platform Treasury
+    participant BettingProxy as 🎲 Betting Proxy
+    participant Oracle as 🔮 Oracle
+
+    %% === STREAMING: First Subscription ===
+    Note over Viewer,StreamWallet: STREAMING FLOW - First Subscription
+    Viewer->>Frontend: Subscribe to stream
+    Frontend->>Token: Check allowance
+    Token-->>Frontend: allowance = 0
+    Frontend->>Viewer: Request approval
+    Viewer->>Token: approve(WalletFactory, amount)
+    Token-->>Viewer: Approval confirmed
+    
+    Frontend->>WalletFactory: subscribeToStream(streamerId, amount)
+    WalletFactory->>WalletFactory: Check if wallet exists
+    alt Wallet doesn't exist
+        WalletFactory->>StreamWallet: Deploy new Smart-wallet
+        StreamWallet-->>WalletFactory: wallet address
+        WalletFactory->>StreamWallet: initialize(streamer, platformFee)
+        StreamWallet-->>WalletFactory: initialized
+        Note right of StreamWallet: Wallet created with:<br/>- Streamer as owner<br/>- Platform fee %<br/>- Revenue split rules
+    end
+    
+    WalletFactory->>Token: transferFrom(viewer, StreamWallet, amount)
+    Token-->>StreamWallet: Tokens received
+    WalletFactory->>StreamWallet: recordSubscription(viewer, amount, duration)
+    StreamWallet->>StreamWallet: Calculate split:<br/>platformFee = amount * feeBps / 10000<br/>streamerAmount = amount - platformFee
+    StreamWallet->>Token: transfer(Treasury, platformFee)
+    Token-->>Treasury: Platform fee received
+    StreamWallet->>Token: transfer(Streamer, streamerAmount)
+    Token-->>Streamer: Streamer payment received
+    StreamWallet-->>WalletFactory: Subscription recorded
+    WalletFactory-->>Frontend: SubscriptionCreated event
+    Frontend-->>Viewer: ✅ Subscribed!
+
+    %% === STREAMING: Donation ===
+    Note over Viewer,StreamWallet: STREAMING FLOW - Donation
+    Viewer->>Frontend: Send donation
+    Frontend->>Token: approve(StreamWallet, donationAmount)
+    Token-->>Frontend: Approved
+    Frontend->>StreamWallet: donate(amount, message)
+    StreamWallet->>Token: transferFrom(viewer, this, amount)
+    Token-->>StreamWallet: Tokens received
+    StreamWallet->>StreamWallet: Calculate split
+    StreamWallet->>Token: transfer(Treasury, platformFee)
+    StreamWallet->>Token: transfer(Streamer, donationAmount - platformFee)
+    StreamWallet-->>Frontend: DonationReceived event
+    Frontend-->>Viewer: 💝 Donation sent!
+    Frontend-->>Streamer: 🎁 New donation notification
+
+    %% === STREAMING: Revenue Withdrawal ===
+    Note over Streamer,StreamWallet: STREAMING FLOW - Streamer Withdrawal
+    Streamer->>Frontend: Request withdrawal
+    Frontend->>StreamWallet: withdrawRevenue(amount)
+    StreamWallet->>StreamWallet: Check balance & ownership
+    StreamWallet->>Token: transfer(Streamer, amount)
+    Token-->>Streamer: Withdrawal complete
+    StreamWallet-->>Frontend: RevenueWithdrawn event
+    Frontend-->>Streamer: ✅ Funds transferred
+
+    %% === BETTING: Match Creation ===
+    Note over Viewer,BettingProxy: BETTING FLOW - Match Creation
+    Streamer->>Frontend: Create betting match
+    Frontend->>WalletFactory: MatchHubBeaconFactory.createFootballMatch(matchId, cutoff, feeBps)
+    WalletFactory->>BettingProxy: Deploy new BeaconProxy
+    BettingProxy-->>WalletFactory: proxy address
+    WalletFactory->>BettingProxy: initialize(owner, token, matchId, cutoff, feeBps, treasury)
+    BettingProxy->>BettingProxy: Grant roles:<br/>ADMIN_ROLE → ADMIN<br/>SETTLER_ROLE → Oracle <br/>PAUSER_ROLE → ADMIN (Safe or back-end)
+    BettingProxy-->>Frontend: MatchHubCreated event
+    Frontend-->>Streamer: 🎲 Match created!
+
+    %% === BETTING: Place Bet ===
+    Note over Viewer,BettingProxy: BETTING FLOW - Place Bet
+    Viewer->>Frontend: Place bet on HOME (amount)
+    Frontend->>Token: approve(BettingProxy, amount)
+    Token-->>Frontend: Approved
+    Frontend->>BettingProxy: betHome(amount)
+    BettingProxy->>BettingProxy: Check onlyBeforeCutoff
+    BettingProxy->>BettingProxy: Update pool[HOME] += amount
+    BettingProxy->>BettingProxy: Update bets[viewer][HOME] += amount
+    BettingProxy->>Token: transferFrom(viewer, this, amount)
+    Token-->>BettingProxy: Tokens received
+    BettingProxy-->>Frontend: BetPlaced event
+    Frontend-->>Viewer: ✅ Bet placed!
+
+    %% === BETTING: Settlement ===
+    Note over Oracle,BettingProxy: BETTING FLOW - Match Settlement
+    Oracle->>Oracle: Match ends, determine winner
+    Oracle->>Frontend: Submit settlement (winningOutcome)
+    Frontend->>BettingProxy: settle(HOME)
+    BettingProxy->>BettingProxy: Check SETTLER_ROLE
+    BettingProxy->>BettingProxy: Set settled = true<br/>winningOutcome = HOME
+    BettingProxy->>BettingProxy: Calculate totalPool & feeAmount
+    BettingProxy-->>Frontend: Settled event
+    Frontend-->>Viewer: 🏆 Match settled!
+
+    %% === BETTING: Claim Payout ===
+    Note over Viewer,BettingProxy: BETTING FLOW - Claim Payout
+    Viewer->>Frontend: Claim winnings
+    Frontend->>BettingProxy: claim()
+    BettingProxy->>BettingProxy: Check settled = true
+    BettingProxy->>BettingProxy: Check claimed[viewer] = false
+    BettingProxy->>BettingProxy: Calculate payout:<br/>userShare = userStake / winPool<br/>payout = userShare * distributable
+    BettingProxy->>Token: transfer(Treasury, fee)
+    Token-->>Treasury: Platform fee received
+    BettingProxy->>Token: transfer(Viewer, payout)
+    Token-->>Viewer: Winnings received
+    BettingProxy->>BettingProxy: Set feeBps = 0 (MVP)<br/>Set claimed[viewer] = true
+    BettingProxy-->>Frontend: Claimed event
+    Frontend-->>Viewer: 💰 Winnings claimed!
+
+    %% === INTEGRATION [AS AN IDEA NOT TO IMPLEMENT] ===
+    Note over Viewer,Oracle: CROSS-FEATURE INTEGRATION
+    Viewer->>Frontend: Subscribe + Bet in one transaction
+    Frontend->>WalletFactory: multicall([subscribe, createBet])
+    WalletFactory-->>Frontend: Both actions completed
+    Frontend-->>Viewer: ✅ Subscribed & Bet placed!
+```
+
+### 2.2 StreamWallet Contract (`src/streamer/StreamWallet.sol`)
+
+Le **StreamWallet** est un contrat proxy déployé automatiquement lors de la première souscription ou donation à un stream.
+
+#### 2.2.1 Responsabilités
+- **Revenue Collection**: Collecte des subscriptions et donations
+- **Automatic Split**: Répartition automatique entre streamer et plateforme (via `platformFeeBps`)
+- **Streamer Control**: Le streamer est propriétaire et peut retirer ses fonds
+- **Transparency**: Toutes les transactions sont tracées on-chain avec événements
+- **Integration**: Peut interagir avec les contrats de betting
+
+#### 2.2.2 Fonctions Principales
+- `initialize()`: Initialise le wallet avec streamer, token, treasury, et fee
+- `recordSubscription()`: Enregistre une souscription et distribue les fonds (appelé par factory)
+- `donate()`: Accepte une donation avec message optionnel
+- `withdrawRevenue()`: Permet au streamer de retirer ses revenus accumulés
+- `isSubscribed()`: Vérifie si un utilisateur a une souscription active
+- `availableBalance()`: Retourne le solde disponible pour retrait
+
+#### 2.2.3 État Clé
+- Mapping des souscriptions par utilisateur (`subscriptions`)
+- Mapping des donations lifetime par donateur (`lifetimeDonations`)
+- Métriques: `totalRevenue`, `totalWithdrawn`, `totalSubscribers`
+- Configuration: `streamer`, `treasury`, `platformFeeBps`, `token`
+
+### 2.3 StreamWalletFactory Contract (`src/streamer/StreamWalletFactory.sol`)
+
+La **factory** gère le déploiement et l'interaction avec les StreamWallets via le pattern BeaconProxy.
+
+#### 2.3.1 Responsabilités
+- Déploiement automatique de wallets pour les streamers (lazy deployment)
+- Gestion centralisée des souscriptions et donations
+- Uniformité des wallets via Beacon pattern (upgradeability)
+- Configuration globale (treasury, platform fee)
+
+#### 2.3.2 Fonctions Principales
+- `subscribeToStream()`: Souscrit à un stream (crée le wallet si nécessaire)
+- `donateToStream()`: Envoie une donation (crée le wallet si nécessaire)
+- `deployWalletFor()`: Déploiement manuel d'un wallet (admin only)
+- `setBeacon()`, `setTreasury()`, `setPlatformFee()`: Configuration (owner only)
+- `getWallet()`, `hasWallet()`: Fonctions de vue
+
+#### 2.3.3 Architecture
+- Utilise `StreamBeaconRegistry` (immutable) pour gérer l'implémentation upgradeable
+- Mapping `streamerWallets` pour tracer les wallets déployés
+- Pattern BeaconProxy pour upgradeability sans redeployer chaque wallet
+
+### 2.4 Upgradeable Architecture avec Beacon Pattern
+
+#### 2.4.1 Vue d'ensemble
+
+Le système de streaming utilise le **Beacon Pattern** pour permettre l'upgrade de tous les StreamWallets simultanément via une seule transaction.
+
+```mermaid
+sequenceDiagram
+    participant Admin as 👨‍💼 Admin
+    participant Safe as 🔐 Gnosis Safe
+    participant SBR as 📋 StreamBeaconRegistry
+    participant BEACON as 🔔 UpgradeableBeacon
+    participant IMPL as 📦 StreamWallet Impl
+    participant SWF as 🏭 StreamWalletFactory
+    participant PROXY1 as 💰 Proxy Streamer 1
+    participant PROXY2 as 💰 Proxy Streamer 2
+    participant PROXY3 as 💰 Proxy Streamer N
+    participant User as 👤 User
+
+    Note over Admin,Safe: SETUP: Ownership & Registry
+    Admin->>SBR: Deploy StreamBeaconRegistry(safeAddress)
+    SBR-->>Admin: Registry deployed
+    Safe->>SBR: Owns registry
+    
+    Note over Admin,IMPL: SETUP: Implementation
+    Admin->>IMPL: Deploy StreamWallet implementation
+    IMPL-->>Admin: Implementation deployed
+    
+    Note over Safe,BEACON: SETUP: Create Beacon
+    Safe->>SBR: setImplementation(implAddress)
+    SBR->>BEACON: Create UpgradeableBeacon(impl)
+    BEACON->>IMPL: points to implementation
+    BEACON-->>SBR: Beacon created
+    SBR-->>Safe: ✅ BeaconCreated event
+    
+    Note over Admin,SWF: SETUP: Deploy Factory
+    Admin->>SWF: Deploy StreamWalletFactory(admin, registry, token, treasury, fee)
+    SWF->>SBR: registry = immutable reference
+    SWF-->>Admin: Factory deployed
+    
+    Note over User,PROXY1: RUNTIME: First Subscription
+    User->>SWF: subscribeToStream(streamer1, amount)
+    SWF->>SBR: getBeacon()
+    SBR-->>SWF: beacon address
+    SWF->>PROXY1: Deploy BeaconProxy(beacon, initData)
+    PROXY1->>BEACON: Store beacon reference
+    PROXY1->>BEACON: getImplementation()
+    BEACON-->>PROXY1: returns IMPL address
+    PROXY1->>IMPL: delegatecall initialize()
+    IMPL-->>PROXY1: initialized
+    PROXY1-->>SWF: proxy deployed
+    SWF-->>User: ✅ Subscribed!
+    
+    Note over User,PROXY2: RUNTIME: More Subscriptions
+    User->>SWF: subscribeToStream(streamer2, amount)
+    SWF->>SBR: getBeacon()
+    SBR-->>SWF: beacon address
+    SWF->>PROXY2: Deploy BeaconProxy(beacon, initData)
+    PROXY2->>BEACON: Store beacon reference
+    PROXY2->>IMPL: delegatecall to IMPL
+    SWF-->>User: ✅ Subscribed!
+    
+    User->>SWF: subscribeToStream(streamerN, amount)
+    SWF->>PROXY3: Deploy BeaconProxy(beacon, initData)
+    PROXY3->>BEACON: Store beacon reference
+    PROXY3->>IMPL: delegatecall to IMPL
+    
+    Note over User,PROXY1: RUNTIME: User Interactions
+    User->>PROXY1: donate(amount, message)
+    PROXY1->>BEACON: getImplementation()
+    BEACON-->>PROXY1: IMPL address
+    PROXY1->>IMPL: delegatecall donate()
+    IMPL-->>PROXY1: donation recorded
+    PROXY1-->>User: ✅ Donation sent!
+    
+    Note over Safe,IMPL: All proxies use same implementation via beacon
+    
+    rect rgb(200, 220, 255)
+    Note over Safe,PROXY3: Key Architecture Points:<br/>- SBR owned by Gnosis Safe (security)<br/>- SWF has immutable registry reference<br/>- All proxies delegate to IMPL via BEACON<br/>- Upgrading BEACON upgrades ALL proxies atomically
+    end
+```
+
+**Architecture Résumé:**
+- **StreamBeaconRegistry**: Possédé par Gnosis Safe, gère le beacon unique
+- **UpgradeableBeacon**: Pointe vers l'implémentation courante
+- **StreamWalletFactory**: Référence immutable au registry, déploie les proxies
+- **BeaconProxy (par streamer)**: Délègue tous les appels à l'implémentation via le beacon
+- **StreamWallet Implementation**: Logique métier partagée par tous les proxies
+
+#### 2.4.2 Composants
+
+**1. StreamBeaconRegistry** (`src/streamer/StreamBeaconRegistry.sol`)
+- **Rôle**: Gère l'UpgradeableBeacon unique pour tous les StreamWallets
+- **Owner**: Gnosis Safe (multisig recommandé)
+- **Fonctions clés**:
+  - `setImplementation(address)`: Crée ou upgrade l'implémentation
+  - `getBeacon()`: Retourne l'adresse du beacon
+  - `getImplementation()`: Retourne l'implémentation courante
+  - `isInitialized()`: Vérifie si le beacon existe
+
+**2. StreamWalletFactory** (`src/streamer/StreamWalletFactory.sol`)
+- **Rôle**: Déploie des BeaconProxy pour chaque streamer
+- **Registry**: Référence immutable au StreamBeaconRegistry
+- **Sécurité**: Ne peut pas changer le beacon (immutable), seulement le registry owner peut upgrader
+
+**3. StreamWallet Implementation** (`src/streamer/StreamWallet.sol`)
+- **Rôle**: Logique métier des wallets streamers
+- **Pattern**: Upgradeable via Initializable & ReentrancyGuardUpgradeable
+- **État**: Stocké dans chaque proxy individuellement
+
+#### 2.4.3 Flux de Déploiement Initial
+
+```mermaid
+sequenceDiagram
+    participant Admin as 👨‍💼 Admin/DevOps
+    participant Safe as 🔐 Gnosis Safe
+    participant Registry as 📋 StreamBeaconRegistry
+    participant Factory as 🏭 StreamWalletFactory
+    participant Beacon as 🔔 UpgradeableBeacon
+
+    Note over Admin,Beacon: PHASE 1: Déploiement Initial
+    
+    Admin->>Registry: 1. Deploy StreamBeaconRegistry(safeAddress)
+    Registry-->>Admin: registry deployed
+    
+    Admin->>Admin: 2. Deploy StreamWallet implementation v1
+    Admin-->>Admin: implV1 address
+    
+    Admin->>Safe: 3. Transfer ownership request
+    Safe->>Registry: transferOwnership(safe)
+    Registry-->>Safe: Ownership transferred
+    
+    Note over Safe,Beacon: PHASE 2: Configuration du Beacon
+    
+    Safe->>Registry: 4. setImplementation(implV1)
+    Registry->>Beacon: Create UpgradeableBeacon(implV1)
+    Beacon-->>Registry: beacon created
+    Registry-->>Safe: ✅ BeaconCreated event
+    
+    Note over Admin,Factory: PHASE 3: Déploiement Factory
+    
+    Admin->>Factory: 5. Deploy StreamWalletFactory(<br/>adminAddress,<br/>registryAddress,<br/>tokenAddress,<br/>treasuryAddress,<br/>platformFeeBps)
+    Factory->>Registry: Check registry.getBeacon()
+    Registry-->>Factory: beacon address
+    Factory-->>Admin: ✅ factory deployed
+    
+    Note over Admin,Factory: PHASE 4: Première Utilisation
+    
+    Admin->>Factory: 6. User calls subscribeToStream()
+    Factory->>Registry: getBeacon()
+    Registry-->>Factory: beacon address
+    Factory->>Factory: Deploy BeaconProxy(beacon, initData)
+    Factory-->>Admin: ✅ StreamWallet proxy created
+```
+
+#### 2.4.4 Flux d'Upgrade
+
+```mermaid
+sequenceDiagram
+    participant Safe as 🔐 Gnosis Safe (Owner)
+    participant Registry as 📋 StreamBeaconRegistry
+    participant Beacon as 🔔 UpgradeableBeacon
+    participant OldImpl as 📦 StreamWallet v1
+    participant NewImpl as 🆕 StreamWallet v2
+    participant Proxy1 as 💰 Proxy Streamer 1
+    participant Proxy2 as 💰 Proxy Streamer 2
+    participant ProxyN as 💰 Proxy Streamer N
+
+    Note over Safe,ProxyN: UPGRADE PROCESS - All wallets upgrade together!
+    
+    Safe->>NewImpl: 1. Deploy StreamWallet v2 (new implementation)
+    NewImpl-->>Safe: newImpl address
+    
+    Safe->>Safe: 2. Verify new implementation<br/>(tests, audit, simulation)
+    
+    Note over Safe,Beacon: 3. Execute Upgrade Transaction
+    
+    Safe->>Registry: setImplementation(newImplAddress)
+    Registry->>Beacon: Check if beacon exists
+    Beacon-->>Registry: beacon exists
+    Registry->>Beacon: upgradeTo(newImplAddress)
+    Beacon->>Beacon: Update implementation pointer
+    Beacon-->>Registry: ✅ upgraded
+    Registry-->>Safe: ✅ BeaconUpgraded event
+    
+    Note over Proxy1,ProxyN: All proxies now use v2 automatically!
+    
+    Proxy1->>Beacon: Next call: getImplementation()
+    Beacon-->>Proxy1: returns newImpl (v2)
+    Proxy1->>NewImpl: delegatecall to v2
+    
+    Proxy2->>Beacon: Next call: getImplementation()
+    Beacon-->>Proxy2: returns newImpl (v2)
+    Proxy2->>NewImpl: delegatecall to v2
+    
+    ProxyN->>Beacon: Next call: getImplementation()
+    Beacon-->>ProxyN: returns newImpl (v2)
+    ProxyN->>NewImpl: delegatecall to v2
+    
+    Note over Safe,ProxyN: ✅ Tous les wallets upgradés en 1 transaction!
+```
+
+#### 2.4.5 Commandes de Déploiement
+
+**Étape 1: Déployer StreamWallet Implementation**
+```bash
+forge create src/streamer/StreamWallet.sol:StreamWallet \
+  --rpc-url $RPC_URL \
+  --private-key $DEPLOYER_PK \
+  --verify
+```
+
+**Étape 2: Déployer StreamBeaconRegistry**
+```bash
+forge create src/streamer/StreamBeaconRegistry.sol:StreamBeaconRegistry \
+  --constructor-args $GNOSIS_SAFE_ADDRESS \
+  --rpc-url $RPC_URL \
+  --private-key $DEPLOYER_PK \
+  --verify
+```
+
+**Étape 3: Configurer le Beacon (via Gnosis Safe)**
+```bash
+# Préparer la transaction via Safe UI ou cast
+cast send $REGISTRY_ADDRESS \
+  "setImplementation(address)" $STREAM_WALLET_IMPL \
+  --rpc-url $RPC_URL \
+  --private-key $SAFE_SIGNER_PK
+```
+
+**Étape 4: Déployer StreamWalletFactory**
+```bash
+forge create src/streamer/StreamWalletFactory.sol:StreamWalletFactory \
+  --constructor-args \
+    $ADMIN_ADDRESS \
+    $REGISTRY_ADDRESS \
+    $TOKEN_ADDRESS \
+    $TREASURY_ADDRESS \
+    500 \
+  --rpc-url $RPC_URL \
+  --private-key $DEPLOYER_PK \
+  --verify
+```
+
+**Upgrade (via Gnosis Safe uniquement)**
+```bash
+# 1. Déployer nouvelle implémentation
+forge create src/streamer/StreamWallet.sol:StreamWallet \
+  --rpc-url $RPC_URL \
+  --private-key $DEPLOYER_PK \
+  --verify
+
+# 2. Upgrader via Safe
+cast send $REGISTRY_ADDRESS \
+  "setImplementation(address)" $NEW_IMPL_ADDRESS \
+  --rpc-url $RPC_URL \
+  --private-key $SAFE_SIGNER_PK
+```
+
+#### 2.4.6 Vérifications de Sécurité
+
+**Avant l'upgrade:**
+- ✅ Tests complets sur testnet avec fork mainnet
+- ✅ Audit de la nouvelle implémentation
+- ✅ Vérification de la compatibilité du storage layout
+- ✅ Simulation de l'upgrade avec Tenderly/Hardhat
+- ✅ Approbation multisig (Gnosis Safe)
+
+**Après l'upgrade:**
+- ✅ Vérifier `registry.getImplementation()` retourne la nouvelle adresse
+- ✅ Tester les fonctions critiques sur un proxy existant
+- ✅ Monitor les transactions des utilisateurs
+- ✅ Plan de rollback si nécessaire
+
+#### 2.4.7 Avantages de cette Architecture
+
+| Avantage | Description |
+|----------|-------------|
+| **Upgrade Atomique** | Tous les wallets upgradent simultanément en 1 transaction |
+| **Gas Efficient** | Un seul beacon partagé par tous les proxies |
+| **Sécurité** | Factory ne peut pas upgrader (registry immutable) |
+| **Gouvernance** | Seul le Gnosis Safe peut upgrader |
+| **Rollback** | Possible de revenir à l'ancienne implémentation si besoin |
+| **Transparence** | Événements `BeaconCreated` et `BeaconUpgraded` on-chain |
+| **Cohérence** | Même pattern que SportBeaconRegistry (betting) |
+
+
+---
+
+## 3. Composants Principaux
+
+### 3.1 MatchHubFactory
+
+* **Responsabilité** : déployer des proxies UUPS pointant vers la logique `MatchHub`.
 * **State**
 
   * `implementation` : adresse du contrat logique `MatchHub`.
@@ -92,9 +561,9 @@ flowchart LR
   * `onlyOwner` sur setters
   * Rejet des adresses nulles
 
-### 2.2 MatchHub
+### 3.2 MatchHub
 
-* **Responsabilité** : gérer un unique match et ses multiples marchés de paris.
+* **Responsabilité** : gérer un unique match et ses multiples marchés de paris.
 * **State**
 
   * `matchName` : nom/description du match
