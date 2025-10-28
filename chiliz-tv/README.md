@@ -534,6 +534,155 @@ cast send $REGISTRY_ADDRESS \
 | **Transparence** | Événements `BeaconCreated` et `BeaconUpgraded` on-chain |
 | **Cohérence** | Même pattern que SportBeaconRegistry (betting) |
 
+### 2.5 EIP-2612 Permit: Amélioration de l'UX
+
+#### 2.5.1 Problème Résolu
+
+**Avant EIP-2612:**
+- Les utilisateurs devaient effectuer **2 transactions** pour souscrire ou donner:
+  1. `approve(factory, amount)` - Approuver les tokens
+  2. `subscribeToStream(...)` ou `donateToStream(...)` - Effectuer l'action
+
+**Après EIP-2612:**
+- Les utilisateurs effectuent **1 seule transaction** avec une signature off-chain:
+  1. Signer un message de permit (gratuit, pas de gas)
+  2. `subscribeToStreamWithPermit(...)` ou `donateToStreamWithPermit(...)` - Approve + action en une seule transaction
+
+#### 2.5.2 Fonctions Permit
+
+**StreamWalletFactory** fournit maintenant deux nouvelles fonctions:
+
+```solidity
+function subscribeToStreamWithPermit(
+    address streamer,
+    uint256 amount,
+    uint256 duration,
+    uint256 deadline,    // Timestamp d'expiration de la signature
+    uint8 v,             // Signature ECDSA
+    bytes32 r,           // Signature ECDSA
+    bytes32 s            // Signature ECDSA
+) external nonReentrant returns (address wallet)
+
+function donateToStreamWithPermit(
+    address streamer,
+    uint256 amount,
+    string calldata message,
+    uint256 deadline,    // Timestamp d'expiration de la signature
+    uint8 v,             // Signature ECDSA
+    bytes32 r,           // Signature ECDSA
+    bytes32 s            // Signature ECDSA
+) external nonReentrant returns (address wallet)
+```
+
+#### 2.5.3 Flux Utilisateur avec Permit
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 User
+    participant Frontend as 🖥️ Frontend
+    participant Wallet as 🦊 MetaMask
+    participant Factory as 🏭 StreamWalletFactory
+    participant Token as 🪙 ERC20Permit Token
+    participant StreamWallet as 💰 StreamWallet
+
+    Note over User,StreamWallet: Single Transaction Flow avec EIP-2612
+
+    User->>Frontend: Click "Subscribe"
+    Frontend->>Wallet: Request signature (EIP-2612)
+    Note right of Wallet: Sign permit message<br/>(Off-chain, NO GAS)
+    Wallet-->>Frontend: Return signature (v, r, s)
+    
+    Frontend->>Factory: subscribeToStreamWithPermit(streamer, amount, duration, deadline, v, r, s)
+    
+    Factory->>Token: permit(user, factory, amount, deadline, v, r, s)
+    Note right of Token: Gasless approval<br/>via signature verification
+    Token-->>Factory: Approved ✅
+    
+    Factory->>Token: transferFrom(user, streamWallet, amount)
+    Token-->>Factory: Transferred ✅
+    
+    Factory->>StreamWallet: recordSubscription(user, amount, duration)
+    StreamWallet-->>Factory: Recorded ✅
+    
+    Factory-->>Frontend: Success + wallet address
+    Frontend-->>User: "Subscription active! 🎉"
+    
+    Note over User,StreamWallet: ✨ Single transaction = Better UX!
+```
+
+#### 2.5.4 Avantages
+
+| Avantage | Description |
+|----------|-------------|
+| **UX Améliorée** | 1 transaction au lieu de 2 → expérience plus fluide |
+| **Gas Économisé** | ~45,000 gas économisé (pas d'appel `approve()` séparé) |
+| **Sécurité** | Deadline + nonce empêchent la réutilisation de signatures |
+| **Standard** | EIP-2612 supporté par tous les tokens majeurs (USDC, DAI, etc.) |
+| **Flexibilité** | Les deux patterns sont supportés (approve classique + permit) |
+| **Mobile-Friendly** | Moins d'interactions = meilleur pour les wallets mobiles |
+
+#### 2.5.5 Intégration Frontend (Exemple avec ethers.js)
+
+```javascript
+// 1. Préparer les paramètres
+const domain = {
+  name: await token.name(),
+  version: '1',
+  chainId: await provider.getNetwork().then(n => n.chainId),
+  verifyingContract: token.address
+};
+
+const types = {
+  Permit: [
+    { name: 'owner', type: 'address' },
+    { name: 'spender', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' }
+  ]
+};
+
+const value = {
+  owner: userAddress,
+  spender: factoryAddress,
+  value: amount,
+  nonce: await token.nonces(userAddress),
+  deadline: Math.floor(Date.now() / 1000) + 3600 // 1 heure
+};
+
+// 2. Demander la signature (off-chain, gratuit)
+const signature = await signer._signTypedData(domain, types, value);
+const { v, r, s } = ethers.utils.splitSignature(signature);
+
+// 3. Appeler la fonction avec permit (1 seule transaction)
+const tx = await factory.subscribeToStreamWithPermit(
+  streamerAddress,
+  amount,
+  duration,
+  value.deadline,
+  v, r, s
+);
+
+await tx.wait();
+console.log('Subscription successful! 🎉');
+```
+
+#### 2.5.6 Tests
+
+Les tests EIP-2612 couvrent:
+- ✅ Subscription avec permit (single transaction)
+- ✅ Donation avec permit (single transaction)
+- ✅ Multiples opérations avec permit (nonce increment)
+- ✅ Revert si deadline expirée
+- ✅ Signature invalide revert
+
+**Commande de test:**
+```bash
+forge test --match-test testSubscribeWithPermit
+forge test --match-test testDonateWithPermit
+forge test --match-test testPermit
+```
+
 
 ---
 
