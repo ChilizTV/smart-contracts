@@ -2,8 +2,8 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
-import "../src/MatchHubBeaconFactory.sol"; // adapte le chemin si besoin
-import "../src/SportBeaconRegistry.sol"; // adapte le chemin si besoin
+import "../src/matchhub/MatchHubBeaconFactory.sol";
+import "../src/SportBeaconRegistry.sol";
 import "../src/betting/FootballBetting.sol";
 import "../src/MockERC20.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
@@ -368,9 +368,353 @@ contract FootballBeaconRegistryTest is Test {
         fb.setFeeBps(2000); // > 1000 (10%) should revert
         vm.stopPrank();
     }
+
+    /*//////////////////////////////////////////////////////////////////////////
+                    ADDITIONAL COMPREHENSIVE TESTS
+    //////////////////////////////////////////////////////////////////////////*/
+
+    function testMultipleBetsMultipleUsers() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("MULTI_USERS");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        // Mint tokens and bet for user1 (HOME)
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        fb.betHome(100 ether);
+        vm.stopPrank();
+
+        // Mint tokens and bet for user2 (AWAY)
+        token.mint(user2, 200 ether);
+        vm.startPrank(user2);
+        token.approve(proxy, 200 ether);
+        fb.betAway(200 ether);
+        vm.stopPrank();
+
+        // Check pool amounts
+        assertEq(fb.pool(fb.HOME()), 100 ether);
+        assertEq(fb.pool(fb.AWAY()), 200 ether);
+        assertEq(fb.totalPoolAmount(), 300 ether);
+    }
+
+    function testBetDraw() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("BET_DRAW");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        token.mint(user1, 50 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 50 ether);
+        fb.betDraw(50 ether);
+        vm.stopPrank();
+
+        assertEq(fb.pool(fb.DRAW()), 50 ether);
+    }
+
+    function testSettleDraw() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("SETTLE_DRAW");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        // Place bets on all outcomes
+        token.mint(user1, 300 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 300 ether);
+        fb.betHome(100 ether);
+        fb.betDraw(100 ether);
+        fb.betAway(100 ether);
+        vm.stopPrank();
+
+        // Warp past cutoff
+        vm.warp(cutoff + 1);
+
+        // Settle with draw outcome
+        uint8 drawOutcome = fb.DRAW();
+        vm.prank(admin);
+        fb.settle(drawOutcome);
+
+        assertTrue(fb.settled());
+        assertEq(fb.winningOutcome(), drawOutcome);
+    }
+
+    function testClaimDrawWinner() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("CLAIM_DRAW");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        // user1 bets on draw, user2 bets on home
+        token.mint(user1, 100 ether);
+        token.mint(user2, 100 ether);
+
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        fb.betDraw(100 ether);
+        vm.stopPrank();
+
+        vm.startPrank(user2);
+        token.approve(proxy, 100 ether);
+        fb.betHome(100 ether);
+        vm.stopPrank();
+
+        // Settle with draw
+        vm.warp(cutoff + 1);
+        uint8 drawOutcome = fb.DRAW();
+        vm.prank(admin);
+        fb.settle(drawOutcome);
+
+        // user1 should be able to claim
+        uint256 balanceBefore = token.balanceOf(user1);
+        vm.prank(user1);
+        fb.claim();
+        uint256 balanceAfter = token.balanceOf(user1);
+
+        // user1 should receive payout (200 ether total - 2% fee = 196 ether)
+        assertGt(balanceAfter, balanceBefore);
+        assertEq(balanceAfter - balanceBefore, 196 ether);
+    }
+
+    function testRevertBetAfterSettlement() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("BET_AFTER_SETTLE");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        
+        // Settle immediately
+        vm.warp(cutoff + 1);
+        fb.settle(fb.HOME());
+        vm.stopPrank();
+
+        // Try to bet after settlement
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        vm.expectRevert();
+        fb.betHome(100 ether);
+        vm.stopPrank();
+    }
+
+    function testPauseUnpauseBetting() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("PAUSE_TEST");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+
+        // Pause the contract
+        fb.pause();
+        assertTrue(fb.paused());
+        vm.stopPrank();
+
+        // Try to bet while paused (should revert)
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        vm.expectRevert();
+        fb.betHome(100 ether);
+        vm.stopPrank();
+
+        // Unpause
+        vm.prank(admin);
+        fb.unpause();
+        assertFalse(fb.paused());
+
+        // Now bet should work
+        vm.prank(user1);
+        fb.betHome(100 ether);
+        assertEq(fb.pool(fb.HOME()), 100 ether);
+    }
+
+    function testUpdateCutoffBeforeSettlement() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("UPDATE_CUTOFF");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+
+        uint64 newCutoff = uint64(block.timestamp + 2 days);
+        fb.setCutoff(newCutoff);
+        assertEq(fb.cutoffTs(), newCutoff);
+        vm.stopPrank();
+    }
+
+    function testRevertUpdateCutoffAfterSettlement() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("CUTOFF_AFTER_SETTLE");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+
+        vm.warp(cutoff + 1);
+        fb.settle(fb.HOME());
+
+        vm.expectRevert();
+        fb.setCutoff(uint64(block.timestamp + 3 days));
+        vm.stopPrank();
+    }
+
+    function testUpdateTreasury() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("UPDATE_TREASURY");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+
+        address newTreasury = makeAddr("NEW_TREASURY");
+        fb.setTreasury(newTreasury);
+        assertEq(fb.treasury(), newTreasury);
+        vm.stopPrank();
+    }
+
+    function testRevertUpdateTreasuryZeroAddress() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("TREASURY_ZERO");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+
+        vm.expectRevert();
+        fb.setTreasury(address(0));
+        vm.stopPrank();
+    }
+
+    function testUpdateFeeBps() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("UPDATE_FEE");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+
+        uint16 newFee = 500; // 5%
+        fb.setFeeBps(newFee);
+        assertEq(fb.feeBps(), newFee);
+        vm.stopPrank();
+    }
+
+    function testPendingPayoutBeforeAndAfterSettlement() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("PENDING_PAYOUT");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        fb.betHome(100 ether);
+        vm.stopPrank();
+
+        // Before settlement, pending payout should be 0
+        assertEq(fb.pendingPayout(user1), 0);
+
+        // After settlement
+        vm.warp(cutoff + 1);
+        uint8 homeOutcome = fb.HOME();
+        vm.prank(admin);
+        fb.settle(homeOutcome);
+
+        // Now pending payout should be > 0
+        uint256 pending = fb.pendingPayout(user1);
+        assertGt(pending, 0);
+        // Should be 98 ether (100 - 2% fee)
+        assertEq(pending, 98 ether);
+    }
+
+    function testRevertClaimBeforeSettlement() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("CLAIM_BEFORE_SETTLE");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        fb.betHome(100 ether);
+
+        vm.expectRevert();
+        fb.claim();
+        vm.stopPrank();
+    }
+
+    function testRevertClaimNoWinningBet() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("NO_WIN_BET");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        // user1 bets on away
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        fb.betAway(100 ether);
+        vm.stopPrank();
+
+        // Settle with home win
+        vm.warp(cutoff + 1);
+        uint8 homeOutcome = fb.HOME();
+        vm.prank(admin);
+        fb.settle(homeOutcome);
+
+        // user1 should not be able to claim (bet on wrong outcome)
+        vm.prank(user1);
+        vm.expectRevert();
+        fb.claim();
+    }
+
+    function testRevertNonAdminActions() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("NON_ADMIN");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        bytes32 ADMIN_ROLE = fb.ADMIN_ROLE();
+
+        vm.startPrank(user1);
+        // Try to pause (should fail)
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user1, fb.PAUSER_ROLE()));
+        fb.pause();
+
+        // Try to set fee (should fail)
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user1, ADMIN_ROLE));
+        fb.setFeeBps(300);
+
+        // Try to set treasury (should fail)
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user1, ADMIN_ROLE));
+        fb.setTreasury(makeAddr("NEW"));
+
+        // Try to set cutoff (should fail)
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, user1, ADMIN_ROLE));
+        fb.setCutoff(uint64(block.timestamp + 2 days));
+
+        vm.stopPrank();
+    }
+
+    function testGetBetAmount() public {
+        vm.startPrank(admin);
+        bytes32 matchId = keccak256("GET_BET");
+        uint64 cutoff = uint64(block.timestamp + 1 days);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        vm.stopPrank();
+
+        token.mint(user1, 100 ether);
+        vm.startPrank(user1);
+        token.approve(proxy, 100 ether);
+        fb.betHome(50 ether);
+        fb.betHome(30 ether);
+        vm.stopPrank();
+
+        // Check user1's total bet on HOME
+        assertEq(fb.bets(user1, fb.HOME()), 80 ether);
+    }
+
     /*//////////////////////////////////////////////////////////////////////////
                          Test helpers: create matches via factory
-    //////////////////////////////////////////////////////////////////////////*/
+    //////////////////////////////////////////////////////////////**/
 
     /// @notice Create a football match proxy via the factory and return the proxy and typed interface
     function _createFootballMatch(
