@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+/// @title IUFCInit
+/// @notice Interface for UFCBetting initialization and betting functions
+/// @dev Used by MatchHubBeaconFactory to encode initialization call data for BeaconProxy
 interface IUFCInit {
+    /// @notice Initializes a UFCBetting contract instance
+    /// @param owner_ Address to receive admin roles
+    /// @param token_ ERC20 token for betting
+    /// @param matchId_ Unique match identifier
+    /// @param cutoffTs_ Betting cutoff timestamp
+    /// @param feeBps_ Platform fee in basis points
+    /// @param treasury_ Address to receive fees
+    /// @param allowDraw_ Whether to enable draw betting (3 outcomes vs 2)
     function initialize(
         address owner_,
         address token_,
@@ -12,7 +23,15 @@ interface IUFCInit {
         bool allowDraw_
     ) external;
 
-    function betRed(uint256 amount) external ;
-    function betBlue(uint256 amount) external ;
-    function betDraw(uint256 amount) external ;
+    /// @notice Places a bet on Red corner fighter
+    /// @param amount Amount of tokens to stake
+    function betRed(uint256 amount) external;
+    
+    /// @notice Places a bet on Blue corner fighter
+    /// @param amount Amount of tokens to stake
+    function betBlue(uint256 amount) external;
+    
+    /// @notice Places a bet on draw (only if enabled)
+    /// @param amount Amount of tokens to stake
+    function betDraw(uint256 amount) external;
 }

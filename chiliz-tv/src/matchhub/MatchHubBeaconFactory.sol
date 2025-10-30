@@ -7,12 +7,32 @@ import "../SportBeaconRegistry.sol";
 import "../interfaces/IFootballInit.sol";
 import "../interfaces/IUFCInit.sol";
 
+/// @title MatchHubBeaconFactory
+/// @author ChilizTV
+/// @notice Factory contract for creating sport-specific match betting instances via BeaconProxy
+/// @dev Each match gets its own BeaconProxy pointing to sport-specific beacon
+///      Enables per-match instances while allowing global upgrades through beacons
+///      Only owner can create matches (typically backend service or multisig)
 contract MatchHubBeaconFactory is Ownable{
+    
+    // ----------------------------- STORAGE ------------------------------
+    
+    /// @notice Reference to the SportBeaconRegistry containing all sport beacons
     SportBeaconRegistry public immutable registry;
 
+    /// @notice Sport identifier for Football (1X2 betting)
     bytes32 public constant SPORT_FOOTBALL = keccak256("FOOTBALL");
+    
+    /// @notice Sport identifier for UFC/MMA (2-3 outcome betting)
     bytes32 public constant SPORT_UFC      = keccak256("UFC");
 
+    // ----------------------------- EVENTS -------------------------------
+    
+    /// @notice Emitted when a new match betting instance is created
+    /// @param sport Sport identifier hash
+    /// @param proxy Address of the newly created BeaconProxy
+    /// @param matchId Unique match identifier
+    /// @param owner Address granted admin roles on the match
     event MatchHubCreated(
         bytes32 indexed sport,
         address indexed proxy,
@@ -20,12 +40,28 @@ contract MatchHubBeaconFactory is Ownable{
         address owner
     );
 
+    // --------------------------- CONSTRUCTOR ----------------------------
+    
+    /// @notice Initializes the factory with owner and registry
+    /// @param initialOwner Address that can create matches (recommended: backend service or multisig)
+    /// @param registryAddr Address of the SportBeaconRegistry
     constructor(address initialOwner, address registryAddr) Ownable(initialOwner) {
         require(registryAddr != address(0), "REGISTRY_ZERO");
         registry = SportBeaconRegistry(registryAddr);
     }
 
-    /// FOOTBALL (1x2)
+    // ----------------------- MATCH CREATION FUNCTIONS -------------------
+    
+    /// @notice Creates a new Football match betting instance
+    /// @dev Creates BeaconProxy pointing to Football beacon with 1X2 outcomes
+    ///      Reverts if Football beacon not set in registry
+    /// @param owner_ Address to receive admin roles on the match
+    /// @param token_ ERC20 token for betting
+    /// @param matchId_ Unique match identifier
+    /// @param cutoffTs_ Betting cutoff timestamp
+    /// @param feeBps_ Platform fee in basis points
+    /// @param treasury_ Address to receive fees
+    /// @return proxy Address of the created BeaconProxy
     function createFootballMatch(
         address owner_,
         address token_,
@@ -46,7 +82,17 @@ contract MatchHubBeaconFactory is Ownable{
         emit MatchHubCreated(SPORT_FOOTBALL, proxy, matchId_, owner_);
     }
 
-    /// UFC (2 ou 3 issues selon allowDraw)
+    /// @notice Creates a new UFC/MMA match betting instance
+    /// @dev Creates BeaconProxy pointing to UFC beacon with 2 or 3 outcomes
+    ///      Reverts if UFC beacon not set in registry
+    /// @param owner_ Address to receive admin roles on the match
+    /// @param token_ ERC20 token for betting
+    /// @param matchId_ Unique match identifier
+    /// @param cutoffTs_ Betting cutoff timestamp
+    /// @param feeBps_ Platform fee in basis points
+    /// @param treasury_ Address to receive fees
+    /// @param allowDraw_ If true, enables 3 outcomes (RED/BLUE/DRAW); if false, 2 outcomes (RED/BLUE)
+    /// @return proxy Address of the created BeaconProxy
     function createUFCMatch(
         address owner_,
         address token_,
