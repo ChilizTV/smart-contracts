@@ -6,56 +6,27 @@ import "../src/matchhub/MatchHubBeaconFactory.sol";
 import "../src/SportBeaconRegistry.sol";
 import "../src/betting/FootballBetting.sol";
 import "../src/betting/MatchBettingBase.sol";
-import "../src/MockERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
+import "./mocks/MockV3Aggregator.sol";
 
 // Helper contract to test initialization with custom outcome counts
 contract MatchBettingBaseTestHelper is MatchBettingBase {
     function initWithOutcomes(
         address owner_,
-        address token_,
+        address priceFeed_,
         bytes32 matchId_,
         uint8 outcomes_,
         uint64 cutoffTs_,
         uint16 feeBps_,
-        address treasury_
+        address treasury_,
+        uint256 minBetUsd_
     ) external initializer {
-        initializeBase(owner_, token_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_);
+        initializeBase(owner_, priceFeed_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetUsd_);
     }
 }
 
-// Mock contract that rejects token transfers
+// Mock contract that rejects native CHZ transfers
 contract MockRejectingReceiver {
-    // This will cause token transfers to fail
-}
-
-// Mock ERC20 that can be set to fail transfers
-contract MockFailingERC20 is ERC20, ERC20Permit {
-    bool public shouldFail;
-
-    constructor() ERC20("FailToken", "FAIL") ERC20Permit("FailToken") {
-        shouldFail = false;
-        _mint(msg.sender, 1_000_000 ether);
-    }
-
-    function setShouldFail(bool _shouldFail) external {
-        shouldFail = _shouldFail;
-    }
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-
-    function transferFrom(address from, address to, uint256 amount) public virtual override returns (bool) {
-        if (shouldFail) return false;
-        return super.transferFrom(from, to, amount);
-    }
-
-    function transfer(address to, uint256 amount) public virtual override returns (bool) {
-        if (shouldFail) return false;
-        return super.transfer(to, amount);
-    }
+    // This will cause native transfers to fail by not having receive() or fallback()
 }
 
 contract MatchBettingBaseTest is Test {
@@ -75,9 +46,9 @@ contract MatchBettingBaseTest is Test {
     address bettor3 = makeAddr("BETTOR3");
     address oracle = makeAddr("ORACLE");
 
-    MockERC20 public token;
+    MockV3Aggregator public priceFeed;
 
-    event BetPlaced(address indexed user, uint8 indexed outcome, uint256 amount);
+    event BetPlaced(address indexed user, uint8 indexed outcome, uint256 amountChz, uint256 amountUsd);
     event Settled(uint8 indexed winningOutcome, uint256 totalPool, uint256 feeAmount);
     event Claimed(address indexed user, uint256 payout);
     event CutoffUpdated(uint64 newCutoff);
@@ -93,15 +64,33 @@ contract MatchBettingBaseTest is Test {
     error NothingToClaim();
     error ZeroAddress();
     error TooManyOutcomes();
+    error BetBelowMinimum();
+    error ZeroBet();
+    error TransferFailed();
+
+    uint256 constant MIN_BET_USD = 5e8; // $5 minimum bet (8 decimals)
 
     function setUp() public {
+        // Reset timestamp to a known value for consistent testing
+        vm.warp(1000000); // Start at a reasonable timestamp
+        
         vm.startPrank(admin);
+        
+        // Deploy mock price feed: CHZ/USD = $0.10 (10 cents per CHZ)
+        priceFeed = new MockV3Aggregator(8, 10e6); // 8 decimals, $0.10
+        
         registry = new SportBeaconRegistry(admin);
         footballImpl = new FootballBetting();
         registry.setSportImplementation(SPORT_FOOTBALL, address(footballImpl));
-        factory = new MatchHubBeaconFactory(admin, address(registry));
-        token = new MockERC20();
+        factory = new MatchHubBeaconFactory(admin, address(registry), address(priceFeed), treasury, MIN_BET_USD);
+        
         vm.stopPrank();
+        
+        // Fund test accounts with CHZ
+        vm.deal(bettor1, 10000 ether);
+        vm.deal(bettor2, 10000 ether);
+        vm.deal(bettor3, 10000 ether);
+        vm.deal(admin, 10000 ether);
     }
 
     function testInitialPoolZero() public {
@@ -125,22 +114,15 @@ contract MatchBettingBaseTest is Test {
         uint16 feeBps = 200;
 
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
-
-        // place bets
-        token.mint(bettor1, 1000 ether);
-        token.mint(bettor2, 1000 ether);
-
         vm.stopPrank();
 
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether); // Bet on home
-        vm.stopPrank();
+        // Place bets with native CHZ
+        // Min bet is $5, CHZ = $0.10, so min is 50 CHZ
+        vm.prank(bettor1);
+        fb.betHome{value: 500 ether}(); // Bet 500 CHZ on home ($50)
 
-        vm.startPrank(bettor2);
-        token.approve(address(fb), 300 ether);
-        fb.betDraw(300 ether); // Bet on draw
-        vm.stopPrank();
+        vm.prank(bettor2);
+        fb.betDraw{value: 300 ether}(); // Bet 300 CHZ on draw ($30)
 
         // total pool must reflect bets
         assertEq(fb.totalPoolAmount(), 800 ether);
@@ -161,7 +143,7 @@ contract MatchBettingBaseTest is Test {
         fb.claim();
 
         // Bettor1 should have received payout
-        assertTrue(token.balanceOf(bettor1) > 500 ether);
+        assertTrue(bettor1.balance > 500 ether);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -176,7 +158,7 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
-        assertEq(address(fb.betToken()), address(token));
+        assertEq(address(fb.priceFeed()), address(priceFeed));
         assertEq(fb.treasury(), treasury);
         assertEq(fb.matchId(), matchId);
         assertEq(fb.cutoffTs(), cutoff);
@@ -208,16 +190,12 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-
+        // CHZ price is $0.10, so 100 CHZ = $10 USD (10e8 in 8 decimals = 1000000000)
         vm.expectEmit(true, true, false, true);
-        emit BetPlaced(bettor1, 0, 100 ether);
+        emit BetPlaced(bettor1, 0, 100 ether, 1000000000); // 100 CHZ, $10 USD
 
-        fb.betHome(100 ether);
-        vm.stopPrank();
+        vm.prank(bettor1);
+        fb.betHome{value: 100 ether}();
 
         assertEq(fb.pool(0), 100 ether);
         assertEq(fb.bets(bettor1, 0), 100 ether);
@@ -231,15 +209,10 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-
         vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-
-        fb.betHome(100 ether);
-        fb.betHome(200 ether);
-        fb.betDraw(50 ether);
-
+        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 200 ether}();
+        fb.betDraw{value: 50 ether}();
         vm.stopPrank();
 
         assertEq(fb.bets(bettor1, 0), 300 ether); // Home bets accumulate
@@ -254,27 +227,16 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-        token.mint(bettor2, 1000 ether);
-        token.mint(bettor3, 1000 ether);
-
         // Bettor1 bets on Home
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 300 ether);
-        fb.betHome(300 ether);
-        vm.stopPrank();
+        vm.prank(bettor1);
+        fb.betHome{value: 300 ether}();
 
         // Bettor2 bets on Draw
-        vm.startPrank(bettor2);
-        token.approve(address(fb), 200 ether);
-        fb.betDraw(200 ether);
-        vm.stopPrank();
+        vm.prank(bettor2);
+        fb.betDraw{value: 200 ether}();
 
         // Bettor3 bets on Away
-        vm.startPrank(bettor3);
-        token.approve(address(fb), 100 ether);
-        fb.betAway(100 ether);
-        vm.stopPrank();
+        fb.betAway{value: 100 ether}();
 
         assertEq(fb.pool(0), 300 ether);
         assertEq(fb.pool(1), 200 ether);
@@ -289,17 +251,12 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-
         // Fast forward past cutoff
         vm.warp(cutoff + 1);
 
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        
         vm.expectRevert(BettingClosed.selector);
-        fb.betHome(100 ether);
-        vm.stopPrank();
+        vm.prank(bettor1);
+        fb.betHome{value: 100 ether}();
     }
 
     function testRevertBetZeroAmount() public {
@@ -309,14 +266,9 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        
-        vm.expectRevert(InvalidParam.selector);
-        fb.betHome(0);
-        vm.stopPrank();
+        vm.expectRevert(ZeroBet.selector);
+        vm.prank(bettor1);
+        fb.betHome{value: 0}();
     }
 
     function testRevertBetInvalidOutcome() public {
@@ -326,29 +278,25 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        
         // Football only has 3 outcomes (0, 1, 2), so this should fail
         // But we can't call placeBet directly as it's internal
         // Skip this test or test via the wrapper behavior
-        vm.stopPrank();
     }
 
-    function testRevertBetInsufficientAllowance() public {
-        bytes32 matchId = keccak256("NO_ALLOWANCE");
+    function testRevertBetInsufficientFunds() public {
+        bytes32 matchId = keccak256("NO_FUNDS");
         uint64 cutoff = uint64(block.timestamp + 1 days);
 
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
+        // Create a new address with insufficient funds
+        address poorBettor = makeAddr("POOR_BETTOR");
+        vm.deal(poorBettor, 50 ether); // Only 50 CHZ, trying to bet 100
 
-        vm.prank(bettor1);
         vm.expectRevert();
-        fb.betHome(100 ether);
+        vm.prank(poorBettor);
+        fb.betHome{value: 100 ether}();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -364,11 +312,8 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
         // Place some bets
-        token.mint(bettor1, 1000 ether);
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether);
-        vm.stopPrank();
+        vm.prank(bettor1);
+        fb.betHome{value: 500 ether}();
 
         // Fast forward and settle
         vm.warp(cutoff + 1);
@@ -444,17 +389,13 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
         // Setup bets
-        token.mint(bettor1, 1000 ether);
-        token.mint(bettor2, 1000 ether);
 
         vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether);
+        fb.betHome{value: 500 ether}();
         vm.stopPrank();
 
         vm.startPrank(bettor2);
-        token.approve(address(fb), 300 ether);
-        fb.betDraw(300 ether);
+        fb.betDraw{value: 300 ether}();
         vm.stopPrank();
 
         // Settle with Home win
@@ -462,15 +403,15 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         fb.settle(0);
 
-        uint256 balanceBefore = token.balanceOf(bettor1);
-        uint256 treasuryBefore = token.balanceOf(treasury);
+        uint256 balanceBefore = bettor1.balance;
+        uint256 treasuryBefore = treasury.balance;
 
         // Claim
         vm.prank(bettor1);
         fb.claim();
 
-        uint256 balanceAfter = token.balanceOf(bettor1);
-        uint256 treasuryAfter = token.balanceOf(treasury);
+        uint256 balanceAfter = bettor1.balance;
+        uint256 treasuryAfter = treasury.balance;
 
         // Check payout received
         assertTrue(balanceAfter > balanceBefore);
@@ -494,23 +435,17 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
         // Multiple winners betting on same outcome
-        token.mint(bettor1, 1000 ether);
-        token.mint(bettor2, 1000 ether);
-        token.mint(bettor3, 1000 ether);
 
         vm.startPrank(bettor1);
-        token.approve(address(fb), 300 ether);
-        fb.betHome(300 ether);
+        fb.betHome{value: 300 ether}();
         vm.stopPrank();
 
         vm.startPrank(bettor2);
-        token.approve(address(fb), 200 ether);
-        fb.betHome(200 ether);
+        fb.betHome{value: 200 ether}();
         vm.stopPrank();
 
         vm.startPrank(bettor3);
-        token.approve(address(fb), 100 ether);
-        fb.betDraw(100 ether);
+        fb.betDraw{value: 100 ether}();
         vm.stopPrank();
 
         // Settle with Home win
@@ -518,8 +453,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         fb.settle(0);
 
-        uint256 bal1Before = token.balanceOf(bettor1);
-        uint256 bal2Before = token.balanceOf(bettor2);
+        uint256 bal1Before = bettor1.balance;
+        uint256 bal2Before = bettor2.balance;
 
         // Both bettor1 and bettor2 should claim proportional shares
         vm.prank(bettor1);
@@ -528,8 +463,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(bettor2);
         fb.claim();
 
-        uint256 payout1 = token.balanceOf(bettor1) - bal1Before;
-        uint256 payout2 = token.balanceOf(bettor2) - bal2Before;
+        uint256 payout1 = bettor1.balance - bal1Before;
+        uint256 payout2 = bettor2.balance - bal2Before;
         
         // Both should have received payouts
         assertTrue(payout1 > 0, "Bettor1 should have received payout");
@@ -546,10 +481,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
         vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        fb.betHome(100 ether);
+        fb.betHome{value: 100 ether}();
 
         vm.expectRevert(NotSettled.selector);
         fb.claim();
@@ -563,10 +496,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
         vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        fb.betHome(100 ether);
+        fb.betHome{value: 100 ether}();
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
@@ -588,10 +519,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
         vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        fb.betDraw(100 ether); // Bet on draw
+        fb.betDraw{value: 100 ether}(); // Bet on draw
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
@@ -751,12 +680,10 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         fb.pause();
 
-        token.mint(bettor1, 1000 ether);
         vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
         
         vm.expectRevert();
-        fb.betHome(100 ether);
+        fb.betHome{value: 100 ether}();
         vm.stopPrank();
     }
 
@@ -784,17 +711,13 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         // Everyone bets on Draw
-        token.mint(bettor1, 1000 ether);
-        token.mint(bettor2, 1000 ether);
 
         vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betDraw(500 ether);
+        fb.betDraw{value: 500 ether}();
         vm.stopPrank();
 
         vm.startPrank(bettor2);
-        token.approve(address(fb), 300 ether);
-        fb.betDraw(300 ether);
+        fb.betDraw{value: 300 ether}();
         vm.stopPrank();
 
         // Settle with Home win (no winners)
@@ -802,14 +725,14 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         fb.settle(0);
 
-        uint256 treasuryBefore = token.balanceOf(treasury);
-        uint256 contractBalance = token.balanceOf(address(fb));
+        uint256 treasuryBefore = treasury.balance;
+        uint256 contractBalance = address(fb).balance;
 
         vm.prank(admin);
         fb.sweepIfNoWinners();
 
-        assertEq(token.balanceOf(treasury), treasuryBefore + contractBalance);
-        assertEq(token.balanceOf(address(fb)), 0);
+        assertEq(treasury.balance, treasuryBefore + contractBalance);
+        assertEq(address(fb).balance, 0);
     }
 
     function testRevertSweepWithWinners() public {
@@ -819,10 +742,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
         vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether);
+        fb.betHome{value: 500 ether}();
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
@@ -846,10 +767,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
-        token.mint(bettor1, 1000 ether);
         vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether);
+        fb.betHome{value: 500 ether}();
         vm.stopPrank();
 
         // Before settlement
@@ -873,7 +792,8 @@ contract MatchBettingBaseTest is Test {
         fb.claim();
         
         // Check that bettor1 received their payout
-        assertEq(token.balanceOf(bettor1), 500 ether + 490 ether);
+        // bettor1 started with 10000 ether, bet 500 ether, won back 490 ether (after 2% fee)
+        assertEq(bettor1.balance, 9990 ether);
     }
 
     function testTotalPoolAmount() public {
@@ -885,19 +805,15 @@ contract MatchBettingBaseTest is Test {
 
         assertEq(fb.totalPoolAmount(), 0);
 
-        token.mint(bettor1, 1000 ether);
-        token.mint(bettor2, 1000 ether);
 
         vm.startPrank(bettor1);
-        token.approve(address(fb), 300 ether);
-        fb.betHome(300 ether);
+        fb.betHome{value: 300 ether}();
         vm.stopPrank();
 
         assertEq(fb.totalPoolAmount(), 300 ether);
 
         vm.startPrank(bettor2);
-        token.approve(address(fb), 200 ether);
-        fb.betAway(200 ether);
+        fb.betAway{value: 200 ether}();
         vm.stopPrank();
 
         assertEq(fb.totalPoolAmount(), 500 ether);
@@ -913,25 +829,27 @@ contract MatchBettingBaseTest is Test {
         
         vm.prank(admin);
         vm.expectRevert(ZeroAddress.selector);
-        factory.createFootballMatch(address(0), address(token), matchId, cutoff, 200, treasury);
+        factory.createFootballMatch(address(0), address(priceFeed), matchId, cutoff, 200, treasury, MIN_BET_USD);
     }
 
-    function testRevertInitWithZeroToken() public {
-        bytes32 matchId = keccak256("ZERO_TOKEN");
+    function testRevertInitWithZeroPriceFeed() public {
+        bytes32 matchId = keccak256("ZERO_PRICEFEED");
         uint64 cutoff = uint64(block.timestamp + 1 days);
         
+        // This should succeed because address(0) means use factory default
         vm.prank(admin);
-        vm.expectRevert(ZeroAddress.selector);
-        factory.createFootballMatch(admin, address(0), matchId, cutoff, 200, treasury);
+        address proxy = factory.createFootballMatch(admin, address(0), matchId, cutoff, 200, address(0), 0);
+        assertTrue(proxy != address(0));
     }
 
     function testRevertInitWithZeroTreasury() public {
         bytes32 matchId = keccak256("ZERO_TREASURY");
         uint64 cutoff = uint64(block.timestamp + 1 days);
         
+        // address(0) for treasury means use factory default, so this should succeed
         vm.prank(admin);
-        vm.expectRevert(ZeroAddress.selector);
-        factory.createFootballMatch(admin, address(token), matchId, cutoff, 200, address(0));
+        address proxy = factory.createFootballMatch(admin, address(priceFeed), matchId, cutoff, 200, address(0), MIN_BET_USD);
+        assertTrue(proxy != address(0));
     }
 
     function testRevertInitWithTooFewOutcomes() public {
@@ -943,7 +861,7 @@ contract MatchBettingBaseTest is Test {
         MatchBettingBaseTestHelper testHelper = new MatchBettingBaseTestHelper();
         
         vm.expectRevert(TooManyOutcomes.selector);
-        testHelper.initWithOutcomes(admin, address(token), matchId, 1, cutoff, 200, treasury);
+        testHelper.initWithOutcomes(admin, address(priceFeed), matchId, 1, cutoff, 200, treasury, MIN_BET_USD);
     }
 
     function testRevertInitWithTooManyOutcomes() public {
@@ -955,7 +873,7 @@ contract MatchBettingBaseTest is Test {
         MatchBettingBaseTestHelper testHelper = new MatchBettingBaseTestHelper();
         
         vm.expectRevert(TooManyOutcomes.selector);
-        testHelper.initWithOutcomes(admin, address(token), matchId, 17, cutoff, 200, treasury);
+        testHelper.initWithOutcomes(admin, address(priceFeed), matchId, 17, cutoff, 200, treasury, MIN_BET_USD);
     }
 
     function testRevertInitWithZeroCutoff() public {
@@ -963,7 +881,7 @@ contract MatchBettingBaseTest is Test {
         
         vm.prank(admin);
         vm.expectRevert(InvalidParam.selector);
-        factory.createFootballMatch(admin, address(token), matchId, 0, 200, treasury);
+        factory.createFootballMatch(admin, address(priceFeed), matchId, 0, 200, treasury, MIN_BET_USD);
     }
 
     function testRevertInitWithExcessiveFeeBps() public {
@@ -972,37 +890,23 @@ contract MatchBettingBaseTest is Test {
         
         vm.prank(admin);
         vm.expectRevert(InvalidParam.selector);
-        factory.createFootballMatch(admin, address(token), matchId, cutoff, 1001, treasury); // > 1000 bps (10%)
+        factory.createFootballMatch(admin, address(priceFeed), matchId, cutoff, 1001, treasury, MIN_BET_USD); // > 1000 bps (10%)
     }
 
     /*//////////////////////////////////////////////////////////////
                     TRANSFER FAILURE TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function testRevertBetTransferFromFailure() public {
-        bytes32 matchId = keccak256("TRANSFER_FAIL");
+    function testRevertBetWithMsgValueZero() public {
+        bytes32 matchId = keccak256("ZERO_VALUE");
         uint64 cutoff = uint64(block.timestamp + 1 days);
 
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        token.mint(bettor1, 1000 ether);
-        
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 100 ether);
-        
-        // Mock the token to return false on transferFrom
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(token.transferFrom.selector, bettor1, address(fb), 100 ether),
-            abi.encode(false)
-        );
-        
-        vm.expectRevert("TRANSFER_FROM_FAILED");
-        fb.betHome(100 ether);
-        vm.stopPrank();
-
-        vm.clearMockedCalls();
+        vm.expectRevert(ZeroBet.selector);
+        vm.prank(bettor1);
+        fb.betHome{value: 0}();
     }
 
     function testRevertClaimFeeTransferFailure() public {
@@ -1015,95 +919,68 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, address(rejectingTreasury));
 
-        token.mint(bettor1, 1000 ether);
 
         vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether);
+        fb.betHome{value: 500 ether}();
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
         vm.prank(admin);
         fb.settle(0);
 
-        // Mock the token to fail on transfer to treasury
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(token.transfer.selector, address(rejectingTreasury)),
-            abi.encode(false)
-        );
-
+        // With native CHZ, the treasury (rejectingTreasury) will revert on receive
         vm.prank(bettor1);
-        vm.expectRevert("FEE_TRANSFER_FAILED");
+        vm.expectRevert(TransferFailed.selector);
         fb.claim();
-
-        vm.clearMockedCalls();
     }
 
     function testRevertClaimPayoutTransferFailure() public {
         bytes32 matchId = keccak256("PAYOUT_TRANSFER_FAIL");
         uint64 cutoff = uint64(block.timestamp + 1 days);
 
+        // Use a rejecting receiver as bettor
+        MockRejectingReceiver rejectingBettor = new MockRejectingReceiver();
+        vm.deal(address(rejectingBettor), 1000 ether);
+
         vm.prank(admin);
-        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 0, treasury); // 0 fee to skip fee transfer
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 0, treasury);
 
-        token.mint(bettor1, 1000 ether);
-
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betHome(500 ether);
-        vm.stopPrank();
+        vm.prank(address(rejectingBettor));
+        fb.betHome{value: 500 ether}();
 
         vm.warp(cutoff + 1);
         vm.prank(admin);
         fb.settle(0);
 
-        // Mock the token to fail on transfer to bettor
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(token.transfer.selector, bettor1),
-            abi.encode(false)
-        );
-
-        vm.prank(bettor1);
-        vm.expectRevert("PAYOUT_TRANSFER_FAILED");
+        // When rejectingBettor tries to claim, transfer will fail
+        vm.prank(address(rejectingBettor));
+        vm.expectRevert(TransferFailed.selector);
         fb.claim();
-
-        vm.clearMockedCalls();
     }
 
     function testRevertSweepTransferFailure() public {
         bytes32 matchId = keccak256("SWEEP_TRANSFER_FAIL");
         uint64 cutoff = uint64(block.timestamp + 1 days);
 
-        vm.prank(admin);
-        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
+        // Use a rejecting receiver as treasury
+        MockRejectingReceiver rejectingTreasury = new MockRejectingReceiver();
 
-        token.mint(bettor1, 1000 ether);
+        vm.prank(admin);
+        (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, address(rejectingTreasury));
 
         // Bet on outcome 1 (draw)
-        vm.startPrank(bettor1);
-        token.approve(address(fb), 500 ether);
-        fb.betDraw(500 ether);
-        vm.stopPrank();
+        vm.prank(bettor1);
+        fb.betDraw{value: 500 ether}();
 
         // Settle with outcome 0 (home wins) - no winners
         vm.warp(cutoff + 1);
         vm.prank(admin);
         fb.settle(0);
 
-        // Mock the token to fail on transfer to treasury
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(token.transfer.selector, treasury),
-            abi.encode(false)
-        );
-
+        // Sweep should fail because treasury rejects payments
         vm.prank(admin);
-        vm.expectRevert("SWEEP_FAILED");
+        vm.expectRevert(TransferFailed.selector);
         fb.sweepIfNoWinners();
-
-        vm.clearMockedCalls();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1117,7 +994,7 @@ contract MatchBettingBaseTest is Test {
         uint16 feeBps_,
         address treasury_
     ) internal returns (address proxy, FootballBetting fb) {
-        proxy = factory.createFootballMatch(owner_, address(token), matchId_, cutoffTs_, feeBps_, treasury_);
+        proxy = factory.createFootballMatch(owner_, address(priceFeed), matchId_, cutoffTs_, feeBps_, treasury_, MIN_BET_USD);
         fb = FootballBetting(payable(proxy));
     }
 }

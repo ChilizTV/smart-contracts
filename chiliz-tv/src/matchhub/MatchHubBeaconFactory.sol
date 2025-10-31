@@ -19,6 +19,15 @@ contract MatchHubBeaconFactory is Ownable{
     
     /// @notice Reference to the SportBeaconRegistry containing all sport beacons
     SportBeaconRegistry public immutable registry;
+    
+    /// @notice Chainlink price feed for CHZ/USD conversion
+    address public immutable priceFeed;
+    
+    /// @notice Address receiving platform fees
+    address public immutable treasury;
+    
+    /// @notice Minimum bet amount in USD (8 decimals)
+    uint256 public immutable minBetUsd;
 
     /// @notice Sport identifier for Football (1X2 betting)
     bytes32 public constant SPORT_FOOTBALL = keccak256("FOOTBALL");
@@ -42,75 +51,106 @@ contract MatchHubBeaconFactory is Ownable{
 
     // --------------------------- CONSTRUCTOR ----------------------------
     
-    /// @notice Initializes the factory with owner and registry
+    /// @notice Initializes the factory with owner, registry, price feed and default parameters
     /// @param initialOwner Address that can create matches (recommended: backend service or multisig)
     /// @param registryAddr Address of the SportBeaconRegistry
-    constructor(address initialOwner, address registryAddr) Ownable(initialOwner) {
+    /// @param priceFeedAddr Chainlink price feed address for CHZ/USD
+    /// @param treasuryAddr Address to receive platform fees
+    /// @param minBetUsd_ Minimum bet amount in USD (8 decimals, e.g., 5e8 = $5)
+    constructor(
+        address initialOwner,
+        address registryAddr,
+        address priceFeedAddr,
+        address treasuryAddr,
+        uint256 minBetUsd_
+    ) Ownable(initialOwner) {
         require(registryAddr != address(0), "REGISTRY_ZERO");
+        require(priceFeedAddr != address(0), "PRICEFEED_ZERO");
+        require(treasuryAddr != address(0), "TREASURY_ZERO");
         registry = SportBeaconRegistry(registryAddr);
+        priceFeed = priceFeedAddr;
+        treasury = treasuryAddr;
+        minBetUsd = minBetUsd_;
     }
 
     // ----------------------- MATCH CREATION FUNCTIONS -------------------
     
-    /// @notice Creates a new Football match betting instance
+    /// @notice Creates a new Football match betting instance with native CHZ
     /// @dev Creates BeaconProxy pointing to Football beacon with 1X2 outcomes
     ///      Reverts if Football beacon not set in registry
+    ///      Uses factory's default priceFeed, treasury, and minBetUsd
     /// @param owner_ Address to receive admin roles on the match
-    /// @param token_ ERC20 token for betting
+    /// @param priceFeedOverride_ Optional price feed override (use address(0) for default)
     /// @param matchId_ Unique match identifier
     /// @param cutoffTs_ Betting cutoff timestamp
     /// @param feeBps_ Platform fee in basis points
-    /// @param treasury_ Address to receive fees
+    /// @param treasuryOverride_ Optional treasury override (use address(0) for default)
+    /// @param minBetUsdOverride_ Optional minimum bet override (use 0 for default)
     /// @return proxy Address of the created BeaconProxy
     function createFootballMatch(
         address owner_,
-        address token_,
+        address priceFeedOverride_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
-        address treasury_
+        address treasuryOverride_,
+        uint256 minBetUsdOverride_
     ) external onlyOwner returns (address proxy) {
         address beacon = registry.getBeacon(SPORT_FOOTBALL);
         require(beacon != address(0), "FOOTBALL_BEACON_NOT_SET");
 
-        bytes memory initData = abi.encodeWithSelector(
+        proxy = address(new BeaconProxy(beacon, abi.encodeWithSelector(
             IFootballInit.initialize.selector,
-            owner_, token_, matchId_, cutoffTs_, feeBps_, treasury_
-        );
-
-        proxy = address(new BeaconProxy(beacon, initData));
+            owner_,
+            priceFeedOverride_ != address(0) ? priceFeedOverride_ : priceFeed,
+            matchId_,
+            cutoffTs_,
+            feeBps_,
+            treasuryOverride_ != address(0) ? treasuryOverride_ : treasury,
+            minBetUsdOverride_ != 0 ? minBetUsdOverride_ : minBetUsd
+        )));
+        
         emit MatchHubCreated(SPORT_FOOTBALL, proxy, matchId_, owner_);
     }
 
-    /// @notice Creates a new UFC/MMA match betting instance
+    /// @notice Creates a new UFC/MMA match betting instance with native CHZ
     /// @dev Creates BeaconProxy pointing to UFC beacon with 2 or 3 outcomes
     ///      Reverts if UFC beacon not set in registry
+    ///      Uses factory's default priceFeed, treasury, and minBetUsd
     /// @param owner_ Address to receive admin roles on the match
-    /// @param token_ ERC20 token for betting
+    /// @param priceFeedOverride_ Optional price feed override (use address(0) for default)
     /// @param matchId_ Unique match identifier
     /// @param cutoffTs_ Betting cutoff timestamp
     /// @param feeBps_ Platform fee in basis points
-    /// @param treasury_ Address to receive fees
+    /// @param treasuryOverride_ Optional treasury override (use address(0) for default)
+    /// @param minBetUsdOverride_ Optional minimum bet override (use 0 for default)
     /// @param allowDraw_ If true, enables 3 outcomes (RED/BLUE/DRAW); if false, 2 outcomes (RED/BLUE)
     /// @return proxy Address of the created BeaconProxy
     function createUFCMatch(
         address owner_,
-        address token_,
+        address priceFeedOverride_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
-        address treasury_,
+        address treasuryOverride_,
+        uint256 minBetUsdOverride_,
         bool allowDraw_
     ) external onlyOwner returns (address proxy) {
         address beacon = registry.getBeacon(SPORT_UFC);
         require(beacon != address(0), "UFC_BEACON_NOT_SET");
 
-        bytes memory initData = abi.encodeWithSelector(
+        proxy = address(new BeaconProxy(beacon, abi.encodeWithSelector(
             IUFCInit.initialize.selector,
-            owner_, token_, matchId_, cutoffTs_, feeBps_, treasury_, allowDraw_
-        );
-
-        proxy = address(new BeaconProxy(beacon, initData));
+            owner_,
+            priceFeedOverride_ != address(0) ? priceFeedOverride_ : priceFeed,
+            matchId_,
+            cutoffTs_,
+            feeBps_,
+            treasuryOverride_ != address(0) ? treasuryOverride_ : treasury,
+            minBetUsdOverride_ != 0 ? minBetUsdOverride_ : minBetUsd,
+            allowDraw_
+        )));
+        
         emit MatchHubCreated(SPORT_UFC, proxy, matchId_, owner_);
     }
 }

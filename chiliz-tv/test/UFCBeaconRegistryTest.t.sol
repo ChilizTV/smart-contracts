@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "../src/matchhub/MatchHubBeaconFactory.sol";
 import "../src/SportBeaconRegistry.sol";
 import "../src/betting/UFCBetting.sol";
-import "../src/MockERC20.sol";
+import "./mocks/MockV3Aggregator.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 contract UFCBeaconRegistryTest is Test {
@@ -22,19 +22,29 @@ contract UFCBeaconRegistryTest is Test {
     address public user1 = makeAddr("USER1");
     address public user2 = makeAddr("USER2");
 
-    MockERC20 public token;
+    MockV3Aggregator public priceFeed;
+    uint256 constant MIN_BET_USD = 5e8;
 
     function setUp() public {
+        // Reset timestamp to a known value for consistent testing
+        vm.warp(1000000); // Start at a reasonable timestamp
+        
         vm.startPrank(admin);
-        // deploy registry and implementation, register beacon and deploy factory
+        
+        // Deploy mock price feed first: CHZ/USD = $0.10 (10 cents per CHZ)
+        priceFeed = new MockV3Aggregator(8, 10e6); // 8 decimals, $0.10
+        
+        // Fund test users with native CHZ
+        vm.deal(user1, 10000 ether);
+        vm.deal(user2, 10000 ether);
+        
+        // Deploy registry and implementation, register beacon and deploy factory
         registry = new SportBeaconRegistry(admin);
 
         ufcImpl = new UFCBetting();
         registry.setSportImplementation(SPORT_UFC, address(ufcImpl));
 
-        factory = new MatchHubBeaconFactory(admin, address(registry));
-
-        token = new MockERC20();
+        factory = new MatchHubBeaconFactory(admin, address(registry), address(priceFeed), treasury, MIN_BET_USD);
 
         vm.stopPrank();
     }
@@ -49,11 +59,12 @@ contract UFCBeaconRegistryTest is Test {
 
         address proxy = factory.createUFCMatch(
             admin,
-            address(token),
+            address(0), // use factory default priceFeed
             matchId,
             cutoff,
             feeBps,
-            treasury,
+            address(0), // use factory default treasury
+            0, // use factory default minBetUsd
             allowDraw
         );
 
@@ -104,10 +115,8 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.RED()), 100 ether);
@@ -121,10 +130,8 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        token.mint(user1, 150 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 150 ether);
-        ufc.betBlue(150 ether);
+        ufc.betBlue{value: 150 ether}();
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.BLUE()), 150 ether);
@@ -138,10 +145,8 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, true);
         vm.stopPrank();
 
-        token.mint(user1, 50 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 50 ether);
-        ufc.betDraw(50 ether);
+        ufc.betDraw{value: 50 ether}();
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.DRAW()), 50 ether);
@@ -154,11 +159,9 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        token.mint(user1, 50 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 50 ether);
         vm.expectRevert("DRAW_DISABLED");
-        ufc.betDraw(50 ether);
+        ufc.betDraw{value: 50 ether}();
         vm.stopPrank();
     }
 
@@ -170,17 +173,13 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         // user1 bets on RED
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         // user2 bets on BLUE
-        token.mint(user2, 200 ether);
         vm.startPrank(user2);
-        token.approve(proxy, 200 ether);
-        ufc.betBlue(200 ether);
+        ufc.betBlue{value: 200 ether}();
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.RED()), 100 ether);
@@ -196,17 +195,13 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         // Place bets
-        token.mint(user1, 100 ether);
-        token.mint(user2, 100 ether);
 
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         vm.startPrank(user2);
-        token.approve(proxy, 100 ether);
-        ufc.betBlue(100 ether);
+        ufc.betBlue{value: 100 ether}();
         vm.stopPrank();
 
         // Settle
@@ -227,17 +222,13 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         // user1 bets on RED, user2 bets on BLUE
-        token.mint(user1, 100 ether);
-        token.mint(user2, 100 ether);
 
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         vm.startPrank(user2);
-        token.approve(proxy, 100 ether);
-        ufc.betBlue(100 ether);
+        ufc.betBlue{value: 100 ether}();
         vm.stopPrank();
 
         // Settle with RED winning
@@ -247,10 +238,10 @@ contract UFCBeaconRegistryTest is Test {
         ufc.settle(redOutcome);
 
         // user1 claims
-        uint256 balanceBefore = token.balanceOf(user1);
+        uint256 balanceBefore = user1.balance;
         vm.prank(user1);
         ufc.claim();
-        uint256 balanceAfter = token.balanceOf(user1);
+        uint256 balanceAfter = user1.balance;
 
         // user1 gets total pool minus fee (200 - 2% = 196)
         assertEq(balanceAfter - balanceBefore, 196 ether);
@@ -264,12 +255,10 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         // Multiple bets on different outcomes
-        token.mint(user1, 300 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 300 ether);
-        ufc.betRed(100 ether);
-        ufc.betBlue(100 ether);
-        ufc.betDraw(100 ether);
+        ufc.betRed{value: 100 ether}();
+        ufc.betBlue{value: 100 ether}();
+        ufc.betDraw{value: 100 ether}();
         vm.stopPrank();
 
         // Settle with DRAW
@@ -279,10 +268,10 @@ contract UFCBeaconRegistryTest is Test {
         ufc.settle(drawOutcome);
 
         // user1 claims (only gets payout for DRAW bet)
-        uint256 balanceBefore = token.balanceOf(user1);
+        uint256 balanceBefore = user1.balance;
         vm.prank(user1);
         ufc.claim();
-        uint256 balanceAfter = token.balanceOf(user1);
+        uint256 balanceAfter = user1.balance;
 
         // Total pool is 300, fee is 6 (2%), distributable is 294
         // user1 has 100% of DRAW pool, so gets all 294
@@ -299,11 +288,9 @@ contract UFCBeaconRegistryTest is Test {
         // Warp past cutoff
         vm.warp(cutoff + 1);
 
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
         vm.expectRevert();
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
     }
 
@@ -316,7 +303,7 @@ contract UFCBeaconRegistryTest is Test {
 
         vm.startPrank(user1);
         vm.expectRevert();
-        ufc.betRed(0);
+        ufc.betRed{value: 0}();
         vm.stopPrank();
     }
 
@@ -360,10 +347,8 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
 
         vm.expectRevert();
         ufc.claim();
@@ -377,10 +362,8 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
@@ -418,11 +401,9 @@ contract UFCBeaconRegistryTest is Test {
         ufc.pause();
         vm.stopPrank();
 
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
         vm.expectRevert();
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
     }
 
@@ -434,10 +415,8 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         // Only bet on BLUE
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betBlue(100 ether);
+        ufc.betBlue{value: 100 ether}();
         vm.stopPrank();
 
         // Settle with RED (no winners)
@@ -447,10 +426,10 @@ contract UFCBeaconRegistryTest is Test {
         ufc.settle(redOutcome);
 
         // Sweep should work
-        uint256 treasuryBefore = token.balanceOf(treasury);
+        uint256 treasuryBefore = treasury.balance;
         vm.prank(admin);
         ufc.sweepIfNoWinners();
-        uint256 treasuryAfter = token.balanceOf(treasury);
+        uint256 treasuryAfter = treasury.balance;
 
         assertEq(treasuryAfter - treasuryBefore, 100 ether);
     }
@@ -463,10 +442,8 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         // Bet on RED
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         // Settle with RED (has winners)
@@ -524,10 +501,8 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        token.mint(user1, 100 ether);
         vm.startPrank(user1);
-        token.approve(proxy, 100 ether);
-        ufc.betRed(100 ether);
+        ufc.betRed{value: 100 ether}();
         vm.stopPrank();
 
         // Before settlement
@@ -552,7 +527,7 @@ contract UFCBeaconRegistryTest is Test {
         address treasury_,
         bool allowDraw_
     ) internal returns (address proxy, UFCBetting fb) {
-        proxy = factory.createUFCMatch(owner_, address(token), matchId_, cutoffTs_, feeBps_, treasury_, allowDraw_);
+        proxy = factory.createUFCMatch(owner_, address(0), matchId_, cutoffTs_, feeBps_, treasury_, 0, allowDraw_);
         fb = UFCBetting(payable(proxy));
     }
 }

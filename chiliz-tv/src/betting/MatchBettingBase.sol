@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
+import {PriceOracle} from "../oracle/PriceOracle.sol";
 
 /// @title MatchBettingBase
 /// @author ChilizTV
-/// @notice Abstract base contract implementing pari-mutuel betting logic for sports matches
+/// @notice Abstract base contract implementing pari-mutuel betting logic for sports matches using native CHZ
 /// @dev Designed to be used behind a BeaconProxy for upgradeable per-match betting instances.
 ///      Storage layout must remain append-only for future logic versions to maintain compatibility.
 ///      Implements parimutuel betting where losers fund winners proportionally after platform fees.
+///      Uses Chainlink price oracle to enforce USD-denominated minimum bets.
 abstract contract MatchBettingBase is
     Initializable,
     PausableUpgradeable,
@@ -32,8 +34,8 @@ abstract contract MatchBettingBase is
 
     // ---------------------------- STORAGE -------------------------------
     
-    /// @notice ERC20 token used for placing bets and payouts
-    IERC20  public betToken;
+    /// @notice Chainlink price feed for CHZ/USD conversion
+    AggregatorV3Interface public priceFeed;
     
     /// @notice Address receiving platform fees
     address public treasury;
@@ -49,6 +51,9 @@ abstract contract MatchBettingBase is
     
     /// @notice Total number of possible outcomes for this match (2-16)
     uint8   public outcomesCount;
+
+    /// @notice Minimum bet amount in USD (8 decimals, e.g., 500000000 = $5.00)
+    uint256 public minBetUsd;
 
     /// @notice Whether the match has been settled (immutable once true)
     bool    public settled;
@@ -72,36 +77,40 @@ abstract contract MatchBettingBase is
     
     /// @notice Emitted when a match betting instance is initialized
     /// @param owner Address granted admin roles
-    /// @param token ERC20 token address for bets
+    /// @param priceFeed Chainlink price feed address for CHZ/USD
     /// @param matchId Unique match identifier
     /// @param outcomesCount Number of possible outcomes
     /// @param cutoffTs Betting cutoff timestamp
     /// @param feeBps Platform fee in basis points
     /// @param treasury Address receiving fees
+    /// @param minBetUsd Minimum bet amount in USD (8 decimals)
     event Initialized(
         address indexed owner,
-        address indexed token,
+        address indexed priceFeed,
         bytes32 indexed matchId,
         uint8 outcomesCount,
         uint64 cutoffTs,
         uint16 feeBps,
-        address treasury
+        address treasury,
+        uint256 minBetUsd
     );
 
-    /// @notice Emitted when a user places a bet
+    /// @notice Emitted when a user places a bet with native CHZ
     /// @param user Address of the bettor
     /// @param outcome Outcome index being bet on
-    /// @param amount Amount of tokens staked
+    /// @param amountChz Amount of CHZ staked
+    /// @param amountUsd USD value of bet (8 decimals)
     event BetPlaced(
         address indexed user,
         uint8 indexed outcome,
-        uint256 amount
+        uint256 amountChz,
+        uint256 amountUsd
     );
 
     /// @notice Emitted when match outcome is settled
     /// @param winningOutcome Index of the winning outcome
-    /// @param totalPool Total amount in all pools
-    /// @param feeAmount Amount sent to treasury as fees
+    /// @param totalPool Total CHZ amount in all pools
+    /// @param feeAmount CHZ amount sent to treasury as fees
     event Settled(
         uint8 indexed winningOutcome,
         uint256 totalPool,
@@ -110,7 +119,7 @@ abstract contract MatchBettingBase is
 
     /// @notice Emitted when a user claims their winnings
     /// @param user Address claiming rewards
-    /// @param payout Amount of tokens paid out
+    /// @param payout Amount of CHZ paid out
     event Claimed(
         address indexed user,
         uint256 payout
@@ -127,6 +136,10 @@ abstract contract MatchBettingBase is
     /// @notice Emitted when fee percentage is updated
     /// @param newFeeBps New fee in basis points
     event FeeUpdated(uint16 newFeeBps);
+    
+    /// @notice Emitted when minimum bet USD amount is updated
+    /// @param newMinBetUsd New minimum bet in USD (8 decimals)
+    event MinBetUsdUpdated(uint256 newMinBetUsd);
 
     // ----------------------------- ERRORS -------------------------------
     
@@ -148,6 +161,15 @@ abstract contract MatchBettingBase is
     /// @notice Thrown when a user has no winnings to claim
     error NothingToClaim();
     
+    /// @notice Thrown when bet amount is below minimum USD value
+    error BetBelowMinimum();
+    
+    /// @notice Thrown when bet amount is zero
+    error ZeroBet();
+    
+    /// @notice Thrown when native CHZ transfer fails
+    error TransferFailed();
+    
     /// @notice Thrown when a zero address is provided where not allowed
     error ZeroAddress();
     
@@ -156,26 +178,28 @@ abstract contract MatchBettingBase is
 
     // --------------------------- INITIALIZER ----------------------------
     
-    /// @notice Initializes the betting contract for a specific match
+    /// @notice Initializes the betting contract for a specific match with native CHZ payments
     /// @dev Called internally by sport-specific implementations via BeaconProxy
     ///      Grants all roles to owner and sets up parimutuel betting parameters
     /// @param owner_ Address to receive admin roles (recommended: Gnosis Safe multisig)
-    /// @param token_ ERC20 token address for placing bets and payouts
+    /// @param priceFeed_ Chainlink price feed address for CHZ/USD conversion
     /// @param matchId_ Unique identifier for this match (hash of off-chain data)
     /// @param outcomes_ Number of possible outcomes (min 2, max 16, typical 2-3)
     /// @param cutoffTs_ Unix timestamp after which betting closes
     /// @param feeBps_ Platform fee in basis points (max 1000 = 10%)
     /// @param treasury_ Address to receive platform fees
+    /// @param minBetUsd_ Minimum bet amount in USD (8 decimals, e.g., 5e8 = $5)
     function initializeBase(
         address owner_,
-        address token_,
+        address priceFeed_,
         bytes32 matchId_,
         uint8 outcomes_,
         uint64 cutoffTs_,
         uint16 feeBps_,
-        address treasury_
+        address treasury_,
+        uint256 minBetUsd_
     ) internal onlyInitializing {
-        if (owner_ == address(0) || token_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
+        if (owner_ == address(0) || priceFeed_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
         if (outcomes_ < 2 || outcomes_ > 16) revert TooManyOutcomes();
         if (cutoffTs_ == 0) revert InvalidParam();
         if (feeBps_ > 1_000) revert InvalidParam(); // max 10%: 1000 bps
@@ -189,14 +213,15 @@ abstract contract MatchBettingBase is
         _grantRole(PAUSER_ROLE, owner_);
         _grantRole(SETTLER_ROLE, owner_);
 
-        betToken      = IERC20(token_);
+        priceFeed     = AggregatorV3Interface(priceFeed_);
         treasury      = treasury_;
         matchId       = matchId_;
         outcomesCount = outcomes_;
         cutoffTs      = cutoffTs_;
         feeBps        = feeBps_;
+        minBetUsd     = minBetUsd_;
 
-        emit Initialized(owner_, token_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_);
+        emit Initialized(owner_, priceFeed_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetUsd_);
     }
 
     // ---------------------------- MODIFIERS -----------------------------
@@ -237,6 +262,14 @@ abstract contract MatchBettingBase is
         emit FeeUpdated(newFeeBps);
     }
 
+    /// @notice Updates the minimum bet amount in USD
+    /// @dev Allows admin to adjust minimum based on market conditions
+    /// @param newMinBetUsd New minimum bet in USD (8 decimals, e.g., 5e8 = $5)
+    function setMinBetUsd(uint256 newMinBetUsd) external onlyRole(ADMIN_ROLE) {
+        minBetUsd = newMinBetUsd;
+        emit MinBetUsdUpdated(newMinBetUsd);
+    }
+
     /// @notice Pauses all betting operations
     /// @dev Can only be called by PAUSER_ROLE
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
@@ -247,30 +280,29 @@ abstract contract MatchBettingBase is
 
     // ----------------------------- BETTING ------------------------------
     
-    /// @notice Places a bet on a specific outcome
+    /// @notice Places a bet on a specific outcome using native CHZ
     /// @dev Internal function called by sport-specific wrappers (betHome, betRed, etc.)
-    ///      Transfers tokens from user (requires prior approval)
+    ///      Receives native CHZ via msg.value and validates against USD minimum
     ///      Parimutuel system: user share = (user bet / total winning pool) * total pool after fees
     /// @param outcome Outcome index to bet on [0..outcomesCount-1]
-    /// @param amount Amount of betToken to stake (must be > 0)
-    function placeBet(uint8 outcome, uint256 amount)
+    function placeBet(uint8 outcome)
         internal
         whenNotPaused
         onlyBeforeCutoff
         nonReentrant
     {
         if (outcome >= outcomesCount) revert InvalidOutcome();
-        if (amount == 0) revert InvalidParam();
+        if (msg.value == 0) revert ZeroBet();
 
-        // effects
-        pool[outcome] += amount;
-        bets[msg.sender][outcome] += amount;
+        // Validate minimum bet amount in USD using oracle
+        uint256 usdValue = PriceOracle.chzToUsd(msg.value, priceFeed);
+        if (usdValue < minBetUsd) revert BetBelowMinimum();
 
-        emit BetPlaced(msg.sender, outcome, amount);
+        // effects (CEI pattern)
+        pool[outcome] += msg.value;
+        bets[msg.sender][outcome] += msg.value;
 
-        // interactions
-        // pull ERC-20 from user
-        require(betToken.transferFrom(msg.sender, address(this), amount), "TRANSFER_FROM_FAILED");
+        emit BetPlaced(msg.sender, outcome, msg.value, usdValue);
     }
 
     // ----------------------------- SETTLEMENT ---------------------------
@@ -293,11 +325,12 @@ abstract contract MatchBettingBase is
         emit Settled(winning, totalPool, feeAmount);
     }
 
-    /// @notice Claims winnings for the caller based on their winning bets
+    /// @notice Claims winnings for the caller based on their winning bets (native CHZ payout)
     /// @dev Implements parimutuel payout calculation:
     ///      Payout = (userBet / winningPool) * (totalPool - fees)
     ///      Can only claim once after settlement
     ///      Fees are sent to treasury on first claim only (via feeBpsOnFirstClaim optimization)
+    ///      Uses native CHZ transfers via low-level call for reentrancy safety
     function claim() external whenNotPaused nonReentrant {
         if (!settled) revert NotSettled();
         if (claimed[msg.sender]) revert NothingToClaim();
@@ -306,6 +339,7 @@ abstract contract MatchBettingBase is
         uint256 winPool   = pool[winningOutcome];
         if (winPool == 0 || userStake == 0) revert NothingToClaim();
 
+        // Mark claimed BEFORE transfers (CEI pattern)
         claimed[msg.sender] = true;
 
         uint256 total = totalPoolAmount();
@@ -320,22 +354,27 @@ abstract contract MatchBettingBase is
         // Transfer fee to treasury on first claim (optimization to avoid separate transaction)
         // feeBps is set to 0 after first fee transfer to prevent duplicate fee collection
         if (fee > 0) {
-            require(betToken.transfer(treasury, fee), "FEE_TRANSFER_FAILED");
-            feeBps = 0;
+            feeBps = 0; // Set to 0 BEFORE transfer
+            (bool feeSuccess, ) = treasury.call{value: fee}("");
+            if (!feeSuccess) revert TransferFailed();
         }
 
-        require(betToken.transfer(msg.sender, payout), "PAYOUT_TRANSFER_FAILED");
+        // Send payout to user
+        (bool payoutSuccess, ) = msg.sender.call{value: payout}("");
+        if (!payoutSuccess) revert TransferFailed();
     }
 
-    /// @notice Sweeps all funds to treasury when there are no winners
+    /// @notice Sweeps all native CHZ funds to treasury when there are no winners
     /// @dev Can only be called by ADMIN_ROLE after settlement
     ///      Reverts if winning pool has any bets (winners exist)
     ///      Use case: All users bet on wrong outcomes, no one to pay out
-    function sweepIfNoWinners() external onlyRole(ADMIN_ROLE) {
+    function sweepIfNoWinners() external onlyRole(ADMIN_ROLE) nonReentrant {
         require(settled, "NOT_SETTLED");
         if (pool[winningOutcome] != 0) revert InvalidParam();
-        uint256 bal = betToken.balanceOf(address(this));
-        require(betToken.transfer(treasury, bal), "SWEEP_FAILED");
+        
+        uint256 bal = address(this).balance;
+        (bool success, ) = treasury.call{value: bal}("");
+        if (!success) revert TransferFailed();
     }
 
     // ----------------------------- VIEWS --------------------------------
@@ -374,21 +413,33 @@ abstract contract MatchBettingBase is
     /// @dev Must be called by concrete implementations (FootballBetting, UFCBetting, etc.)
     ///      during their initialize() function
     /// @param owner_ Address to receive admin roles
-    /// @param token_ ERC20 token for betting
+    /// @param priceFeed_ Chainlink price feed for CHZ/USD
     /// @param matchId_ Match identifier
     /// @param cutoffTs_ Betting cutoff timestamp
     /// @param feeBps_ Platform fee in basis points
     /// @param treasury_ Fee recipient address
+    /// @param minBetUsd_ Minimum bet in USD (8 decimals)
     /// @param outcomes_ Number of possible outcomes
     function _initSport(
         address owner_,
-        address token_,
+        address priceFeed_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
+        uint256 minBetUsd_,
         uint8 outcomes_
     ) internal {
-        initializeBase(owner_, token_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_);
+        initializeBase(owner_, priceFeed_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetUsd_);
     }
+
+    // ------------------------- NATIVE CHZ HANDLING ----------------------
+    
+    /// @notice Allows contract to receive native CHZ for bets
+    /// @dev Required for payable bet functions to work
+    receive() external payable {}
+
+    /// @notice Fallback function for receiving CHZ
+    /// @dev Required for compatibility with some wallet implementations
+    fallback() external payable {}
 }
