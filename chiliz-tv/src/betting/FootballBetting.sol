@@ -54,15 +54,18 @@ contract FootballBetting is MatchBettingBase {
 
     // ------------------------- BETTING WRAPPERS -------------------------
     
-    /// @notice Places a bet on home team to win using native CHZ
-    /// @dev Convenience wrapper for placeBet(HOME), amount sent via msg.value
-    function betHome() external payable { placeBet(HOME); }
+    /// @notice Places a bet on home team to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(HOME, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 20000 = 2.0x, 25000 = 2.5x)
+    function betHome(uint64 odds) external payable { placeBet(HOME, odds); }
     
-    /// @notice Places a bet on draw result using native CHZ
-    /// @dev Convenience wrapper for placeBet(DRAW), amount sent via msg.value
-    function betDraw() external payable { placeBet(DRAW); }
+    /// @notice Places a bet on draw result using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(DRAW, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 30000 = 3.0x)
+    function betDraw(uint64 odds) external payable { placeBet(DRAW, odds); }
     
-    /// @notice Places a bet on away team to win using native CHZ
-    /// @dev Convenience wrapper for placeBet(AWAY), amount sent via msg.value
-    function betAway() external payable { placeBet(AWAY); }
+    /// @notice Places a bet on away team to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(AWAY, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 18000 = 1.8x)
+    function betAway(uint64 odds) external payable { placeBet(AWAY, odds); }
 }

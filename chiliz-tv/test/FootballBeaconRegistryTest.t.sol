@@ -162,20 +162,25 @@ contract FootballBeaconRegistryTest is Test {
         uint256 b = 50 * 1e18;
 
         // user1 bets HOME, user2 bets AWAY
-        vm.startPrank(user1);
-        _betOnOutcome(fb, fb.HOME(), a);
-        vm.stopPrank();
+        vm.prank(user1);
+        fb.betHome{value: a}(20000);
 
-        vm.startPrank(user2);
-        _betOnOutcome(fb, fb.AWAY(), b);
-        vm.stopPrank();
+        vm.prank(user2);
+        fb.betAway{value: b}(25000);
 
         // check pool
         assertEq(fb.totalPoolAmount(), a + b);
 
+        // Add house liquidity to cover fixed-odds payout
+        // user1 bet 100 ETH at 2.0x = expects 200 ETH (before fees)
+        // Total pool is 150 ETH, so need 50 ETH more
+        vm.deal(admin, 500 ether);
+        vm.prank(admin);
+        fb.addLiquidity{value: 50 ether}();
+
         // settle as admin to HOME
         vm.startPrank(admin);
-        fb.settle(fb.HOME());
+        fb.settle(0); // HOME = 0
         // snapshot treasury balance before claim
         uint256 treasuryBefore = treasury.balance;
         vm.stopPrank();
@@ -185,10 +190,12 @@ contract FootballBeaconRegistryTest is Test {
         uint256 balBefore = user1.balance;
         fb.claim();
         uint256 balAfter = user1.balance;
-        // fee = (a+b) * feeBps / 10000
-        uint256 fee = ((a + b) * feeBps) / 10000;
-        // user1 should receive distributable = total - fee
-        assertEq(balAfter - balBefore, (a + b) - fee);
+        // Fixed odds: 100 ETH * 2.0x = 200 ETH gross payout
+        // Fee = 200 * 5% = 10 ETH
+        // Net payout = 200 - 10 = 190 ETH
+        uint256 grossPayout = (a * 20000) / 10000; // 200 ETH
+        uint256 fee = (grossPayout * feeBps) / 10000; // 10 ETH
+        assertEq(balAfter - balBefore, grossPayout - fee); // 190 ETH
         vm.stopPrank();
 
         // treasury received fee
@@ -246,21 +253,24 @@ contract FootballBeaconRegistryTest is Test {
 
         // single bettor
         uint256 amt = 100 * 1e18;
-        vm.startPrank(user1);
-        _betOnOutcome(fb, fb.HOME(), amt);
-        vm.stopPrank();
+        vm.prank(user1);
+        fb.betHome{value: amt}(20000);
+
+        // Add house liquidity (100 * 2.0x = 200 ETH)
+        vm.deal(admin, 500 ether);
+        vm.prank(admin);
+        fb.addLiquidity{value: 100 ether}();
 
         // settle and claim
-        vm.startPrank(admin);
-        fb.settle(fb.HOME());
-        vm.stopPrank();
+        vm.prank(admin);
+        fb.settle(0); // HOME = 0
 
         vm.startPrank(user1);
         fb.claim();
         vm.stopPrank();
 
-        // feeBps should be reset to 0 after claim (MVP behavior)
-        assertEq(fb.feeBps(), 0);
+        // With fixed odds, feeBps is NOT reset after claim (each claim is independent)
+        assertEq(fb.feeBps(), feeBps);
     }
 
     function testBetAfterCutoffReverts() public {
@@ -276,7 +286,7 @@ contract FootballBeaconRegistryTest is Test {
 
         vm.startPrank(user1);
         vm.expectRevert(MatchBettingBase.BettingClosed.selector);
-        fb.betHome{value: 1e18}();
+        fb.betHome{value: 1e18}(20000);
         vm.stopPrank();
     }
 
@@ -289,13 +299,16 @@ contract FootballBeaconRegistryTest is Test {
         vm.stopPrank();
 
         uint256 amt = 100 * 1e18;
-        vm.startPrank(user1);
-        _betOnOutcome(fb, fb.HOME(), amt);
-        vm.stopPrank();
+        vm.prank(user1);
+        fb.betHome{value: amt}(20000);
 
-        vm.startPrank(admin);
-        fb.settle(fb.HOME());
-        vm.stopPrank();
+        // Add house liquidity (100 * 2.0x = 200 ETH)
+        vm.deal(admin, 500 ether);
+        vm.prank(admin);
+        fb.addLiquidity{value: 100 ether}();
+
+        vm.prank(admin);
+        fb.settle(0); // HOME = 0
 
         vm.startPrank(user1);
         fb.claim();
@@ -369,12 +382,12 @@ contract FootballBeaconRegistryTest is Test {
 
         // Mint tokens and bet for user1 (HOME)
         vm.startPrank(user1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         vm.stopPrank();
 
         // Mint tokens and bet for user2 (AWAY)
         vm.startPrank(user2);
-        fb.betAway{value: 200 ether}();
+        fb.betAway{value: 200 ether}(25000);
         vm.stopPrank();
 
         // Check pool amounts
@@ -391,7 +404,7 @@ contract FootballBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        fb.betDraw{value: 50 ether}();
+        fb.betDraw{value: 50 ether}(30000);
         vm.stopPrank();
 
         assertEq(fb.pool(fb.DRAW()), 50 ether);
@@ -406,9 +419,9 @@ contract FootballBeaconRegistryTest is Test {
 
         // Place bets on all outcomes
         vm.startPrank(user1);
-        fb.betHome{value: 100 ether}();
-        fb.betDraw{value: 100 ether}();
-        fb.betAway{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
+        fb.betDraw{value: 100 ether}(30000);
+        fb.betAway{value: 100 ether}(25000);
         vm.stopPrank();
 
         // Warp past cutoff
@@ -432,19 +445,22 @@ contract FootballBeaconRegistryTest is Test {
 
         // user1 bets on draw, user2 bets on home
 
-        vm.startPrank(user1);
-        fb.betDraw{value: 100 ether}();
-        vm.stopPrank();
+        vm.prank(user1);
+        fb.betDraw{value: 100 ether}(30000);
 
-        vm.startPrank(user2);
-        fb.betHome{value: 100 ether}();
-        vm.stopPrank();
+        vm.prank(user2);
+        fb.betHome{value: 100 ether}(20000);
+
+        // Add house liquidity: user1 bet 100 ETH at 3.0x = 300 ETH expected
+        // Need 200 ETH more from house
+        vm.deal(admin, 1000 ether); // Ensure admin has enough ETH
+        vm.prank(admin);
+        fb.addLiquidity{value: 200 ether}();
 
         // Settle with draw
         vm.warp(cutoff + 1);
-        uint8 drawOutcome = fb.DRAW();
         vm.prank(admin);
-        fb.settle(drawOutcome);
+        fb.settle(1); // DRAW = 1
 
         // user1 should be able to claim
         uint256 balanceBefore = user1.balance;
@@ -452,9 +468,9 @@ contract FootballBeaconRegistryTest is Test {
         fb.claim();
         uint256 balanceAfter = user1.balance;
 
-        // user1 should receive payout (200 ether total - 2% fee = 196 ether)
+        // Fixed odds: 100 ETH * 3.0x = 300 ETH, minus 2% fee = 294 ETH
         assertGt(balanceAfter, balanceBefore);
-        assertEq(balanceAfter - balanceBefore, 196 ether);
+        assertEq(balanceAfter - balanceBefore, 294 ether);
     }
 
     function testRevertBetAfterSettlement() public {
@@ -471,7 +487,7 @@ contract FootballBeaconRegistryTest is Test {
         // Try to bet after settlement
         vm.startPrank(user1);
         vm.expectRevert();
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         vm.stopPrank();
     }
 
@@ -489,7 +505,7 @@ contract FootballBeaconRegistryTest is Test {
         // Try to bet while paused (should revert)
         vm.startPrank(user1);
         vm.expectRevert();
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         vm.stopPrank();
 
         // Unpause
@@ -499,7 +515,7 @@ contract FootballBeaconRegistryTest is Test {
 
         // Now bet should work
         vm.prank(user1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         assertEq(fb.pool(fb.HOME()), 100 ether);
     }
 
@@ -572,7 +588,7 @@ contract FootballBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         vm.stopPrank();
 
         // Before settlement, pending payout should be 0
@@ -587,8 +603,8 @@ contract FootballBeaconRegistryTest is Test {
         // Now pending payout should be > 0
         uint256 pending = fb.pendingPayout(user1);
         assertGt(pending, 0);
-        // Should be 98 ether (100 - 2% fee)
-        assertEq(pending, 98 ether);
+        // Fixed odds payout: 100 ETH * 2.0x = 200 ETH, minus 2% fee = 196 ETH
+        assertEq(pending, 196 ether);
     }
 
     function testRevertClaimBeforeSettlement() public {
@@ -599,7 +615,7 @@ contract FootballBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
 
         vm.expectRevert();
         fb.claim();
@@ -615,7 +631,7 @@ contract FootballBeaconRegistryTest is Test {
 
         // user1 bets on away
         vm.startPrank(user1);
-        fb.betAway{value: 100 ether}();
+        fb.betAway{value: 100 ether}(25000);
         vm.stopPrank();
 
         // Settle with home win
@@ -667,12 +683,15 @@ contract FootballBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        fb.betHome{value: 50 ether}();
-        fb.betHome{value: 60 ether}(); // Must be >= 50 CHZ ($5 at $0.10/CHZ)
+        fb.betHome{value: 50 ether}(20000);
+        fb.betHome{value: 60 ether}(20000); // Must be >= 50 CHZ ($5 at $0.10/CHZ)
         vm.stopPrank();
 
-        // Check user1's total bet on HOME
-        assertEq(fb.bets(user1, fb.HOME()), 110 ether);
+        // Check user1 has 2 bets on HOME
+        assertEq(fb.getBetCount(user1, fb.HOME()), 2);
+        (uint256 amount1,) = fb.getBetInfo(user1, fb.HOME(), 0);
+        (uint256 amount2,) = fb.getBetInfo(user1, fb.HOME(), 1);
+        assertEq(amount1 + amount2, 110 ether);
     }
 
     /*//////////////////////////////////////////////////////////////////////////
@@ -697,15 +716,15 @@ contract FootballBeaconRegistryTest is Test {
     /// @param amount stake amount
     function _betOnOutcome(FootballBetting fb, uint8 outcome, uint256 amount) internal {
         if (outcome == fb.HOME()) {
-            fb.betHome{value: amount}();
+            fb.betHome{value: amount}(20000);
             return;
         }
         if (outcome == fb.DRAW()) {
-            fb.betDraw{value: amount}();
+            fb.betDraw{value: amount}(30000);
             return;
         }
         if (outcome == fb.AWAY()) {
-            fb.betAway{value: amount}();
+            fb.betAway{value: amount}(25000);
             return;
         }
         revert("INVALID_OUTCOME");

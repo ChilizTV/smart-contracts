@@ -63,19 +63,22 @@ contract UFCBetting is MatchBettingBase {
 
     // ------------------------- BETTING WRAPPERS -------------------------
     
-    /// @notice Places a bet on Red corner fighter to win using native CHZ
-    /// @dev Convenience wrapper for placeBet(RED), amount sent via msg.value
-    function betRed() external payable { placeBet(RED); }
+    /// @notice Places a bet on Red corner fighter to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(RED, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 18000 = 1.8x)
+    function betRed(uint64 odds) external payable { placeBet(RED, odds); }
     
-    /// @notice Places a bet on Blue corner fighter to win using native CHZ
-    /// @dev Convenience wrapper for placeBet(BLUE), amount sent via msg.value
-    function betBlue() external payable { placeBet(BLUE); }
+    /// @notice Places a bet on Blue corner fighter to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(BLUE, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 22000 = 2.2x)
+    function betBlue(uint64 odds) external payable { placeBet(BLUE, odds); }
     
-    /// @notice Places a bet on draw result using native CHZ
-    /// @dev Convenience wrapper for placeBet(DRAW), amount sent via msg.value
+    /// @notice Places a bet on draw result using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(DRAW, odds), amount sent via msg.value
     ///      Only available if allowDraw was set to true during initialization
-    function betDraw() external payable {
+    /// @param odds Odds in 4 decimals (e.g., 35000 = 3.5x)
+    function betDraw(uint64 odds) external payable {
         require(allowDraw, "DRAW_DISABLED");
-        placeBet(DRAW);
+        placeBet(DRAW, odds);
     }
 }

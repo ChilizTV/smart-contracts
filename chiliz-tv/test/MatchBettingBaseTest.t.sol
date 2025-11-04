@@ -45,7 +45,7 @@ contract MatchBettingBaseTest is Test {
 
     uint256 public constant MIN_BET_CHZ = 5e18; // 5 CHZ minimum
 
-    event BetPlaced(address indexed user, uint8 indexed outcome, uint256 amountChz);
+    event BetPlaced(address indexed user, uint8 indexed outcome, uint256 amountChz, uint64 odds);
     event Settled(uint8 indexed winningOutcome, uint256 totalPool, uint256 feeAmount);
     event Claimed(address indexed user, uint256 payout);
     event CutoffUpdated(uint64 newCutoff);
@@ -111,13 +111,19 @@ contract MatchBettingBaseTest is Test {
         // Place bets with native CHZ
         // Min bet is $5, CHZ = $0.10, so min is 50 CHZ
         vm.prank(bettor1);
-        fb.betHome{value: 500 ether}(); // Bet 500 CHZ on home ($50)
+        fb.betHome{value: 500 ether}(20000); // Bet 500 CHZ on home ($50)
 
         vm.prank(bettor2);
-        fb.betDraw{value: 300 ether}(); // Bet 300 CHZ on draw ($30)
+        fb.betDraw{value: 300 ether}(30000); // Bet 300 CHZ on draw ($30)
 
         // total pool must reflect bets
         assertEq(fb.totalPoolAmount(), 800 ether);
+
+        // Add house liquidity to cover potential payouts
+        // bettor1 bet 500 ETH at 2.0x = expects 1000 ETH payout
+        // Need 200 ETH more from house
+        vm.prank(admin);
+        fb.addLiquidity{value: 200 ether}();
 
         vm.startPrank(admin);
         // Fast forward time to after cutoff
@@ -183,13 +189,16 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         vm.expectEmit(true, true, false, true);
-        emit BetPlaced(bettor1, 0, 100 ether); // 100 CHZ
+        emit BetPlaced(bettor1, 0, 100 ether, 20000); // 100 CHZ at 2.0x odds
 
         vm.prank(bettor1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
 
         assertEq(fb.pool(0), 100 ether);
-        assertEq(fb.bets(bettor1, 0), 100 ether);
+        assertEq(fb.getBetCount(bettor1, 0), 1);
+        (uint256 amount, uint64 odds) = fb.getBetInfo(bettor1, 0, 0);
+        assertEq(amount, 100 ether);
+        assertEq(odds, 20000);
         assertEq(fb.totalPoolAmount(), 100 ether);
     }
 
@@ -201,13 +210,26 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 100 ether}();
-        fb.betHome{value: 200 ether}();
-        fb.betDraw{value: 50 ether}();
+        fb.betHome{value: 100 ether}(20000);
+        fb.betHome{value: 200 ether}(20000);
+        fb.betDraw{value: 50 ether}(30000);
         vm.stopPrank();
 
-        assertEq(fb.bets(bettor1, 0), 300 ether); // Home bets accumulate
-        assertEq(fb.bets(bettor1, 1), 50 ether);  // Draw bet
+        // Check home bets (2 separate bets)
+        assertEq(fb.getBetCount(bettor1, 0), 2);
+        (uint256 amount1, uint64 odds1) = fb.getBetInfo(bettor1, 0, 0);
+        assertEq(amount1, 100 ether);
+        assertEq(odds1, 20000);
+        (uint256 amount2, uint64 odds2) = fb.getBetInfo(bettor1, 0, 1);
+        assertEq(amount2, 200 ether);
+        assertEq(odds2, 20000);
+        
+        // Check draw bet (1 bet)
+        assertEq(fb.getBetCount(bettor1, 1), 1);
+        (uint256 amount3, uint64 odds3) = fb.getBetInfo(bettor1, 1, 0);
+        assertEq(amount3, 50 ether);
+        assertEq(odds3, 30000);
+        
         assertEq(fb.totalPoolAmount(), 350 ether);
     }
 
@@ -220,14 +242,14 @@ contract MatchBettingBaseTest is Test {
 
         // Bettor1 bets on Home
         vm.prank(bettor1);
-        fb.betHome{value: 300 ether}();
+        fb.betHome{value: 300 ether}(20000);
 
         // Bettor2 bets on Draw
         vm.prank(bettor2);
-        fb.betDraw{value: 200 ether}();
+        fb.betDraw{value: 200 ether}(30000);
 
         // Bettor3 bets on Away
-        fb.betAway{value: 100 ether}();
+        fb.betAway{value: 100 ether}(25000);
 
         assertEq(fb.pool(0), 300 ether);
         assertEq(fb.pool(1), 200 ether);
@@ -247,7 +269,7 @@ contract MatchBettingBaseTest is Test {
 
         vm.expectRevert(BettingClosed.selector);
         vm.prank(bettor1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
     }
 
     function testRevertBetZeroAmount() public {
@@ -259,7 +281,7 @@ contract MatchBettingBaseTest is Test {
 
         vm.expectRevert(ZeroBet.selector);
         vm.prank(bettor1);
-        fb.betHome{value: 0}();
+        fb.betHome{value: 0}(20000);
     }
 
     function testRevertBetInvalidOutcome() public {
@@ -287,7 +309,7 @@ contract MatchBettingBaseTest is Test {
 
         vm.expectRevert();
         vm.prank(poorBettor);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -304,7 +326,7 @@ contract MatchBettingBaseTest is Test {
 
         // Place some bets
         vm.prank(bettor1);
-        fb.betHome{value: 500 ether}();
+        fb.betHome{value: 500 ether}(20000);
 
         // Fast forward and settle
         vm.warp(cutoff + 1);
@@ -382,12 +404,18 @@ contract MatchBettingBaseTest is Test {
         // Setup bets
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 500 ether}();
+        fb.betHome{value: 500 ether}(20000);
         vm.stopPrank();
 
         vm.startPrank(bettor2);
-        fb.betDraw{value: 300 ether}();
+        fb.betDraw{value: 300 ether}(30000);
         vm.stopPrank();
+
+        // Add house liquidity to cover potential payouts
+        // bettor1 bet 500 ETH at 2.0x = expects 1000 ETH payout
+        // Total pool is 800 ETH, so need 200 ETH more from house
+        vm.prank(admin);
+        fb.addLiquidity{value: 200 ether}();
 
         // Settle with Home win
         vm.warp(cutoff + 1);
@@ -428,15 +456,15 @@ contract MatchBettingBaseTest is Test {
         // Multiple winners betting on same outcome
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 300 ether}();
+        fb.betHome{value: 300 ether}(20000);
         vm.stopPrank();
 
         vm.startPrank(bettor2);
-        fb.betHome{value: 200 ether}();
+        fb.betHome{value: 200 ether}(20000);
         vm.stopPrank();
 
         vm.startPrank(bettor3);
-        fb.betDraw{value: 100 ether}();
+        fb.betDraw{value: 100 ether}(30000);
         vm.stopPrank();
 
         // Settle with Home win
@@ -473,7 +501,7 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
 
         vm.expectRevert(NotSettled.selector);
         fb.claim();
@@ -488,8 +516,12 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         vm.stopPrank();
+
+        // Add house liquidity (100 * 2.0x = 200 ETH)
+        vm.prank(admin);
+        fb.addLiquidity{value: 100 ether}();
 
         vm.warp(cutoff + 1);
         vm.prank(admin);
@@ -511,7 +543,7 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         vm.startPrank(bettor1);
-        fb.betDraw{value: 100 ether}(); // Bet on draw
+        fb.betDraw{value: 100 ether}(30000); // Bet on draw
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
@@ -674,7 +706,7 @@ contract MatchBettingBaseTest is Test {
         vm.startPrank(bettor1);
         
         vm.expectRevert();
-        fb.betHome{value: 100 ether}();
+        fb.betHome{value: 100 ether}(20000);
         vm.stopPrank();
     }
 
@@ -704,11 +736,11 @@ contract MatchBettingBaseTest is Test {
         // Everyone bets on Draw
 
         vm.startPrank(bettor1);
-        fb.betDraw{value: 500 ether}();
+        fb.betDraw{value: 500 ether}(30000);
         vm.stopPrank();
 
         vm.startPrank(bettor2);
-        fb.betDraw{value: 300 ether}();
+        fb.betDraw{value: 300 ether}(30000);
         vm.stopPrank();
 
         // Settle with Home win (no winners)
@@ -734,7 +766,7 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 500 ether}();
+        fb.betHome{value: 500 ether}(20000);
         vm.stopPrank();
 
         vm.warp(cutoff + 1);
@@ -759,11 +791,15 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 500 ether}();
+        fb.betHome{value: 500 ether}(20000);
         vm.stopPrank();
 
         // Before settlement
         assertEq(fb.pendingPayout(bettor1), 0);
+
+        // Add house liquidity to cover payout (500 * 2.0x = 1000 ETH)
+        vm.prank(admin);
+        fb.addLiquidity{value: 500 ether}();
 
         // After settlement
         vm.warp(cutoff + 1);
@@ -773,18 +809,16 @@ contract MatchBettingBaseTest is Test {
         uint256 pending = fb.pendingPayout(bettor1);
         assertTrue(pending > 0);
         
-        // Expected: 500 ether total pool, 2% fee = 10 ether
-        // Distributable: 490 ether
-        // Since bettor1 is the only winner, they get all 490 ether
-        assertEq(pending, 490 ether);
+        // Fixed odds payout: 500 ETH * 2.0x = 1000 ETH, minus 2% fee = 980 ETH
+        assertEq(pending, 980 ether);
         
-        // After claim, the fee is paid and feeBps is set to 0
+        // After claim, the fee is paid
         vm.prank(bettor1);
         fb.claim();
         
         // Check that bettor1 received their payout
-        // bettor1 started with 10000 ether, bet 500 ether, won back 490 ether (after 2% fee)
-        assertEq(bettor1.balance, 9990 ether);
+        // bettor1 started with 10000 ether, bet 500 ether, won back 980 ether (after 2% fee)
+        assertEq(bettor1.balance, 10480 ether);
     }
 
     function testTotalPoolAmount() public {
@@ -798,13 +832,13 @@ contract MatchBettingBaseTest is Test {
 
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 300 ether}();
+        fb.betHome{value: 300 ether}(20000);
         vm.stopPrank();
 
         assertEq(fb.totalPoolAmount(), 300 ether);
 
         vm.startPrank(bettor2);
-        fb.betAway{value: 200 ether}();
+        fb.betAway{value: 200 ether}(25000);
         vm.stopPrank();
 
         assertEq(fb.totalPoolAmount(), 500 ether);
@@ -889,7 +923,7 @@ contract MatchBettingBaseTest is Test {
 
         vm.expectRevert(ZeroBet.selector);
         vm.prank(bettor1);
-        fb.betHome{value: 0}();
+        fb.betHome{value: 0}(20000);
     }
 
     function testRevertClaimFeeTransferFailure() public {
@@ -904,8 +938,12 @@ contract MatchBettingBaseTest is Test {
 
 
         vm.startPrank(bettor1);
-        fb.betHome{value: 500 ether}();
+        fb.betHome{value: 500 ether}(20000);
         vm.stopPrank();
+
+        // Add house liquidity (500 * 2.0x = 1000 ETH, need 500 more)
+        vm.prank(admin);
+        fb.addLiquidity{value: 500 ether}();
 
         vm.warp(cutoff + 1);
         vm.prank(admin);
@@ -929,7 +967,12 @@ contract MatchBettingBaseTest is Test {
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 0, treasury);
 
         vm.prank(address(rejectingBettor));
-        fb.betHome{value: 500 ether}();
+        fb.betHome{value: 500 ether}(20000);
+
+        // Add house liquidity (500 * 2.0x = 1000 ETH, need 500 more)
+        // Note: feeBps is 0 for this test
+        vm.prank(admin);
+        fb.addLiquidity{value: 500 ether}();
 
         vm.warp(cutoff + 1);
         vm.prank(admin);
@@ -953,7 +996,7 @@ contract MatchBettingBaseTest is Test {
 
         // Bet on outcome 1 (draw)
         vm.prank(bettor1);
-        fb.betDraw{value: 500 ether}();
+        fb.betDraw{value: 500 ether}(30000);
 
         // Settle with outcome 0 (home wins) - no winners
         vm.warp(cutoff + 1);

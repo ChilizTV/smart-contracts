@@ -30,6 +30,14 @@ abstract contract MatchBettingBase is
     /// @notice Role authorized to pause/unpause betting
     bytes32 public constant PAUSER_ROLE  = keccak256("PAUSER_ROLE");
 
+    // ---------------------------- STRUCTS -------------------------------
+    
+    /// @notice Individual bet record with locked odds
+    struct BetInfo {
+        uint256 amount;      // CHZ staked
+        uint64 odds;         // Locked odds in 4 decimals (e.g., 25000 = 2.5x)
+    }
+
     // ---------------------------- STORAGE -------------------------------
     
     /// @notice Address receiving platform fees
@@ -60,9 +68,9 @@ abstract contract MatchBettingBase is
     /// @dev outcomeId => total stake amount
     mapping(uint8 => uint256) public pool;
     
-    /// @notice Individual user stakes per outcome
-    /// @dev user => outcomeId => stake amount
-    mapping(address => mapping(uint8 => uint256)) public bets;
+    /// @notice Individual user bets per outcome with locked odds
+    /// @dev user => outcomeId => array of bets
+    mapping(address => mapping(uint8 => BetInfo[])) public bets;
     
     /// @notice Tracks whether a user has claimed their winnings
     /// @dev user => has claimed
@@ -88,15 +96,16 @@ abstract contract MatchBettingBase is
         uint256 minBetChz
     );
 
-    /// @notice Emitted when a user places a bet with native CHZ
+    /// @notice Emitted when a user places a bet with native CHZ and locked odds
     /// @param user Address of the bettor
     /// @param outcome Outcome index being bet on
     /// @param amountChz Amount of CHZ staked
-    /// @param amountChz CHZ amount bet (18 decimals)
+    /// @param odds Locked odds in 4 decimals (e.g., 25000 = 2.5x)
     event BetPlaced(
         address indexed user,
         uint8 indexed outcome,
-        uint256 amountChz
+        uint256 amountChz,
+        uint64 odds
     );
 
     /// @notice Emitted when match outcome is settled
@@ -133,6 +142,11 @@ abstract contract MatchBettingBase is
     /// @param newMinBetChz New minimum bet in CHZ (18 decimals)
     event MinBetChzUpdated(uint256 newMinBetChz);
 
+    /// @notice Emitted when house liquidity is added to cover fixed-odds payouts
+    /// @param funder Address that provided the funds
+    /// @param amount Amount of CHZ added
+    event LiquidityAdded(address indexed funder, uint256 amount);
+
     // ----------------------------- ERRORS -------------------------------
     
     /// @notice Thrown when an invalid outcome index is provided
@@ -167,6 +181,9 @@ abstract contract MatchBettingBase is
     
     /// @notice Thrown when outcomes count exceeds maximum allowed (16)
     error TooManyOutcomes();
+    
+    /// @notice Thrown when contract has insufficient balance to cover payout
+    error InsufficientLiquidity();
 
     // --------------------------- INITIALIZER ----------------------------
     
@@ -267,14 +284,37 @@ abstract contract MatchBettingBase is
     /// @dev Can only be called by PAUSER_ROLE
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
+    /// @notice Allows treasury/admin to add house liquidity to cover fixed-odds payouts
+    /// @dev This function enables the house (treasury) to fund the contract for covering winning bets
+    ///      The house provides liquidity and takes on risk but keeps all losing bets as profit
+    ///      Can be called multiple times to add more liquidity as needed
+    function addLiquidity() external payable onlyRole(ADMIN_ROLE) {
+        require(msg.value > 0, "ZERO_LIQUIDITY");
+        emit LiquidityAdded(msg.sender, msg.value);
+    }
+
+    /// @notice Allows treasury to withdraw excess funds after settlement
+    /// @dev Can only be called after settlement to withdraw remaining house funds
+    ///      This removes any excess liquidity that wasn't needed for payouts
+    /// @param amount Amount of CHZ to withdraw
+    function withdrawLiquidity(uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
+        require(settled, "NOT_SETTLED");
+        require(amount <= address(this).balance, "INSUFFICIENT_BALANCE");
+        
+        (bool success, ) = treasury.call{value: amount}("");
+        if (!success) revert TransferFailed();
+    }
+
     // ----------------------------- BETTING ------------------------------
     
-    /// @notice Places a bet on a specific outcome using native CHZ
+    /// @notice Places a bet on a specific outcome using native CHZ with locked odds
     /// @dev Internal function called by sport-specific wrappers (betHome, betRed, etc.)
     ///      Receives native CHZ via msg.value and validates against CHZ minimum
-    ///      Parimutuel system: user share = (user bet / total winning pool) * total pool after fees
+    ///      Odds are locked at bet time (4 decimals: 10000 = 1.0x, 25000 = 2.5x, etc.)
+    ///      Payout = amount * odds (after fees)
     /// @param outcome Outcome index to bet on [0..outcomesCount-1]
-    function placeBet(uint8 outcome)
+    /// @param odds Odds in 4 decimals (e.g., 20000 = 2.0x, must be > 10000)
+    function placeBet(uint8 outcome, uint64 odds)
         internal
         whenNotPaused
         onlyBeforeCutoff
@@ -282,15 +322,19 @@ abstract contract MatchBettingBase is
     {
         if (outcome >= outcomesCount) revert InvalidOutcome();
         if (msg.value == 0) revert ZeroBet();
+        if (odds < 10000) revert InvalidParam(); // minimum 1.0x
 
         // Validate minimum bet amount in CHZ
         if (msg.value < minBetChz) revert BetBelowMinimum();
 
         // effects (CEI pattern)
         pool[outcome] += msg.value;
-        bets[msg.sender][outcome] += msg.value;
+        bets[msg.sender][outcome].push(BetInfo({
+            amount: msg.value,
+            odds: odds
+        }));
 
-        emit BetPlaced(msg.sender, outcome, msg.value);
+        emit BetPlaced(msg.sender, outcome, msg.value, odds);
     }
 
     // ----------------------------- SETTLEMENT ---------------------------
@@ -313,42 +357,47 @@ abstract contract MatchBettingBase is
         emit Settled(winning, totalPool, feeAmount);
     }
 
-    /// @notice Claims winnings for the caller based on their winning bets (native CHZ payout)
-    /// @dev Implements parimutuel payout calculation:
-    ///      Payout = (userBet / winningPool) * (totalPool - fees)
+    /// @notice Claims winnings for the caller based on their winning bets with locked odds (native CHZ payout)
+    /// @dev Implements fixed-odds payout calculation with house liquidity:
+    ///      Total Payout = sum of (betAmount * betOdds / 10000) for all winning bets
+    ///      Fees deducted proportionally from payout
+    ///      House (treasury) covers payouts from liquidity pool and keeps losing bets
     ///      Can only claim once after settlement
-    ///      Fees are sent to treasury on first claim only (via feeBpsOnFirstClaim optimization)
     ///      Uses native CHZ transfers via low-level call for reentrancy safety
     function claim() external whenNotPaused nonReentrant {
         if (!settled) revert NotSettled();
         if (claimed[msg.sender]) revert NothingToClaim();
 
-        uint256 userStake = bets[msg.sender][winningOutcome];
-        uint256 winPool   = pool[winningOutcome];
-        if (winPool == 0 || userStake == 0) revert NothingToClaim();
+        BetInfo[] memory userBets = bets[msg.sender][winningOutcome];
+        if (userBets.length == 0) revert NothingToClaim();
 
         // Mark claimed BEFORE transfers (CEI pattern)
         claimed[msg.sender] = true;
 
-        uint256 total = totalPoolAmount();
-        uint256 fee   = (total * feeBps) / 10_000;
-        uint256 distributable = total - fee;
+        // Calculate total gross payout (before fees) based on locked odds
+        uint256 grossPayout = 0;
+        for (uint256 i = 0; i < userBets.length; i++) {
+            // Payout = amount * odds / 10000 (odds in 4 decimals)
+            grossPayout += (userBets[i].amount * userBets[i].odds) / 10000;
+        }
 
-        // pari-mutuel share
-        uint256 payout = (distributable * userStake) / winPool;
+        // Deduct platform fee
+        uint256 fee = (grossPayout * feeBps) / 10_000;
+        uint256 netPayout = grossPayout - fee;
 
-        emit Claimed(msg.sender, payout);
+        // Check that contract has sufficient balance (from house liquidity + bets)
+        if (address(this).balance < netPayout + fee) revert InsufficientLiquidity();
 
-        // Transfer fee to treasury on first claim (optimization to avoid separate transaction)
-        // feeBps is set to 0 after first fee transfer to prevent duplicate fee collection
+        emit Claimed(msg.sender, netPayout);
+
+        // Transfer fee to treasury
         if (fee > 0) {
-            feeBps = 0; // Set to 0 BEFORE transfer
             (bool feeSuccess, ) = treasury.call{value: fee}("");
             if (!feeSuccess) revert TransferFailed();
         }
 
         // Send payout to user
-        (bool payoutSuccess, ) = msg.sender.call{value: payout}("");
+        (bool payoutSuccess, ) = msg.sender.call{value: netPayout}("");
         if (!payoutSuccess) revert TransferFailed();
     }
 
@@ -377,22 +426,48 @@ abstract contract MatchBettingBase is
         }
     }
 
-    /// @notice Calculates pending payout for a user if they won
+    /// @notice Calculates pending payout for a user if they won based on locked odds
     /// @dev Returns 0 if match not settled or user has no winning bets
-    ///      Formula: (userBet / winningPool) * (totalPool - fees)
+    ///      Formula: sum of (betAmount * betOdds / 10000) - fees
     /// @param user Address to check payout for
-    /// @return Pending payout amount in betToken
+    /// @return Pending payout amount in CHZ
     function pendingPayout(address user) external view returns (uint256) {
         if (!settled) return 0;
-        uint256 userStake = bets[user][winningOutcome];
-        uint256 winPool   = pool[winningOutcome];
-        if (winPool == 0 || userStake == 0) return 0;
+        BetInfo[] memory userBets = bets[user][winningOutcome];
+        if (userBets.length == 0) return 0;
 
-        uint256 total = totalPoolAmount();
-        uint256 fee   = (total * feeBps) / 10_000;
-        uint256 distributable = total - fee;
+        // Calculate total gross payout based on locked odds
+        uint256 grossPayout = 0;
+        for (uint256 i = 0; i < userBets.length; i++) {
+            grossPayout += (userBets[i].amount * userBets[i].odds) / 10000;
+        }
 
-        return (distributable * userStake) / winPool;
+        // Deduct platform fee
+        uint256 fee = (grossPayout * feeBps) / 10_000;
+        return grossPayout - fee;
+    }
+
+    /// @notice Gets the total number of bets a user has placed on a specific outcome
+    /// @param user Address to check
+    /// @param outcome Outcome index
+    /// @return Number of bets
+    function getBetCount(address user, uint8 outcome) external view returns (uint256) {
+        return bets[user][outcome].length;
+    }
+
+    /// @notice Gets details of a specific bet
+    /// @param user Address of the bettor
+    /// @param outcome Outcome index
+    /// @param index Index of the bet in the user's bet array
+    /// @return amount CHZ staked
+    /// @return odds Locked odds in 4 decimals
+    function getBetInfo(address user, uint8 outcome, uint256 index) 
+        external 
+        view 
+        returns (uint256 amount, uint64 odds) 
+    {
+        BetInfo memory bet = bets[user][outcome][index];
+        return (bet.amount, bet.odds);
     }
 
     // ----------------------- SPORT-SPECIFIC HOOK ------------------------

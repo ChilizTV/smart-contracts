@@ -110,11 +110,14 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.RED()), 100 ether);
-        assertEq(ufc.bets(user1, ufc.RED()), 100 ether);
+        assertEq(ufc.getBetCount(user1, ufc.RED()), 1);
+        (uint256 amount, uint64 odds) = ufc.getBetInfo(user1, ufc.RED(), 0);
+        assertEq(amount, 100 ether);
+        assertEq(odds, 18000);
     }
 
     function testBetBlue() public {
@@ -125,11 +128,14 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        ufc.betBlue{value: 150 ether}();
+        ufc.betBlue{value: 150 ether}(22000);
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.BLUE()), 150 ether);
-        assertEq(ufc.bets(user1, ufc.BLUE()), 150 ether);
+        assertEq(ufc.getBetCount(user1, ufc.BLUE()), 1);
+        (uint256 amount, uint64 odds) = ufc.getBetInfo(user1, ufc.BLUE(), 0);
+        assertEq(amount, 150 ether);
+        assertEq(odds, 22000);
     }
 
     function testBetDrawWhenAllowed() public {
@@ -140,7 +146,7 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        ufc.betDraw{value: 50 ether}();
+        ufc.betDraw{value: 50 ether}(30000);
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.DRAW()), 50 ether);
@@ -155,7 +161,7 @@ contract UFCBeaconRegistryTest is Test {
 
         vm.startPrank(user1);
         vm.expectRevert("DRAW_DISABLED");
-        ufc.betDraw{value: 50 ether}();
+        ufc.betDraw{value: 50 ether}(30000);
         vm.stopPrank();
     }
 
@@ -168,12 +174,12 @@ contract UFCBeaconRegistryTest is Test {
 
         // user1 bets on RED
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
 
         // user2 bets on BLUE
         vm.startPrank(user2);
-        ufc.betBlue{value: 200 ether}();
+        ufc.betBlue{value: 200 ether}(22000);
         vm.stopPrank();
 
         assertEq(ufc.pool(ufc.RED()), 100 ether);
@@ -191,11 +197,11 @@ contract UFCBeaconRegistryTest is Test {
         // Place bets
 
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
 
         vm.startPrank(user2);
-        ufc.betBlue{value: 100 ether}();
+        ufc.betBlue{value: 100 ether}(22000);
         vm.stopPrank();
 
         // Settle
@@ -218,11 +224,11 @@ contract UFCBeaconRegistryTest is Test {
         // user1 bets on RED, user2 bets on BLUE
 
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
 
         vm.startPrank(user2);
-        ufc.betBlue{value: 100 ether}();
+        ufc.betBlue{value: 100 ether}(22000);
         vm.stopPrank();
 
         // Settle with RED winning
@@ -237,8 +243,8 @@ contract UFCBeaconRegistryTest is Test {
         ufc.claim();
         uint256 balanceAfter = user1.balance;
 
-        // user1 gets total pool minus fee (200 - 2% = 196)
-        assertEq(balanceAfter - balanceBefore, 196 ether);
+        // Fixed odds payout: 100 ETH * 1.8x = 180 ETH, minus 2% fee = 176.4 ETH
+        assertEq(balanceAfter - balanceBefore, 176.4 ether);
     }
 
     function testClaimDrawWinner() public {
@@ -250,9 +256,9 @@ contract UFCBeaconRegistryTest is Test {
 
         // Multiple bets on different outcomes
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
-        ufc.betBlue{value: 100 ether}();
-        ufc.betDraw{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
+        ufc.betBlue{value: 100 ether}(22000);
+        ufc.betDraw{value: 100 ether}(30000);
         vm.stopPrank();
 
         // Settle with DRAW
@@ -284,7 +290,7 @@ contract UFCBeaconRegistryTest is Test {
 
         vm.startPrank(user1);
         vm.expectRevert();
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
     }
 
@@ -297,7 +303,7 @@ contract UFCBeaconRegistryTest is Test {
 
         vm.startPrank(user1);
         vm.expectRevert();
-        ufc.betRed{value: 0}();
+        ufc.betRed{value: 0}(18000);
         vm.stopPrank();
     }
 
@@ -342,7 +348,7 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
 
         vm.expectRevert();
         ufc.claim();
@@ -356,14 +362,17 @@ contract UFCBeaconRegistryTest is Test {
         (address proxy, UFCBetting ufc) = _createUFCMatch(admin, matchId, cutoff, 200, treasury, false);
         vm.stopPrank();
 
-        vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
-        vm.stopPrank();
+        vm.prank(user1);
+        ufc.betRed{value: 100 ether}(18000);
+
+        // Add house liquidity (100 * 1.8x = 180 ETH)
+        vm.deal(admin, 500 ether);
+        vm.prank(admin);
+        ufc.addLiquidity{value: 80 ether}();
 
         vm.warp(cutoff + 1);
-        uint8 redOutcome = ufc.RED();
         vm.prank(admin);
-        ufc.settle(redOutcome);
+        ufc.settle(0); // RED = 0
 
         vm.startPrank(user1);
         ufc.claim();
@@ -397,7 +406,7 @@ contract UFCBeaconRegistryTest is Test {
 
         vm.startPrank(user1);
         vm.expectRevert();
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
     }
 
@@ -410,7 +419,7 @@ contract UFCBeaconRegistryTest is Test {
 
         // Only bet on BLUE
         vm.startPrank(user1);
-        ufc.betBlue{value: 100 ether}();
+        ufc.betBlue{value: 100 ether}(22000);
         vm.stopPrank();
 
         // Settle with RED (no winners)
@@ -437,7 +446,7 @@ contract UFCBeaconRegistryTest is Test {
 
         // Bet on RED
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
 
         // Settle with RED (has winners)
@@ -496,7 +505,7 @@ contract UFCBeaconRegistryTest is Test {
         vm.stopPrank();
 
         vm.startPrank(user1);
-        ufc.betRed{value: 100 ether}();
+        ufc.betRed{value: 100 ether}(18000);
         vm.stopPrank();
 
         // Before settlement
@@ -510,7 +519,8 @@ contract UFCBeaconRegistryTest is Test {
 
         uint256 pending = ufc.pendingPayout(user1);
         assertGt(pending, 0);
-        assertEq(pending, 98 ether); // 100 - 2%
+        // Fixed odds payout: 100 ETH * 1.8x = 180 ETH, minus 2% fee = 176.4 ETH
+        assertEq(pending, 176.4 ether);
     }
 
     function _createUFCMatch(
