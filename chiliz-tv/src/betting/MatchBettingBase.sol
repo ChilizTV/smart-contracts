@@ -5,8 +5,6 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
-import {PriceOracle} from "../oracle/PriceOracle.sol";
 
 /// @title MatchBettingBase
 /// @author ChilizTV
@@ -34,9 +32,6 @@ abstract contract MatchBettingBase is
 
     // ---------------------------- STORAGE -------------------------------
     
-    /// @notice Chainlink price feed for CHZ/USD conversion
-    AggregatorV3Interface public priceFeed;
-    
     /// @notice Address receiving platform fees
     address public treasury;
     
@@ -52,8 +47,8 @@ abstract contract MatchBettingBase is
     /// @notice Total number of possible outcomes for this match (2-16)
     uint8   public outcomesCount;
 
-    /// @notice Minimum bet amount in USD (8 decimals, e.g., 500000000 = $5.00)
-    uint256 public minBetUsd;
+    /// @notice Minimum bet amount in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
+    uint256 public minBetChz;
 
     /// @notice Whether the match has been settled (immutable once true)
     bool    public settled;
@@ -77,34 +72,31 @@ abstract contract MatchBettingBase is
     
     /// @notice Emitted when a match betting instance is initialized
     /// @param owner Address granted admin roles
-    /// @param priceFeed Chainlink price feed address for CHZ/USD
     /// @param matchId Unique match identifier
     /// @param outcomesCount Number of possible outcomes
     /// @param cutoffTs Betting cutoff timestamp
     /// @param feeBps Platform fee in basis points
     /// @param treasury Address receiving fees
-    /// @param minBetUsd Minimum bet amount in USD (8 decimals)
+    /// @param minBetChz Minimum bet amount in CHZ (18 decimals)
     event Initialized(
         address indexed owner,
-        address indexed priceFeed,
         bytes32 indexed matchId,
         uint8 outcomesCount,
         uint64 cutoffTs,
         uint16 feeBps,
         address treasury,
-        uint256 minBetUsd
+        uint256 minBetChz
     );
 
     /// @notice Emitted when a user places a bet with native CHZ
     /// @param user Address of the bettor
     /// @param outcome Outcome index being bet on
     /// @param amountChz Amount of CHZ staked
-    /// @param amountUsd USD value of bet (8 decimals)
+    /// @param amountChz CHZ amount bet (18 decimals)
     event BetPlaced(
         address indexed user,
         uint8 indexed outcome,
-        uint256 amountChz,
-        uint256 amountUsd
+        uint256 amountChz
     );
 
     /// @notice Emitted when match outcome is settled
@@ -137,9 +129,9 @@ abstract contract MatchBettingBase is
     /// @param newFeeBps New fee in basis points
     event FeeUpdated(uint16 newFeeBps);
     
-    /// @notice Emitted when minimum bet USD amount is updated
-    /// @param newMinBetUsd New minimum bet in USD (8 decimals)
-    event MinBetUsdUpdated(uint256 newMinBetUsd);
+    /// @notice Emitted when minimum bet CHZ amount is updated
+    /// @param newMinBetChz New minimum bet in CHZ (18 decimals)
+    event MinBetChzUpdated(uint256 newMinBetChz);
 
     // ----------------------------- ERRORS -------------------------------
     
@@ -182,24 +174,22 @@ abstract contract MatchBettingBase is
     /// @dev Called internally by sport-specific implementations via BeaconProxy
     ///      Grants all roles to owner and sets up parimutuel betting parameters
     /// @param owner_ Address to receive admin roles (recommended: Gnosis Safe multisig)
-    /// @param priceFeed_ Chainlink price feed address for CHZ/USD conversion
     /// @param matchId_ Unique identifier for this match (hash of off-chain data)
     /// @param outcomes_ Number of possible outcomes (min 2, max 16, typical 2-3)
     /// @param cutoffTs_ Unix timestamp after which betting closes
     /// @param feeBps_ Platform fee in basis points (max 1000 = 10%)
     /// @param treasury_ Address to receive platform fees
-    /// @param minBetUsd_ Minimum bet amount in USD (8 decimals, e.g., 5e8 = $5)
+    /// @param minBetChz_ Minimum bet amount in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
     function initializeBase(
         address owner_,
-        address priceFeed_,
         bytes32 matchId_,
         uint8 outcomes_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
-        uint256 minBetUsd_
+        uint256 minBetChz_
     ) internal onlyInitializing {
-        if (owner_ == address(0) || priceFeed_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
+        if (owner_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
         if (outcomes_ < 2 || outcomes_ > 16) revert TooManyOutcomes();
         if (cutoffTs_ == 0) revert InvalidParam();
         if (feeBps_ > 1_000) revert InvalidParam(); // max 10%: 1000 bps
@@ -213,15 +203,14 @@ abstract contract MatchBettingBase is
         _grantRole(PAUSER_ROLE, owner_);
         _grantRole(SETTLER_ROLE, owner_);
 
-        priceFeed     = AggregatorV3Interface(priceFeed_);
         treasury      = treasury_;
         matchId       = matchId_;
         outcomesCount = outcomes_;
         cutoffTs      = cutoffTs_;
         feeBps        = feeBps_;
-        minBetUsd     = minBetUsd_;
+        minBetChz     = minBetChz_;
 
-        emit Initialized(owner_, priceFeed_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetUsd_);
+        emit Initialized(owner_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 
     // ---------------------------- MODIFIERS -----------------------------
@@ -262,12 +251,12 @@ abstract contract MatchBettingBase is
         emit FeeUpdated(newFeeBps);
     }
 
-    /// @notice Updates the minimum bet amount in USD
+    /// @notice Updates the minimum bet amount in CHZ
     /// @dev Allows admin to adjust minimum based on market conditions
-    /// @param newMinBetUsd New minimum bet in USD (8 decimals, e.g., 5e8 = $5)
-    function setMinBetUsd(uint256 newMinBetUsd) external onlyRole(ADMIN_ROLE) {
-        minBetUsd = newMinBetUsd;
-        emit MinBetUsdUpdated(newMinBetUsd);
+    /// @param newMinBetChz New minimum bet in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
+    function setMinBetChz(uint256 newMinBetChz) external onlyRole(ADMIN_ROLE) {
+        minBetChz = newMinBetChz;
+        emit MinBetChzUpdated(newMinBetChz);
     }
 
     /// @notice Pauses all betting operations
@@ -282,7 +271,7 @@ abstract contract MatchBettingBase is
     
     /// @notice Places a bet on a specific outcome using native CHZ
     /// @dev Internal function called by sport-specific wrappers (betHome, betRed, etc.)
-    ///      Receives native CHZ via msg.value and validates against USD minimum
+    ///      Receives native CHZ via msg.value and validates against CHZ minimum
     ///      Parimutuel system: user share = (user bet / total winning pool) * total pool after fees
     /// @param outcome Outcome index to bet on [0..outcomesCount-1]
     function placeBet(uint8 outcome)
@@ -294,15 +283,14 @@ abstract contract MatchBettingBase is
         if (outcome >= outcomesCount) revert InvalidOutcome();
         if (msg.value == 0) revert ZeroBet();
 
-        // Validate minimum bet amount in USD using oracle
-        uint256 usdValue = PriceOracle.chzToUsd(msg.value, priceFeed);
-        if (usdValue < minBetUsd) revert BetBelowMinimum();
+        // Validate minimum bet amount in CHZ
+        if (msg.value < minBetChz) revert BetBelowMinimum();
 
         // effects (CEI pattern)
         pool[outcome] += msg.value;
         bets[msg.sender][outcome] += msg.value;
 
-        emit BetPlaced(msg.sender, outcome, msg.value, usdValue);
+        emit BetPlaced(msg.sender, outcome, msg.value);
     }
 
     // ----------------------------- SETTLEMENT ---------------------------
@@ -413,24 +401,23 @@ abstract contract MatchBettingBase is
     /// @dev Must be called by concrete implementations (FootballBetting, UFCBetting, etc.)
     ///      during their initialize() function
     /// @param owner_ Address to receive admin roles
-    /// @param priceFeed_ Chainlink price feed for CHZ/USD
+    /// @param owner_ Contract owner address
     /// @param matchId_ Match identifier
+    /// @param outcomes_ Number of possible outcomes
     /// @param cutoffTs_ Betting cutoff timestamp
     /// @param feeBps_ Platform fee in basis points
     /// @param treasury_ Fee recipient address
-    /// @param minBetUsd_ Minimum bet in USD (8 decimals)
-    /// @param outcomes_ Number of possible outcomes
+    /// @param minBetChz_ Minimum bet in CHZ (18 decimals)
     function _initSport(
         address owner_,
-        address priceFeed_,
         bytes32 matchId_,
+        uint8 outcomes_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
-        uint256 minBetUsd_,
-        uint8 outcomes_
+        uint256 minBetChz_
     ) internal {
-        initializeBase(owner_, priceFeed_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetUsd_);
+        initializeBase(owner_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 
     // ------------------------- NATIVE CHZ HANDLING ----------------------

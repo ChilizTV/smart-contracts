@@ -41,26 +41,24 @@ contract UFCBetting is MatchBettingBase {
     /// @dev Called by BeaconProxy constructor, can only be called once
     ///      Sets up 2 outcomes (RED/BLUE) or 3 outcomes (RED/BLUE/DRAW)
     /// @param owner_ Address to receive admin roles (recommended: multisig)
-    /// @param priceFeed_ Chainlink price feed for CHZ/USD conversion
     /// @param matchId_ Unique fight identifier
     /// @param cutoffTs_ Unix timestamp when betting closes
     /// @param feeBps_ Platform fee in basis points (max 1000 = 10%)
     /// @param treasury_ Address to receive platform fees
-    /// @param minBetUsd_ Minimum bet amount in USD (8 decimals, e.g., 5e8 = $5)
+    /// @param minBetChz_ Minimum bet amount in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
     /// @param allowDraw_ If true, enables DRAW as third outcome; if false, only RED/BLUE
     function initialize(
         address owner_,
-        address priceFeed_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
-        uint256 minBetUsd_,
+        uint256 minBetChz_,
         bool allowDraw_
     ) external initializer {
         allowDraw = allowDraw_;
         uint8 outcomes = allowDraw_ ? 3 : 2;
-        _initSport(owner_, priceFeed_, matchId_, cutoffTs_, feeBps_, treasury_, minBetUsd_, outcomes);
+        _initSport(owner_, matchId_, outcomes, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 
     // ------------------------- BETTING WRAPPERS -------------------------

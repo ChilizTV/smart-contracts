@@ -36,22 +36,20 @@ contract FootballBetting is MatchBettingBase {
     /// @dev Called by BeaconProxy constructor, can only be called once
     ///      Sets up 3 outcomes (HOME/DRAW/AWAY) for standard 1X2 betting
     /// @param owner_ Address to receive admin roles (recommended: multisig)
-    /// @param priceFeed_ Chainlink price feed for CHZ/USD conversion
     /// @param matchId_ Unique match identifier
     /// @param cutoffTs_ Unix timestamp when betting closes
     /// @param feeBps_ Platform fee in basis points (max 1000 = 10%)
     /// @param treasury_ Address to receive platform fees
-    /// @param minBetUsd_ Minimum bet amount in USD (8 decimals, e.g., 5e8 = $5)
+    /// @param minBetChz_ Minimum bet amount in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
     function initialize(
         address owner_,
-        address priceFeed_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
-        uint256 minBetUsd_
+        uint256 minBetChz_
     ) external initializer {
-        _initSport(owner_, priceFeed_, matchId_, cutoffTs_, feeBps_, treasury_, minBetUsd_, 3);
+        _initSport(owner_, matchId_, 3, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 
     // ------------------------- BETTING WRAPPERS -------------------------

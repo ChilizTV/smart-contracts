@@ -7,21 +7,19 @@ pragma solidity ^0.8.24;
 interface IUFCInit {
     /// @notice Initializes a UFCBetting contract instance with native CHZ
     /// @param owner_ Address to receive admin roles
-    /// @param priceFeed_ Chainlink price feed for CHZ/USD
     /// @param matchId_ Unique match identifier
     /// @param cutoffTs_ Betting cutoff timestamp
     /// @param feeBps_ Platform fee in basis points
     /// @param treasury_ Address to receive fees
-    /// @param minBetUsd_ Minimum bet in USD (8 decimals, e.g. 5e8 = $5)
+    /// @param minBetChz_ Minimum bet in CHZ (18 decimals, e.g. 5e18 = 5 CHZ)
     /// @param allowDraw_ Whether to enable draw betting (3 outcomes vs 2)
     function initialize(
         address owner_,
-        address priceFeed_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
-        uint256 minBetUsd_,
+        uint256 minBetChz_,
         bool allowDraw_
     ) external;
 

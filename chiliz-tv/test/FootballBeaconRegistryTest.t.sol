@@ -5,7 +5,6 @@ import "forge-std/Test.sol";
 import "../src/matchhub/MatchHubBeaconFactory.sol";
 import "../src/SportBeaconRegistry.sol";
 import "../src/betting/FootballBetting.sol";
-import "./mocks/MockV3Aggregator.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 contract FootballBeaconRegistryTest is Test {
@@ -21,17 +20,13 @@ contract FootballBeaconRegistryTest is Test {
     address public user1 = makeAddr("USER1");
     address public user2 = makeAddr("USER2");
 
-    MockV3Aggregator public priceFeed;
-    uint256 constant MIN_BET_USD = 5e8; // $5 minimum bet (8 decimals)
+    uint256 public constant MIN_BET_CHZ = 5e18; // 5 CHZ minimum bet
 
     function setUp() public {
         // Reset timestamp to a known value for consistent testing
         vm.warp(1000000); // Start at a reasonable timestamp
         
         vm.startPrank(admin);
-        
-        // Deploy mock price feed first: CHZ/USD = $0.10 (10 cents per CHZ)
-        priceFeed = new MockV3Aggregator(8, 10e6); // 8 decimals, $0.10
         
         // Fund test users with native CHZ
         vm.deal(user1, 10000 ether);
@@ -45,7 +40,7 @@ contract FootballBeaconRegistryTest is Test {
         registry.setSportImplementation(SPORT_FOOTBALL, address(footballImpl));
 
         // Deploy factory with this test contract as owner
-        factory = new MatchHubBeaconFactory(admin, address(registry), address(priceFeed), treasury, MIN_BET_USD);
+        factory = new MatchHubBeaconFactory(admin, address(registry), treasury, MIN_BET_CHZ);
 
         vm.stopPrank();
     }
@@ -66,12 +61,11 @@ contract FootballBeaconRegistryTest is Test {
 
         address proxy = factory.createFootballMatch(
             admin,
-            address(0), // use factory default priceFeed
             matchId,
             cutoff,
             feeBps,
             address(0), // use factory default treasury
-            0 // use factory default minBetUsd
+            0 // use factory default minBetChz
         );
         address proxyPayable = payable(proxy);
 
@@ -693,7 +687,7 @@ contract FootballBeaconRegistryTest is Test {
         uint16 feeBps_,
         address treasury_
     ) internal returns (address proxy, FootballBetting fb) {
-        proxy = factory.createFootballMatch(owner_, address(0), matchId_, cutoffTs_, feeBps_, treasury_, MIN_BET_USD);
+        proxy = factory.createFootballMatch(owner_, matchId_, cutoffTs_, feeBps_, treasury_, 0);
         fb = FootballBetting(payable(proxy));
     }
 

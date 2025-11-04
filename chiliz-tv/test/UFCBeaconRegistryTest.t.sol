@@ -5,7 +5,6 @@ import "forge-std/Test.sol";
 import "../src/matchhub/MatchHubBeaconFactory.sol";
 import "../src/SportBeaconRegistry.sol";
 import "../src/betting/UFCBetting.sol";
-import "./mocks/MockV3Aggregator.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 contract UFCBeaconRegistryTest is Test {
@@ -22,17 +21,13 @@ contract UFCBeaconRegistryTest is Test {
     address public user1 = makeAddr("USER1");
     address public user2 = makeAddr("USER2");
 
-    MockV3Aggregator public priceFeed;
-    uint256 constant MIN_BET_USD = 5e8;
+    uint256 public constant MIN_BET_CHZ = 5e18; // 5 CHZ minimum
 
     function setUp() public {
         // Reset timestamp to a known value for consistent testing
         vm.warp(1000000); // Start at a reasonable timestamp
         
         vm.startPrank(admin);
-        
-        // Deploy mock price feed first: CHZ/USD = $0.10 (10 cents per CHZ)
-        priceFeed = new MockV3Aggregator(8, 10e6); // 8 decimals, $0.10
         
         // Fund test users with native CHZ
         vm.deal(user1, 10000 ether);
@@ -44,7 +39,7 @@ contract UFCBeaconRegistryTest is Test {
         ufcImpl = new UFCBetting();
         registry.setSportImplementation(SPORT_UFC, address(ufcImpl));
 
-        factory = new MatchHubBeaconFactory(admin, address(registry), address(priceFeed), treasury, MIN_BET_USD);
+        factory = new MatchHubBeaconFactory(admin, address(registry), treasury, MIN_BET_CHZ);
 
         vm.stopPrank();
     }
@@ -59,12 +54,11 @@ contract UFCBeaconRegistryTest is Test {
 
         address proxy = factory.createUFCMatch(
             admin,
-            address(0), // use factory default priceFeed
             matchId,
             cutoff,
             feeBps,
             address(0), // use factory default treasury
-            0, // use factory default minBetUsd
+            0, // use factory default minBetChz
             allowDraw
         );
 
@@ -527,7 +521,7 @@ contract UFCBeaconRegistryTest is Test {
         address treasury_,
         bool allowDraw_
     ) internal returns (address proxy, UFCBetting fb) {
-        proxy = factory.createUFCMatch(owner_, address(0), matchId_, cutoffTs_, feeBps_, treasury_, 0, allowDraw_);
+        proxy = factory.createUFCMatch(owner_, matchId_, cutoffTs_, feeBps_, treasury_, 0, allowDraw_);
         fb = UFCBetting(payable(proxy));
     }
 }

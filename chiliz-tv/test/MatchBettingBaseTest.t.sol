@@ -6,21 +6,18 @@ import "../src/matchhub/MatchHubBeaconFactory.sol";
 import "../src/SportBeaconRegistry.sol";
 import "../src/betting/FootballBetting.sol";
 import "../src/betting/MatchBettingBase.sol";
-import "./mocks/MockV3Aggregator.sol";
-
 // Helper contract to test initialization with custom outcome counts
 contract MatchBettingBaseTestHelper is MatchBettingBase {
     function initWithOutcomes(
         address owner_,
-        address priceFeed_,
         bytes32 matchId_,
         uint8 outcomes_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
-        uint256 minBetUsd_
+        uint256 minBetChz_
     ) external initializer {
-        initializeBase(owner_, priceFeed_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetUsd_);
+        initializeBase(owner_, matchId_, outcomes_, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 }
 
@@ -46,9 +43,9 @@ contract MatchBettingBaseTest is Test {
     address bettor3 = makeAddr("BETTOR3");
     address oracle = makeAddr("ORACLE");
 
-    MockV3Aggregator public priceFeed;
+    uint256 public constant MIN_BET_CHZ = 5e18; // 5 CHZ minimum
 
-    event BetPlaced(address indexed user, uint8 indexed outcome, uint256 amountChz, uint256 amountUsd);
+    event BetPlaced(address indexed user, uint8 indexed outcome, uint256 amountChz);
     event Settled(uint8 indexed winningOutcome, uint256 totalPool, uint256 feeAmount);
     event Claimed(address indexed user, uint256 payout);
     event CutoffUpdated(uint64 newCutoff);
@@ -68,21 +65,16 @@ contract MatchBettingBaseTest is Test {
     error ZeroBet();
     error TransferFailed();
 
-    uint256 constant MIN_BET_USD = 5e8; // $5 minimum bet (8 decimals)
-
     function setUp() public {
         // Reset timestamp to a known value for consistent testing
         vm.warp(1000000); // Start at a reasonable timestamp
         
         vm.startPrank(admin);
         
-        // Deploy mock price feed: CHZ/USD = $0.10 (10 cents per CHZ)
-        priceFeed = new MockV3Aggregator(8, 10e6); // 8 decimals, $0.10
-        
         registry = new SportBeaconRegistry(admin);
         footballImpl = new FootballBetting();
         registry.setSportImplementation(SPORT_FOOTBALL, address(footballImpl));
-        factory = new MatchHubBeaconFactory(admin, address(registry), address(priceFeed), treasury, MIN_BET_USD);
+        factory = new MatchHubBeaconFactory(admin, address(registry), treasury, MIN_BET_CHZ);
         
         vm.stopPrank();
         
@@ -158,7 +150,7 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, feeBps, treasury);
 
-        assertEq(address(fb.priceFeed()), address(priceFeed));
+        assertEq(fb.minBetChz(), MIN_BET_CHZ);
         assertEq(fb.treasury(), treasury);
         assertEq(fb.matchId(), matchId);
         assertEq(fb.cutoffTs(), cutoff);
@@ -190,9 +182,8 @@ contract MatchBettingBaseTest is Test {
         vm.prank(admin);
         (address proxy, FootballBetting fb) = _createFootballMatch(admin, matchId, cutoff, 200, treasury);
 
-        // CHZ price is $0.10, so 100 CHZ = $10 USD (10e8 in 8 decimals = 1000000000)
         vm.expectEmit(true, true, false, true);
-        emit BetPlaced(bettor1, 0, 100 ether, 1000000000); // 100 CHZ, $10 USD
+        emit BetPlaced(bettor1, 0, 100 ether); // 100 CHZ
 
         vm.prank(bettor1);
         fb.betHome{value: 100 ether}();
@@ -829,18 +820,10 @@ contract MatchBettingBaseTest is Test {
         
         vm.prank(admin);
         vm.expectRevert(ZeroAddress.selector);
-        factory.createFootballMatch(address(0), address(priceFeed), matchId, cutoff, 200, treasury, MIN_BET_USD);
+        factory.createFootballMatch(address(0), matchId, cutoff, 200, treasury, 0);
     }
 
-    function testRevertInitWithZeroPriceFeed() public {
-        bytes32 matchId = keccak256("ZERO_PRICEFEED");
-        uint64 cutoff = uint64(block.timestamp + 1 days);
-        
-        // This should succeed because address(0) means use factory default
-        vm.prank(admin);
-        address proxy = factory.createFootballMatch(admin, address(0), matchId, cutoff, 200, address(0), 0);
-        assertTrue(proxy != address(0));
-    }
+    // Test removed: testRevertInitWithZeroPriceFeed - no longer applicable without price feeds
 
     function testRevertInitWithZeroTreasury() public {
         bytes32 matchId = keccak256("ZERO_TREASURY");
@@ -848,7 +831,7 @@ contract MatchBettingBaseTest is Test {
         
         // address(0) for treasury means use factory default, so this should succeed
         vm.prank(admin);
-        address proxy = factory.createFootballMatch(admin, address(priceFeed), matchId, cutoff, 200, address(0), MIN_BET_USD);
+        address proxy = factory.createFootballMatch(admin, matchId, cutoff, 200, address(0), 0);
         assertTrue(proxy != address(0));
     }
 
@@ -861,7 +844,7 @@ contract MatchBettingBaseTest is Test {
         MatchBettingBaseTestHelper testHelper = new MatchBettingBaseTestHelper();
         
         vm.expectRevert(TooManyOutcomes.selector);
-        testHelper.initWithOutcomes(admin, address(priceFeed), matchId, 1, cutoff, 200, treasury, MIN_BET_USD);
+        testHelper.initWithOutcomes(admin, matchId, 1, cutoff, 200, treasury, MIN_BET_CHZ);
     }
 
     function testRevertInitWithTooManyOutcomes() public {
@@ -873,7 +856,7 @@ contract MatchBettingBaseTest is Test {
         MatchBettingBaseTestHelper testHelper = new MatchBettingBaseTestHelper();
         
         vm.expectRevert(TooManyOutcomes.selector);
-        testHelper.initWithOutcomes(admin, address(priceFeed), matchId, 17, cutoff, 200, treasury, MIN_BET_USD);
+        testHelper.initWithOutcomes(admin, matchId, 17, cutoff, 200, treasury, MIN_BET_CHZ);
     }
 
     function testRevertInitWithZeroCutoff() public {
@@ -881,7 +864,7 @@ contract MatchBettingBaseTest is Test {
         
         vm.prank(admin);
         vm.expectRevert(InvalidParam.selector);
-        factory.createFootballMatch(admin, address(priceFeed), matchId, 0, 200, treasury, MIN_BET_USD);
+        factory.createFootballMatch(admin, matchId, 0, 200, treasury, 0);
     }
 
     function testRevertInitWithExcessiveFeeBps() public {
@@ -890,7 +873,7 @@ contract MatchBettingBaseTest is Test {
         
         vm.prank(admin);
         vm.expectRevert(InvalidParam.selector);
-        factory.createFootballMatch(admin, address(priceFeed), matchId, cutoff, 1001, treasury, MIN_BET_USD); // > 1000 bps (10%)
+        factory.createFootballMatch(admin, matchId, cutoff, 1001, treasury, 0); // > 1000 bps (10%)
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -994,7 +977,7 @@ contract MatchBettingBaseTest is Test {
         uint16 feeBps_,
         address treasury_
     ) internal returns (address proxy, FootballBetting fb) {
-        proxy = factory.createFootballMatch(owner_, address(priceFeed), matchId_, cutoffTs_, feeBps_, treasury_, MIN_BET_USD);
+        proxy = factory.createFootballMatch(owner_, matchId_, cutoffTs_, feeBps_, treasury_, 0);
         fb = FootballBetting(payable(proxy));
     }
 }
