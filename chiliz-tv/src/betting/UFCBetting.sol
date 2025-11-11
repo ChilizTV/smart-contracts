@@ -37,48 +37,48 @@ contract UFCBetting is MatchBettingBase {
 
     // --------------------------- INITIALIZER ----------------------------
     
-    /// @notice Initializes a UFC fight betting instance
+    /// @notice Initializes a UFC fight betting instance with native CHZ
     /// @dev Called by BeaconProxy constructor, can only be called once
     ///      Sets up 2 outcomes (RED/BLUE) or 3 outcomes (RED/BLUE/DRAW)
     /// @param owner_ Address to receive admin roles (recommended: multisig)
-    /// @param token_ ERC20 token address for bets
     /// @param matchId_ Unique fight identifier
     /// @param cutoffTs_ Unix timestamp when betting closes
     /// @param feeBps_ Platform fee in basis points (max 1000 = 10%)
     /// @param treasury_ Address to receive platform fees
+    /// @param minBetChz_ Minimum bet amount in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
     /// @param allowDraw_ If true, enables DRAW as third outcome; if false, only RED/BLUE
     function initialize(
         address owner_,
-        address token_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
         address treasury_,
+        uint256 minBetChz_,
         bool allowDraw_
     ) external initializer {
         allowDraw = allowDraw_;
         uint8 outcomes = allowDraw_ ? 3 : 2;
-        _initSport(owner_, token_, matchId_, cutoffTs_, feeBps_, treasury_, outcomes);
+        _initSport(owner_, matchId_, outcomes, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 
     // ------------------------- BETTING WRAPPERS -------------------------
     
-    /// @notice Places a bet on Red corner fighter to win
-    /// @dev Convenience wrapper for placeBet(RED, amount)
-    /// @param amount Amount of betToken to stake
-    function betRed(uint256 amount) external { placeBet(RED, amount); }
+    /// @notice Places a bet on Red corner fighter to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(RED, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 18000 = 1.8x)
+    function betRed(uint64 odds) external payable { placeBet(RED, odds); }
     
-    /// @notice Places a bet on Blue corner fighter to win
-    /// @dev Convenience wrapper for placeBet(BLUE, amount)
-    /// @param amount Amount of betToken to stake
-    function betBlue(uint256 amount) external { placeBet(BLUE, amount); }
+    /// @notice Places a bet on Blue corner fighter to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(BLUE, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 22000 = 2.2x)
+    function betBlue(uint64 odds) external payable { placeBet(BLUE, odds); }
     
-    /// @notice Places a bet on draw result
-    /// @dev Convenience wrapper for placeBet(DRAW, amount)
+    /// @notice Places a bet on draw result using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(DRAW, odds), amount sent via msg.value
     ///      Only available if allowDraw was set to true during initialization
-    /// @param amount Amount of betToken to stake
-    function betDraw(uint256 amount) external {
+    /// @param odds Odds in 4 decimals (e.g., 35000 = 3.5x)
+    function betDraw(uint64 odds) external payable {
         require(allowDraw, "DRAW_DISABLED");
-        placeBet(DRAW, amount);
+        placeBet(DRAW, odds);
     }
 }

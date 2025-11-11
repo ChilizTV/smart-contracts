@@ -32,40 +32,40 @@ contract FootballBetting is MatchBettingBase {
     
     // --------------------------- INITIALIZER ----------------------------
     
-    /// @notice Initializes a football match betting instance
+    /// @notice Initializes a football match betting instance with native CHZ
     /// @dev Called by BeaconProxy constructor, can only be called once
     ///      Sets up 3 outcomes (HOME/DRAW/AWAY) for standard 1X2 betting
     /// @param owner_ Address to receive admin roles (recommended: multisig)
-    /// @param token_ ERC20 token address for bets
     /// @param matchId_ Unique match identifier
     /// @param cutoffTs_ Unix timestamp when betting closes
     /// @param feeBps_ Platform fee in basis points (max 1000 = 10%)
     /// @param treasury_ Address to receive platform fees
+    /// @param minBetChz_ Minimum bet amount in CHZ (18 decimals, e.g., 5e18 = 5 CHZ)
     function initialize(
         address owner_,
-        address token_,
         bytes32 matchId_,
         uint64 cutoffTs_,
         uint16 feeBps_,
-        address treasury_
+        address treasury_,
+        uint256 minBetChz_
     ) external initializer {
-        _initSport(owner_, token_, matchId_, cutoffTs_, feeBps_, treasury_, 3);
+        _initSport(owner_, matchId_, 3, cutoffTs_, feeBps_, treasury_, minBetChz_);
     }
 
     // ------------------------- BETTING WRAPPERS -------------------------
     
-    /// @notice Places a bet on home team to win
-    /// @dev Convenience wrapper for placeBet(HOME, amount)
-    /// @param amount Amount of betToken to stake
-    function betHome(uint256 amount) external { placeBet(HOME, amount); }
+    /// @notice Places a bet on home team to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(HOME, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 20000 = 2.0x, 25000 = 2.5x)
+    function betHome(uint64 odds) external payable { placeBet(HOME, odds); }
     
-    /// @notice Places a bet on draw result
-    /// @dev Convenience wrapper for placeBet(DRAW, amount)
-    /// @param amount Amount of betToken to stake
-    function betDraw(uint256 amount) external { placeBet(DRAW, amount); }
+    /// @notice Places a bet on draw result using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(DRAW, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 30000 = 3.0x)
+    function betDraw(uint64 odds) external payable { placeBet(DRAW, odds); }
     
-    /// @notice Places a bet on away team to win
-    /// @dev Convenience wrapper for placeBet(AWAY, amount)
-    /// @param amount Amount of betToken to stake
-    function betAway(uint256 amount) external { placeBet(AWAY, amount); }
+    /// @notice Places a bet on away team to win using native CHZ with locked odds
+    /// @dev Convenience wrapper for placeBet(AWAY, odds), amount sent via msg.value
+    /// @param odds Odds in 4 decimals (e.g., 18000 = 1.8x)
+    function betAway(uint64 odds) external payable { placeBet(AWAY, odds); }
 }

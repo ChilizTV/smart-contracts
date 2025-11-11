@@ -1,14 +1,14 @@
-# Documentation Technique – MatchHub & MatchHubFactory
+# Technical Documentation – MatchHub & MatchHubFactory
 
-**Rôle** : Product Owner / Product Manager
-**Public cible** : Équipes de développement Solidity, DevOps, QA, intégrateurs back‑end/front‑end
+**Role**: Product Owner / Product Manager  
+**Target Audience**: Solidity development teams, DevOps, QA, backend/frontend integrators
 
 ---
 
-## 1. Contexte & Vision Produit
+## 1. Context & Product Vision
 
-Nous offrons une plateforme décentralisée où chaque **MatchHub** représente un match sportif unique : son nom, ses marchés de paris (victoire/défaite/égalité, nombre de buts, premier buteur), ses mises en ETH, la résolution des marchés et la distribution automatique des gains.
-La factory **MatchHubFactory** permet à toute adresse whitelisted de déployer facilement de nouveaux hubs, en garantissant uniformité, sécurité et upgradeabilité via le pattern UUPS+ERC‑1967.
+We offer a decentralized platform where each **MatchHub** represents a unique sports match: its name, betting markets (win/lose/draw, number of goals, first goalscorer), stakes in ETH, market resolution, and automatic payout distribution.
+The **MatchHubFactory** factory allows any whitelisted address to easily deploy new hubs, ensuring uniformity, security, and upgradeability via the UUPS+ERC-1967 pattern.
 
 ---
 
@@ -203,56 +203,56 @@ sequenceDiagram
 
 ### 2.2 StreamWallet Contract (`src/streamer/StreamWallet.sol`)
 
-Le **StreamWallet** est un contrat proxy déployé automatiquement lors de la première souscription ou donation à un stream.
+The **StreamWallet** is a proxy contract automatically deployed during the first subscription or donation to a stream.
 
-#### 2.2.1 Responsabilités
-- **Revenue Collection**: Collecte des subscriptions et donations
-- **Automatic Split**: Répartition automatique entre streamer et plateforme (via `platformFeeBps`)
-- **Streamer Control**: Le streamer est propriétaire et peut retirer ses fonds
-- **Transparency**: Toutes les transactions sont tracées on-chain avec événements
-- **Integration**: Peut interagir avec les contrats de betting
+#### 2.2.1 Responsibilities
+- **Revenue Collection**: Collects subscriptions and donations
+- **Automatic Split**: Automatic distribution between streamer and platform (via `platformFeeBps`)
+- **Streamer Control**: The streamer is the owner and can withdraw their funds
+- **Transparency**: All transactions are traced on-chain with events
+- **Integration**: Can interact with betting contracts
 
-#### 2.2.2 Fonctions Principales
-- `initialize()`: Initialise le wallet avec streamer, token, treasury, et fee
-- `recordSubscription()`: Enregistre une souscription et distribue les fonds (appelé par factory)
-- `donate()`: Accepte une donation avec message optionnel
-- `withdrawRevenue()`: Permet au streamer de retirer ses revenus accumulés
-- `isSubscribed()`: Vérifie si un utilisateur a une souscription active
-- `availableBalance()`: Retourne le solde disponible pour retrait
+#### 2.2.2 Main Functions
+- `initialize()`: Initializes the wallet with streamer, token, treasury, and fee
+- `recordSubscription()`: Records a subscription and distributes funds (called by factory)
+- `donate()`: Accepts a donation with optional message
+- `withdrawRevenue()`: Allows the streamer to withdraw accumulated revenue
+- `isSubscribed()`: Checks if a user has an active subscription
+- `availableBalance()`: Returns the balance available for withdrawal
 
-#### 2.2.3 État Clé
-- Mapping des souscriptions par utilisateur (`subscriptions`)
-- Mapping des donations lifetime par donateur (`lifetimeDonations`)
-- Métriques: `totalRevenue`, `totalWithdrawn`, `totalSubscribers`
+#### 2.2.3 Key State
+- User subscription mapping (`subscriptions`)
+- Lifetime donation mapping per donor (`lifetimeDonations`)
+- Metrics: `totalRevenue`, `totalWithdrawn`, `totalSubscribers`
 - Configuration: `streamer`, `treasury`, `platformFeeBps`, `token`
 
 ### 2.3 StreamWalletFactory Contract (`src/streamer/StreamWalletFactory.sol`)
 
-La **factory** gère le déploiement et l'interaction avec les StreamWallets via le pattern BeaconProxy.
+The **factory** manages deployment and interaction with StreamWallets via the BeaconProxy pattern.
 
-#### 2.3.1 Responsabilités
-- Déploiement automatique de wallets pour les streamers (lazy deployment)
-- Gestion centralisée des souscriptions et donations
-- Uniformité des wallets via Beacon pattern (upgradeability)
-- Configuration globale (treasury, platform fee)
+#### 2.3.1 Responsibilities
+- Automatic wallet deployment for streamers (lazy deployment)
+- Centralized subscription and donation management
+- Wallet uniformity via Beacon pattern (upgradeability)
+- Global configuration (treasury, platform fee)
 
-#### 2.3.2 Fonctions Principales
-- `subscribeToStream()`: Souscrit à un stream (crée le wallet si nécessaire)
-- `donateToStream()`: Envoie une donation (crée le wallet si nécessaire)
-- `deployWalletFor()`: Déploiement manuel d'un wallet (admin only)
+#### 2.3.2 Main Functions
+- `subscribeToStream()`: Subscribes to a stream (creates wallet if necessary)
+- `donateToStream()`: Sends a donation (creates wallet if necessary)
+- `deployWalletFor()`: Manual wallet deployment (admin only)
 - `setBeacon()`, `setTreasury()`, `setPlatformFee()`: Configuration (owner only)
-- `getWallet()`, `hasWallet()`: Fonctions de vue
+- `getWallet()`, `hasWallet()`: View functions
 
 #### 2.3.3 Architecture
-- Utilise `StreamBeaconRegistry` (immutable) pour gérer l'implémentation upgradeable
-- Mapping `streamerWallets` pour tracer les wallets déployés
-- Pattern BeaconProxy pour upgradeability sans redeployer chaque wallet
+- Uses `StreamBeaconRegistry` (immutable) to manage upgradeable implementation
+- `streamerWallets` mapping to track deployed wallets
+- BeaconProxy pattern for upgradeability without redeploying each wallet
 
-### 2.4 Upgradeable Architecture avec Beacon Pattern
+### 2.4 Upgradeable Architecture with Beacon Pattern
 
-#### 2.4.1 Vue d'ensemble
+#### 2.4.1 Overview
 
-Le système de streaming utilise le **Beacon Pattern** pour permettre l'upgrade de tous les StreamWallets simultanément via une seule transaction.
+The streaming system uses the **Beacon Pattern** to enable upgrading all StreamWallets simultaneously via a single transaction.
 
 ```mermaid
 sequenceDiagram
@@ -330,35 +330,35 @@ sequenceDiagram
     end
 ```
 
-**Architecture Résumé:**
-- **StreamBeaconRegistry**: Possédé par Gnosis Safe, gère le beacon unique
-- **UpgradeableBeacon**: Pointe vers l'implémentation courante
-- **StreamWalletFactory**: Référence immutable au registry, déploie les proxies
-- **BeaconProxy (par streamer)**: Délègue tous les appels à l'implémentation via le beacon
-- **StreamWallet Implementation**: Logique métier partagée par tous les proxies
+**Architecture Summary:**
+- **StreamBeaconRegistry**: Owned by Gnosis Safe, manages the unique beacon
+- **UpgradeableBeacon**: Points to the current implementation
+- **StreamWalletFactory**: Immutable reference to registry, deploys proxies
+- **BeaconProxy (per streamer)**: Delegates all calls to implementation via beacon
+- **StreamWallet Implementation**: Business logic shared by all proxies
 
-#### 2.4.2 Composants
+#### 2.4.2 Components
 
 **1. StreamBeaconRegistry** (`src/streamer/StreamBeaconRegistry.sol`)
-- **Rôle**: Gère l'UpgradeableBeacon unique pour tous les StreamWallets
-- **Owner**: Gnosis Safe (multisig recommandé)
-- **Fonctions clés**:
-  - `setImplementation(address)`: Crée ou upgrade l'implémentation
-  - `getBeacon()`: Retourne l'adresse du beacon
-  - `getImplementation()`: Retourne l'implémentation courante
-  - `isInitialized()`: Vérifie si le beacon existe
+- **Role**: Manages the unique UpgradeableBeacon for all StreamWallets
+- **Owner**: Gnosis Safe (multisig recommended)
+- **Key functions**:
+  - `setImplementation(address)`: Creates or upgrades the implementation
+  - `getBeacon()`: Returns the beacon address
+  - `getImplementation()`: Returns the current implementation
+  - `isInitialized()`: Checks if the beacon exists
 
 **2. StreamWalletFactory** (`src/streamer/StreamWalletFactory.sol`)
-- **Rôle**: Déploie des BeaconProxy pour chaque streamer
-- **Registry**: Référence immutable au StreamBeaconRegistry
-- **Sécurité**: Ne peut pas changer le beacon (immutable), seulement le registry owner peut upgrader
+- **Role**: Deploys BeaconProxy for each streamer
+- **Registry**: Immutable reference to StreamBeaconRegistry
+- **Security**: Cannot change beacon (immutable), only registry owner can upgrade
 
 **3. StreamWallet Implementation** (`src/streamer/StreamWallet.sol`)
-- **Rôle**: Logique métier des wallets streamers
+- **Role**: Business logic for streamer wallets
 - **Pattern**: Upgradeable via Initializable & ReentrancyGuardUpgradeable
-- **État**: Stocké dans chaque proxy individuellement
+- **State**: Stored individually in each proxy
 
-#### 2.4.3 Flux de Déploiement Initial
+#### 2.4.3 Initial Deployment Flow
 
 ```mermaid
 sequenceDiagram
@@ -368,7 +368,7 @@ sequenceDiagram
     participant Factory as 🏭 StreamWalletFactory
     participant Beacon as 🔔 UpgradeableBeacon
 
-    Note over Admin,Beacon: PHASE 1: Déploiement Initial
+    Note over Admin,Beacon: PHASE 1: Initial Deployment
     
     Admin->>Registry: 1. Deploy StreamBeaconRegistry(safeAddress)
     Registry-->>Admin: registry deployed
@@ -380,21 +380,21 @@ sequenceDiagram
     Safe->>Registry: transferOwnership(safe)
     Registry-->>Safe: Ownership transferred
     
-    Note over Safe,Beacon: PHASE 2: Configuration du Beacon
+    Note over Safe,Beacon: PHASE 2: Beacon Configuration
     
     Safe->>Registry: 4. setImplementation(implV1)
     Registry->>Beacon: Create UpgradeableBeacon(implV1)
     Beacon-->>Registry: beacon created
     Registry-->>Safe: ✅ BeaconCreated event
     
-    Note over Admin,Factory: PHASE 3: Déploiement Factory
+    Note over Admin,Factory: PHASE 3: Factory Deployment
     
     Admin->>Factory: 5. Deploy StreamWalletFactory(<br/>adminAddress,<br/>registryAddress,<br/>tokenAddress,<br/>treasuryAddress,<br/>platformFeeBps)
     Factory->>Registry: Check registry.getBeacon()
     Registry-->>Factory: beacon address
     Factory-->>Admin: ✅ factory deployed
     
-    Note over Admin,Factory: PHASE 4: Première Utilisation
+    Note over Admin,Factory: PHASE 4: First Usage
     
     Admin->>Factory: 6. User calls subscribeToStream()
     Factory->>Registry: getBeacon()
@@ -447,12 +447,12 @@ sequenceDiagram
     Beacon-->>ProxyN: returns newImpl (v2)
     ProxyN->>NewImpl: delegatecall to v2
     
-    Note over Safe,ProxyN: ✅ Tous les wallets upgradés en 1 transaction!
+    Note over Safe,ProxyN: ✅ All wallets upgraded in 1 transaction!
 ```
 
-#### 2.4.5 Commandes de Déploiement
+#### 2.4.5 Deployment Commands
 
-**Étape 1: Déployer StreamWallet Implementation**
+**Step 1: Deploy StreamWallet Implementation**
 ```bash
 forge create src/streamer/StreamWallet.sol:StreamWallet \
   --rpc-url $RPC_URL \
@@ -460,7 +460,7 @@ forge create src/streamer/StreamWallet.sol:StreamWallet \
   --verify
 ```
 
-**Étape 2: Déployer StreamBeaconRegistry**
+**Step 2: Deploy StreamBeaconRegistry**
 ```bash
 forge create src/streamer/StreamBeaconRegistry.sol:StreamBeaconRegistry \
   --constructor-args $GNOSIS_SAFE_ADDRESS \
@@ -469,16 +469,16 @@ forge create src/streamer/StreamBeaconRegistry.sol:StreamBeaconRegistry \
   --verify
 ```
 
-**Étape 3: Configurer le Beacon (via Gnosis Safe)**
+**Step 3: Configure Beacon (via Gnosis Safe)**
 ```bash
-# Préparer la transaction via Safe UI ou cast
+# Prepare transaction via Safe UI or cast
 cast send $REGISTRY_ADDRESS \
   "setImplementation(address)" $STREAM_WALLET_IMPL \
   --rpc-url $RPC_URL \
   --private-key $SAFE_SIGNER_PK
 ```
 
-**Étape 4: Déployer StreamWalletFactory**
+**Step 4: Deploy StreamWalletFactory**
 ```bash
 forge create src/streamer/StreamWalletFactory.sol:StreamWalletFactory \
   --constructor-args \
@@ -492,89 +492,89 @@ forge create src/streamer/StreamWalletFactory.sol:StreamWalletFactory \
   --verify
 ```
 
-**Upgrade (via Gnosis Safe uniquement)**
+**Upgrade (via Gnosis Safe only)**
 ```bash
-# 1. Déployer nouvelle implémentation
+# 1. Deploy new implementation
 forge create src/streamer/StreamWallet.sol:StreamWallet \
   --rpc-url $RPC_URL \
   --private-key $DEPLOYER_PK \
   --verify
 
-# 2. Upgrader via Safe
+# 2. Upgrade via Safe
 cast send $REGISTRY_ADDRESS \
   "setImplementation(address)" $NEW_IMPL_ADDRESS \
   --rpc-url $RPC_URL \
   --private-key $SAFE_SIGNER_PK
 ```
 
-#### 2.4.6 Vérifications de Sécurité
+#### 2.4.6 Security Checks
 
-**Avant l'upgrade:**
-- ✅ Tests complets sur testnet avec fork mainnet
-- ✅ Audit de la nouvelle implémentation
-- ✅ Vérification de la compatibilité du storage layout
-- ✅ Simulation de l'upgrade avec Tenderly/Hardhat
-- ✅ Approbation multisig (Gnosis Safe)
+**Before upgrade:**
+- ✅ Complete tests on testnet with mainnet fork
+- ✅ Audit of the new implementation
+- ✅ Verification of storage layout compatibility
+- ✅ Upgrade simulation with Tenderly/Hardhat
+- ✅ Multisig approval (Gnosis Safe)
 
-**Après l'upgrade:**
-- ✅ Vérifier `registry.getImplementation()` retourne la nouvelle adresse
-- ✅ Tester les fonctions critiques sur un proxy existant
-- ✅ Monitor les transactions des utilisateurs
-- ✅ Plan de rollback si nécessaire
+**After upgrade:**
+- ✅ Verify `registry.getImplementation()` returns the new address
+- ✅ Test critical functions on an existing proxy
+- ✅ Monitor user transactions
+- ✅ Rollback plan if necessary
 
-#### 2.4.7 Avantages de cette Architecture
+#### 2.4.7 Architecture Advantages
 
-| Avantage | Description |
+| Advantage | Description |
 |----------|-------------|
-| **Upgrade Atomique** | Tous les wallets upgradent simultanément en 1 transaction |
-| **Gas Efficient** | Un seul beacon partagé par tous les proxies |
-| **Sécurité** | Factory ne peut pas upgrader (registry immutable) |
-| **Gouvernance** | Seul le Gnosis Safe peut upgrader |
-| **Rollback** | Possible de revenir à l'ancienne implémentation si besoin |
-| **Transparence** | Événements `BeaconCreated` et `BeaconUpgraded` on-chain |
-| **Cohérence** | Même pattern que SportBeaconRegistry (betting) |
+| **Atomic Upgrade** | All wallets upgrade simultaneously in 1 transaction |
+| **Gas Efficient** | Single beacon shared by all proxies |
+| **Security** | Factory cannot upgrade (immutable registry) |
+| **Governance** | Only Gnosis Safe can upgrade |
+| **Rollback** | Possible to revert to old implementation if needed |
+| **Transparency** | `BeaconCreated` and `BeaconUpgraded` events on-chain |
+| **Consistency** | Same pattern as SportBeaconRegistry (betting) |
 
-### 2.5 EIP-2612 Permit: Amélioration de l'UX
+### 2.5 EIP-2612 Permit: UX Improvement
 
-#### 2.5.1 Problème Résolu
+#### 2.5.1 Problem Solved
 
-**Avant EIP-2612:**
-- Les utilisateurs devaient effectuer **2 transactions** pour souscrire ou donner:
-  1. `approve(factory, amount)` - Approuver les tokens
-  2. `subscribeToStream(...)` ou `donateToStream(...)` - Effectuer l'action
+**Before EIP-2612:**
+- Users had to make **2 transactions** to subscribe or donate:
+  1. `approve(factory, amount)` - Approve tokens
+  2. `subscribeToStream(...)` or `donateToStream(...)` - Perform action
 
-**Après EIP-2612:**
-- Les utilisateurs effectuent **1 seule transaction** avec une signature off-chain:
-  1. Signer un message de permit (gratuit, pas de gas)
-  2. `subscribeToStreamWithPermit(...)` ou `donateToStreamWithPermit(...)` - Approve + action en une seule transaction
+**After EIP-2612:**
+- Users make **1 single transaction** with an off-chain signature:
+  1. Sign a permit message (free, no gas)
+  2. `subscribeToStreamWithPermit(...)` or `donateToStreamWithPermit(...)` - Approve + action in one transaction
 
-#### 2.5.2 Fonctions Permit
+#### 2.5.2 Permit Functions
 
-**StreamWalletFactory** fournit maintenant deux nouvelles fonctions:
+**StreamWalletFactory** now provides two new functions:
 
 ```solidity
 function subscribeToStreamWithPermit(
     address streamer,
     uint256 amount,
     uint256 duration,
-    uint256 deadline,    // Timestamp d'expiration de la signature
-    uint8 v,             // Signature ECDSA
-    bytes32 r,           // Signature ECDSA
-    bytes32 s            // Signature ECDSA
+    uint256 deadline,    // Signature expiration timestamp
+    uint8 v,             // ECDSA signature
+    bytes32 r,           // ECDSA signature
+    bytes32 s            // ECDSA signature
 ) external nonReentrant returns (address wallet)
 
 function donateToStreamWithPermit(
     address streamer,
     uint256 amount,
     string calldata message,
-    uint256 deadline,    // Timestamp d'expiration de la signature
-    uint8 v,             // Signature ECDSA
-    bytes32 r,           // Signature ECDSA
-    bytes32 s            // Signature ECDSA
+    uint256 deadline,    // Signature expiration timestamp
+    uint8 v,             // ECDSA signature
+    bytes32 r,           // ECDSA signature
+    bytes32 s            // ECDSA signature
 ) external nonReentrant returns (address wallet)
 ```
 
-#### 2.5.3 Flux Utilisateur avec Permit
+#### 2.5.3 User Flow with Permit
 
 ```mermaid
 sequenceDiagram
@@ -585,7 +585,7 @@ sequenceDiagram
     participant Token as 🪙 ERC20Permit Token
     participant StreamWallet as 💰 StreamWallet
 
-    Note over User,StreamWallet: Single Transaction Flow avec EIP-2612
+    Note over User,StreamWallet: Single Transaction Flow with EIP-2612
 
     User->>Frontend: Click "Subscribe"
     Frontend->>Wallet: Request signature (EIP-2612)
@@ -610,21 +610,21 @@ sequenceDiagram
     Note over User,StreamWallet: ✨ Single transaction = Better UX!
 ```
 
-#### 2.5.4 Avantages
+#### 2.5.4 Advantages
 
-| Avantage | Description |
+| Advantage | Description |
 |----------|-------------|
-| **UX Améliorée** | 1 transaction au lieu de 2 → expérience plus fluide |
-| **Gas Économisé** | ~45,000 gas économisé (pas d'appel `approve()` séparé) |
-| **Sécurité** | Deadline + nonce empêchent la réutilisation de signatures |
-| **Standard** | EIP-2612 supporté par tous les tokens majeurs (USDC, DAI, etc.) |
-| **Flexibilité** | Les deux patterns sont supportés (approve classique + permit) |
-| **Mobile-Friendly** | Moins d'interactions = meilleur pour les wallets mobiles |
+| **Improved UX** | 1 transaction instead of 2 → smoother experience |
+| **Gas Saved** | ~45,000 gas saved (no separate `approve()` call) |
+| **Security** | Deadline + nonce prevent signature replay |
+| **Standard** | EIP-2612 supported by all major tokens (USDC, DAI, etc.) |
+| **Flexibility** | Both patterns supported (classic approve + permit) |
+| **Mobile-Friendly** | Fewer interactions = better for mobile wallets |
 
-#### 2.5.5 Intégration Frontend (Exemple avec ethers.js)
+#### 2.5.5 Frontend Integration (Example with ethers.js)
 
 ```javascript
-// 1. Préparer les paramètres
+// 1. Prepare parameters
 const domain = {
   name: await token.name(),
   version: '1',
@@ -647,14 +647,14 @@ const value = {
   spender: factoryAddress,
   value: amount,
   nonce: await token.nonces(userAddress),
-  deadline: Math.floor(Date.now() / 1000) + 3600 // 1 heure
+  deadline: Math.floor(Date.now() / 1000) + 3600 // 1 hour
 };
 
-// 2. Demander la signature (off-chain, gratuit)
+// 2. Request signature (off-chain, free)
 const signature = await signer._signTypedData(domain, types, value);
 const { v, r, s } = ethers.utils.splitSignature(signature);
 
-// 3. Appeler la fonction avec permit (1 seule transaction)
+// 3. Call function with permit (single transaction)
 const tx = await factory.subscribeToStreamWithPermit(
   streamerAddress,
   amount,
@@ -669,14 +669,14 @@ console.log('Subscription successful! 🎉');
 
 #### 2.5.6 Tests
 
-Les tests EIP-2612 couvrent:
-- ✅ Subscription avec permit (single transaction)
-- ✅ Donation avec permit (single transaction)
-- ✅ Multiples opérations avec permit (nonce increment)
-- ✅ Revert si deadline expirée
-- ✅ Signature invalide revert
+EIP-2612 tests cover:
+- ✅ Subscription with permit (single transaction)
+- ✅ Donation with permit (single transaction)
+- ✅ Multiple operations with permit (nonce increment)
+- ✅ Revert if deadline expired
+- ✅ Invalid signature revert
 
-**Commande de test:**
+**Test command:**
 ```bash
 forge test --match-test testSubscribeWithPermit
 forge test --match-test testDonateWithPermit
@@ -686,105 +686,38 @@ forge test --match-test testPermit
 
 ---
 
-## 3. Composants Principaux
-
-### 3.1 MatchHubFactory
-
-* **Responsabilité** : déployer des proxies UUPS pointant vers la logique `MatchHub`.
-* **State**
-
-  * `implementation` : adresse du contrat logique `MatchHub`.
-  * `allHubs[]` : liste de tous les proxies déployés.
-* **API Clés**
-
-  * `constructor(address impl)`
-  * `setImplementation(address newImpl)`
-  * `createHub()`
-  * `getAllHubs()`
-* **Événements**
-
-  * `ImplementationUpdated(newImplementation)`
-  * `MatchHubCreated(proxy, owner)`
-* **Sécurité**
-
-  * `onlyOwner` sur setters
-  * Rejet des adresses nulles
-
-### 3.2 MatchHub
-
-* **Responsabilité** : gérer un unique match et ses multiples marchés de paris.
-* **State**
-
-  * `matchName` : nom/description du match
-  * `marketCount` : compteur de marchés créés
-  * `markets[id]` : mapping `marketId → Market`
-* **Struct Market**
-
-  * `mtype` : `Winner | GoalsCount | FirstScorer`
-  * `odds` : cote ×100 (p.ex. 150 = 1.5×)
-  * `state` : `Live | Ended`
-  * `result` : résultat encodé
-  * `bets[user]` : struct Bet { `amount`, `selection`, `claimed` }
-  * `bettors[]` : adresses ayant parié
-* **API Clés**
-
-  * `initialize(string name, address owner)`
-  * `addMarket(MarketType mtype, uint256 odds)`
-  * `placeBet(uint256 marketId, uint256 selection)` payable
-  * `resolveMarket(uint256 marketId, uint256 result)`
-  * `claim(uint256 marketId)` nonReentrant
-* **Événements**
-
-  * `MatchInitialized(name, owner)`
-  * `MarketAdded(marketId, mtype, odds)`
-  * `BetPlaced(marketId, user, amount, selection)`
-  * `MarketResolved(marketId, result)`
-  * `Payout(marketId, user, amount)`
-* **Erreurs Personnalisées**
-
-  * `InvalidMarket(marketId)`
-  * `WrongState(required)`
-  * `ZeroBet`, `NoBet`, `AlreadyClaimed`, `Lost`, `TransferFailed`
-* **Sécurité**
-
-  * UUPS via `_authorizeUpgrade` + `onlyOwner`
-  * `ReentrancyGuard` sur `claim`
-  * Checks d’état avant chaque action
-
----
-
-## 3. Flux Utilisateur
+## 3. User Flow
 
 ```bash
-# 1. Déployer la factory
+# 1. Deploy the factory
 forge create MatchHubFactory.sol:MatchHubFactory \
   --constructor-args <MATCHHUB_IMPL_ADDR> \
   --rpc-url <RPC> \
   --private-key $PK \
   --broadcast
 
-# 2. Créer un nouveau match (hub)
+# 2. Create a new match (hub)
 cast send <FACTORY_ADDR> "createHub()" \
   --rpc-url <RPC> \
   --private-key $PK
 
-# 3. Ajouter un marché
+# 3. Add a market
 cast send <HUB_PROXY_ADDR> "addMarket(uint8,uint256)" 0 150 \
   --rpc-url <RPC> \
   --private-key $PK
 
-# 4. Parier
+# 4. Place bet
 cast send <HUB_PROXY_ADDR> "placeBet(uint256,uint256)" <marketId> <selection> \
   --value 1000000000000000000 \
   --rpc-url <RPC> \
   --private-key $PK
 
-# 5. Résoudre (owner)
+# 5. Resolve (owner)
 cast send <HUB_PROXY_ADDR> "resolveMarket(uint256,uint256)" <marketId> <result> \
   --rpc-url <RPC> \
   --private-key $PK
 
-# 6. Réclamer (bettor)
+# 6. Claim (bettor)
 cast send <HUB_PROXY_ADDR> "claim(uint256)" <marketId> \
   --rpc-url <RPC> \
   --private-key $PK
@@ -792,22 +725,22 @@ cast send <HUB_PROXY_ADDR> "claim(uint256)" <marketId> \
 
 ---
 
-## 4. Stratégie d’Upgrade
+## 4. Upgrade Strategy
 
-1. **Déployer nouvelle implémentation**
+1. **Deploy new implementation**
 
    ```bash
    forge create MatchHub.sol:MatchHubImplV2 \
      --rpc-url <RPC> --private-key $PK --broadcast
    ```
-2. **Upgrader proxy existant**
+2. **Upgrade existing proxy**
 
    ```solidity
-   // via Foundry script ou Hardhat/Ethers
+   // via Foundry script or Hardhat/Ethers
    MatchHub proxy = MatchHub(<PROXY_ADDR>);
    proxy.upgradeTo(<NEW_IMPL_ADDR>);
    ```
-3. **Mettre à jour la factory**
+3. **Update the factory**
 
    ```bash
    cast send <FACTORY_ADDR> "setImplementation(address)" <NEW_IMPL_ADDR> \
@@ -818,18 +751,36 @@ cast send <HUB_PROXY_ADDR> "claim(uint256)" <marketId> \
 
 ## 5. Tests & Audit
 
-* **Tests Unitaires** : couverture 100 % sur tous les scénarios (Foundry).
-* **Fuzzing** : `forge test --fuzz`.
-* **Analyse Statique** : Slither, MythX.
-* **Revue Manuelle** : validation des erreurs custom, events, flows critiques.
+* **Unit Tests**: 100% coverage on all scenarios (Foundry).
+* **Fuzzing**: `forge test --fuzz`.
+* **Static Analysis**: Slither, MythX.
+* **Manual Review**: Validation of custom errors, events, critical flows.
 
 ---
 
 ## 6. Roadmap
 
-* Oracle externe pour automatiser la résolution (`resolveMarket`).
-* Front‑end React/Next.js avec `ethers.js`/`wagmi`.
-* DAO pour la gouvernance des propriétaires de hubs.
-* Support multi‑token (WCHZ, stablecoins).
+* External oracle to automate resolution (`resolveMarket`).
+* React/Next.js frontend with `ethers.js`/`wagmi`.
+* DAO for hub owner governance.
+* Multi-token support (WCHZ, stablecoins).
 
-> **Note produit** : chaque hub est isolé, upgradeable et auditable individuellement, garantissant modularité et sécurité.
+> **Product note**: Each hub is isolated, upgradeable and individually auditable, ensuring modularity and security.
+
+## 5. Tests & Audit
+
+* **Unit Tests**: 100% coverage on all scenarios (Foundry).
+* **Fuzzing**: `forge test --fuzz`.
+* **Static Analysis**: Slither, MythX.
+* **Manual Review**: Validation of custom errors, events, critical flows.
+
+---
+
+## 6. Roadmap
+
+* External oracle to automate resolution (`resolveMarket`).
+* React/Next.js frontend with `ethers.js`/`wagmi`.
+* DAO for hub owner governance.
+* Multi-token support (WCHZ, stablecoins).
+
+> **Product note**: Each hub is isolated, upgradeable and individually auditable, ensuring modularity and security.
