@@ -8,7 +8,6 @@ import {SportBeaconRegistry} from "../src/SportBeaconRegistry.sol";
 import {FootballBetting} from "../src/betting/FootballBetting.sol";
 import {UFCBetting} from "../src/betting/UFCBetting.sol";
 import {MatchHubBeaconFactory} from "../src/matchhub/MatchHubBeaconFactory.sol";
-import {MockERC20} from "../src/MockERC20.sol";
 
 /**
  * @title DeployBetting
@@ -16,7 +15,17 @@ import {MockERC20} from "../src/MockERC20.sol";
  * @notice Focused deployment script for the Betting System only
  * @dev Deploys SportBeaconRegistry, betting implementations, and MatchHubBeaconFactory
  * 
- * TREASURY ADDRESS: 0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677
+ * SAFE MULTISIG: Acts as both Treasury AND Registry Owner
+ * =========================================================
+ * The Safe multisig address serves dual purposes:
+ * 1. TREASURY: Receives platform fees from all betting activity
+ * 2. REGISTRY OWNER: Controls upgrades to betting implementations
+ * 
+ * DEPLOYMENT PROCESS:
+ * ==================
+ * - Deployer uses PRIVATE_KEY to deploy contracts (pays gas)
+ * - After deployment, registry ownership transfers to SAFE_ADDRESS
+ * - Safe then controls both fee collection and upgrade authority
  * 
  * WHAT THIS SCRIPT DEPLOYS:
  * ========================
@@ -55,10 +64,9 @@ import {MockERC20} from "../src/MockERC20.sol";
  * USAGE:
  * =====
  * Set environment variables:
- *   export PRIVATE_KEY=0x...           # Deployer private key
+ *   export PRIVATE_KEY=0x...           # Deployer private key (pays gas only)
  *   export RPC_URL=https://...         # Network RPC endpoint
- *   export SAFE_ADDRESS=0x...          # Gnosis Safe multisig (REQUIRED)
- *   export TOKEN_ADDRESS=0x...         # ERC20 token (optional, will deploy mock)
+ *   export SAFE_ADDRESS=0x...          # Safe multisig (Treasury + Registry Owner)
  * 
  * Run:
  *   forge script script/DeployBetting.s.sol --rpc-url $RPC_URL --broadcast --verify
@@ -70,9 +78,8 @@ import {MockERC20} from "../src/MockERC20.sol";
  *    matchHubFactory.createFootballMatch(
  *      owner, token, matchId, cutoffTimestamp, feeBps, treasury
  *    )
- * 3. Users can bet:
- *    - Approve token to match proxy
- *    - Call betHome(amount), betDraw(amount), or betAway(amount)
+ * 3. Users can bet with native CHZ:
+ *    - Send CHZ with betHome{value: amount}(), betDraw{value: amount}(), or betAway{value: amount}()
  * 4. Oracle settles match: match.settle(winningOutcome)
  * 5. Winners claim: match.claim()
  */
@@ -81,10 +88,6 @@ contract DeployBetting is Script {
     // ============================================================================
     // CONFIGURATION
     // ============================================================================
-    
-    /// @notice ChilizTV treasury address for receiving platform fees
-    /// @dev Different from deployer (Foundry doesn't support multisig deployment)
-    address public constant TREASURY = 0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677;
     
     /// @notice Sport identifier for Football (1X2 betting)
     bytes32 public constant SPORT_FOOTBALL = keccak256("FOOTBALL");
@@ -101,11 +104,9 @@ contract DeployBetting is Script {
     UFCBetting public ufcBettingImpl;
     SportBeaconRegistry public sportRegistry;
     MatchHubBeaconFactory public matchHubFactory;
-    MockERC20 public mockToken;
     
     address public deployer;
-    address public safeAddress;
-    address public tokenAddress;
+    address public treasury; // Safe multisig - receives fees AND owns registries
     
     
     // ============================================================================
@@ -117,7 +118,7 @@ contract DeployBetting is Script {
         _loadConfig();
         
         // Validate configuration
-        require(safeAddress != address(0), "SAFE_ADDRESS must be set");
+        require(treasury != address(0), "SAFE_ADDRESS must be set");
         
         vm.startBroadcast();
         
@@ -173,15 +174,6 @@ contract DeployBetting is Script {
         console.log("  Functions: betRed(), betBlue(), betDraw()");
         console.log("");
         
-        // Deploy mock token if needed
-        if (tokenAddress == address(0)) {
-            mockToken = new MockERC20("ChilizTV Token", "CHTV");
-            tokenAddress = address(mockToken);
-            console.log("MockERC20 Token deployed (TEST ONLY):", tokenAddress);
-            console.log("WARNING: Using mock token. Use real token in production!");
-            console.log("");
-        }
-        
         console.log("Both implementations inherit from MatchBettingBase:");
         console.log("  - Role-based access control (ADMIN, SETTLER, PAUSER)");
         console.log("  - Betting cutoff timestamp enforcement");
@@ -208,7 +200,7 @@ contract DeployBetting is Script {
         sportRegistry = new SportBeaconRegistry(deployer);
         console.log("SportBeaconRegistry:", address(sportRegistry));
         console.log("Temporary Owner:", deployer);
-        console.log("Final Owner (will transfer):", safeAddress);
+        console.log("Final Owner (will transfer):", treasury);
         console.log("");
         
         console.log("Registry manages beacons per sport:");
@@ -318,10 +310,15 @@ contract DeployBetting is Script {
      *      Registry controls upgrades for ALL betting matches
      *      Must be owned by multisig, not single EOA
      *      
+     *      The Safe multisig serves dual purposes:
+     *      1. TREASURY: Receives all platform fees
+     *      2. REGISTRY OWNER: Controls implementation upgrades
+     *      
      *      After this:
      *      - Only Safe can upgrade Football implementation
      *      - Only Safe can upgrade UFC implementation
      *      - Only Safe can add new sports
+     *      - Safe receives all platform fees
      *      - Deployer cannot upgrade anymore (security!)
      *      - Factory owner can still create matches (safe)
      */
@@ -331,15 +328,16 @@ contract DeployBetting is Script {
         
         console.log("Transferring SportBeaconRegistry...");
         console.log("  From:", deployer);
-        console.log("  To:", safeAddress);
+        console.log("  To:", treasury);
         
-        sportRegistry.transferOwnership(safeAddress);
+        sportRegistry.transferOwnership(treasury);
         
         console.log("Status: Ownership transferred ✓");
         console.log("");
         
         console.log("IMPORTANT:");
-        console.log("  ✓ Registry owned by Safe multisig");
+        console.log("  ✓ Registry owned by Safe multisig:", treasury);
+        console.log("  ✓ Safe receives all platform fees (treasury)");
         console.log("  ✓ Only Safe can upgrade sport implementations");
         console.log("  ✓ Only Safe can add new sports");
         console.log("  ✓ Deployer can still create matches via factory");
@@ -355,19 +353,15 @@ contract DeployBetting is Script {
     function _loadConfig() internal {
         deployer = msg.sender;
         
-        // Load Safe address (REQUIRED)
+        // Load Safe address (REQUIRED) - serves as both treasury and registry owner
         try vm.envAddress("SAFE_ADDRESS") returns (address addr) {
-            safeAddress = addr;
+            treasury = addr;
         } catch {
             console.log("ERROR: SAFE_ADDRESS environment variable not set!");
+            console.log("Safe address is required for:");
+            console.log("  1. Treasury (receives platform fees)");
+            console.log("  2. Registry ownership (controls upgrades)");
             revert("SAFE_ADDRESS required");
-        }
-        
-        // Load token address (optional)
-        try vm.envAddress("TOKEN_ADDRESS") returns (address addr) {
-            tokenAddress = addr;
-        } catch {
-            tokenAddress = address(0); // Will deploy mock
         }
     }
     
@@ -376,10 +370,8 @@ contract DeployBetting is Script {
         console.log("CHILIZ-TV BETTING SYSTEM DEPLOYMENT");
         console.log("=====================================");
         console.log("");
-        console.log("Deployer:", deployer);
-        console.log("Safe Address:", safeAddress);
-        console.log("Treasury:", TREASURY);
-        console.log("Token:", tokenAddress != address(0) ? tokenAddress : "Will deploy mock");
+        console.log("Deployer:", deployer, "(pays gas only)");
+        console.log("Safe/Treasury:", treasury, "(receives fees + owns registries)");
         console.log("");
         console.log("Sports to deploy:");
         console.log("  - Football (1X2 betting)");
@@ -400,22 +392,18 @@ contract DeployBetting is Script {
         console.log("FootballBetting Implementation:", address(footballBettingImpl));
         console.log("UFCBetting Implementation:", address(ufcBettingImpl));
         console.log("SportBeaconRegistry:", address(sportRegistry));
-        console.log("  Owner:", safeAddress);
+        console.log("  Owner:", treasury);
         console.log("  Football Beacon:", sportRegistry.getBeacon(SPORT_FOOTBALL));
         console.log("  UFC Beacon:", sportRegistry.getBeacon(SPORT_UFC));
         console.log("MatchHubBeaconFactory:", address(matchHubFactory));
         console.log("  Owner:", deployer);
-        if (address(mockToken) != address(0)) {
-            console.log("MockERC20 (TEST):", address(mockToken));
-        }
         console.log("");
         
         console.log("CREATE A FOOTBALL MATCH:");
         console.log("-----------------------");
         console.log("cast send", address(matchHubFactory));
-        console.log("  'createFootballMatch(address,address,bytes32,uint64,uint16,address)'");
+        console.log("  'createFootballMatch(address,bytes32,uint64,uint16,address)'");
         console.log("  <OWNER_ADDRESS>        # Admin for the match");
-        console.log("  <TOKEN_ADDRESS>        # ERC20 bet token");
         console.log("  <MATCH_ID>             # Unique ID (bytes32)");
         console.log("  <CUTOFF_TIMESTAMP>     # Betting closes");
         console.log("  <FEE_BPS>              # Platform fee (e.g., 500 = 5%)");
@@ -425,20 +413,19 @@ contract DeployBetting is Script {
         console.log("CREATE A UFC MATCH:");
         console.log("------------------");
         console.log("cast send", address(matchHubFactory));
-        console.log("  'createUFCMatch(address,address,bytes32,uint64,uint16,address,bool)'");
+        console.log("  'createUFCMatch(address,bytes32,uint64,uint16,address,bool)'");
         console.log("  ... (same params as football)");
         console.log("  <ALLOW_DRAW>           # true/false for draw outcome");
         console.log("");
         
         console.log("BETTING FLOW:");
         console.log("------------");
-        console.log("1. User approves token to match proxy");
-        console.log("2. User calls: match.betHome(amount) or betDraw() or betAway()");
-        console.log("3. Tokens transferred from user to match");
-        console.log("4. Bet recorded in user's account");
-        console.log("5. After cutoff, oracle settles: match.settle(winningOutcome)");
-        console.log("6. Winners claim: match.claim()");
-        console.log("7. Platform fee sent to treasury, payout to winner");
+        console.log("1. User sends CHZ with bet: match.betHome{value: amount}()");
+        console.log("2. CHZ transferred from user to match contract");
+        console.log("3. Bet recorded in user's account");
+        console.log("4. After cutoff, oracle settles: match.settle(winningOutcome)");
+        console.log("5. Winners claim: match.claim()");
+        console.log("6. Platform fee sent to treasury, payout to winner");
         console.log("");
         
         console.log("UPGRADING SPORTS (Safe multisig only):");

@@ -7,7 +7,6 @@ import "forge-std/Script.sol";
 import {StreamBeaconRegistry} from "../src/streamer/StreamBeaconRegistry.sol";
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
-import {MockERC20} from "../src/MockERC20.sol";
 
 /**
  * @title DeployStreaming
@@ -15,7 +14,17 @@ import {MockERC20} from "../src/MockERC20.sol";
  * @notice Focused deployment script for the Streaming System only
  * @dev Deploys StreamBeaconRegistry, StreamWallet implementation, and StreamWalletFactory
  * 
- * TREASURY ADDRESS: 0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677
+ * SAFE MULTISIG: Acts as both Treasury AND Registry Owner
+ * =========================================================
+ * The Safe multisig address serves dual purposes:
+ * 1. TREASURY: Receives platform fees from all streaming activity
+ * 2. REGISTRY OWNER: Controls upgrades to StreamWallet implementation
+ * 
+ * DEPLOYMENT PROCESS:
+ * ==================
+ * - Deployer uses PRIVATE_KEY to deploy contracts (pays gas)
+ * - After deployment, registry ownership transfers to SAFE_ADDRESS
+ * - Safe then controls both fee collection and upgrade authority
  * 
  * WHAT THIS SCRIPT DEPLOYS:
  * ========================
@@ -47,10 +56,9 @@ import {MockERC20} from "../src/MockERC20.sol";
  * USAGE:
  * =====
  * Set environment variables:
- *   export PRIVATE_KEY=0x...           # Deployer private key
+ *   export PRIVATE_KEY=0x...           # Deployer private key (pays gas only)
  *   export RPC_URL=https://...         # Network RPC endpoint
- *   export SAFE_ADDRESS=0x...          # Gnosis Safe multisig (REQUIRED)
- *   export TOKEN_ADDRESS=0x...         # ERC20 token (optional, will deploy mock)
+ *   export SAFE_ADDRESS=0x...          # Safe multisig (Treasury + Registry Owner)
  * 
  * Run:
  *   forge script script/DeployStreaming.s.sol --rpc-url $RPC_URL --broadcast --verify
@@ -59,8 +67,7 @@ import {MockERC20} from "../src/MockERC20.sol";
  * ===============
  * 1. Verify contracts on block explorer
  * 2. Test subscription flow:
- *    - User approves token to factory
- *    - User calls factory.subscribeToStream(streamerAddress, amount, duration)
+ *    - User sends CHZ with factory.subscribeToStream{value: amount}(streamerAddress, duration)
  *    - Factory deploys wallet (if first time) and records subscription
  * 3. Streamer can withdraw: wallet.withdrawRevenue(amount)
  */
@@ -69,11 +76,6 @@ contract DeployStreaming is Script {
     // ============================================================================
     // CONFIGURATION
     // ============================================================================
-    
-    /// @notice ChilizTV treasury address for receiving platform fees
-    /// @dev This is DIFFERENT from the deployer address
-    ///      Foundry doesn't support multisig deployment, so we use this address
-    address public constant TREASURY = 0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677;
     
     /// @notice Default platform fee (5% = 500 basis points)
     /// @dev Can be changed later by factory owner via setPlatformFee()
@@ -87,11 +89,9 @@ contract DeployStreaming is Script {
     StreamWallet public streamWalletImpl;
     StreamBeaconRegistry public streamRegistry;
     StreamWalletFactory public streamFactory;
-    MockERC20 public mockToken;
     
     address public deployer;
-    address public safeAddress;
-    address public tokenAddress;
+    address public treasury; // Safe multisig - receives fees AND owns registries
     
     
     // ============================================================================
@@ -103,7 +103,7 @@ contract DeployStreaming is Script {
         _loadConfig();
         
         // Validate configuration
-        require(safeAddress != address(0), "SAFE_ADDRESS must be set");
+        require(treasury != address(0), "SAFE_ADDRESS must be set");
         
         vm.startBroadcast();
         
@@ -147,15 +147,6 @@ contract DeployStreaming is Script {
         console.log("  - Revenue withdrawal (withdrawRevenue)");
         console.log("  - Automatic fee split to treasury");
         console.log("");
-        
-        // Deploy mock token if needed
-        if (tokenAddress == address(0)) {
-            mockToken = new MockERC20("ChilizTV Token", "CHTV");
-            tokenAddress = address(mockToken);
-            console.log("MockERC20 Token deployed (TEST ONLY):", tokenAddress);
-            console.log("WARNING: Using mock token. Use real token in production!");
-            console.log("");
-        }
     }
     
     /**
@@ -175,7 +166,7 @@ contract DeployStreaming is Script {
         streamRegistry = new StreamBeaconRegistry(deployer);
         console.log("StreamBeaconRegistry:", address(streamRegistry));
         console.log("Temporary Owner:", deployer);
-        console.log("Final Owner (will transfer):", safeAddress);
+        console.log("Final Owner (will transfer):", treasury);
         console.log("");
         
         console.log("Registry responsibilities:");
@@ -202,33 +193,29 @@ contract DeployStreaming is Script {
         streamFactory = new StreamWalletFactory(
             deployer,                    // Factory owner (can create wallets)
             address(streamRegistry),     // Registry reference (immutable)
-            tokenAddress,                // Payment token
-            TREASURY,                    // Platform treasury
+            treasury,                    // Platform treasury (Safe multisig)
             DEFAULT_PLATFORM_FEE_BPS     // Platform fee (5%)
         );
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("Owner:", deployer);
         console.log("Registry (immutable):", address(streamRegistry));
-        console.log("Token:", tokenAddress);
-        console.log("Treasury:", TREASURY);
+        console.log("Treasury:", treasury);
         console.log("Platform Fee:", DEFAULT_PLATFORM_FEE_BPS, "bps (5%)");
         console.log("");
         
         console.log("Factory functions:");
-        console.log("  - subscribeToStream(streamer, amount, duration)");
-        console.log("  - subscribeToStreamWithPermit(...) [EIP-2612]");
-        console.log("  - donateToStream(streamer, amount, message)");
-        console.log("  - donateToStreamWithPermit(...) [EIP-2612]");
+        console.log("  - subscribeToStream(streamer, duration) [payable]");
+        console.log("  - donateToStream(streamer, message) [payable]");
         console.log("  - deployWalletFor(streamer) [admin only]");
         console.log("");
         
         console.log("How it works:");
-        console.log("  1. User calls subscribeToStream(streamerA, 100, 30days)");
+        console.log("  1. User calls subscribeToStream{value: 100 CHZ}(streamerA, 30days)");
         console.log("  2. Factory checks if streamerA has wallet → No");
         console.log("  3. Factory queries registry.getBeacon() → beacon address");
         console.log("  4. Factory deploys: new BeaconProxy(beacon, initData)");
-        console.log("  5. Proxy initializes with streamer, token, treasury, fee");
-        console.log("  6. Factory transfers tokens to proxy");
+        console.log("  5. Proxy initializes with streamer and treasury");
+        console.log("  6. Factory forwards CHZ to proxy");
         console.log("  7. Proxy records subscription & splits payment");
         console.log("  8. Treasury gets 5%, streamer gets 95%");
         console.log("");
@@ -273,8 +260,13 @@ contract DeployStreaming is Script {
      *      Registry controls upgrades for ALL streamer wallets
      *      Must be owned by multisig, not single EOA
      *      
+     *      The Safe multisig serves dual purposes:
+     *      1. TREASURY: Receives all platform fees
+     *      2. REGISTRY OWNER: Controls implementation upgrades
+     *      
      *      After this:
      *      - Only Safe multisig can upgrade implementation
+     *      - Safe receives all platform fees (treasury)
      *      - Deployer cannot upgrade anymore (security!)
      *      - Factory owner can still create wallets (safe operation)
      */
@@ -284,16 +276,17 @@ contract DeployStreaming is Script {
         
         console.log("Transferring StreamBeaconRegistry...");
         console.log("  From:", deployer);
-        console.log("  To:", safeAddress);
+        console.log("  To:", treasury);
         
         // Transfer ownership to Safe
-        streamRegistry.transferOwnership(safeAddress);
+        streamRegistry.transferOwnership(treasury);
         
         console.log("Status: Ownership transferred ✓");
         console.log("");
         
         console.log("IMPORTANT:");
-        console.log("  ✓ Registry owned by Safe multisig");
+        console.log("  ✓ Registry owned by Safe multisig:", treasury);
+        console.log("  ✓ Safe receives all platform fees (treasury)");
         console.log("  ✓ Only Safe can upgrade implementations");
         console.log("  ✓ Deployer can still create wallets via factory");
         console.log("  ✓ System is now secure for production");
@@ -308,21 +301,15 @@ contract DeployStreaming is Script {
     function _loadConfig() internal {
         deployer = msg.sender;
         
-        // Load Safe address (REQUIRED)
+        // Load Safe address (REQUIRED) - serves as both treasury and registry owner
         try vm.envAddress("SAFE_ADDRESS") returns (address addr) {
-            safeAddress = addr;
+            treasury = addr;
         } catch {
             console.log("ERROR: SAFE_ADDRESS environment variable not set!");
-            console.log("Registry ownership cannot be transferred.");
-            console.log("Please set SAFE_ADDRESS and re-run.");
+            console.log("Safe address is required for:");
+            console.log("  1. Treasury (receives platform fees)");
+            console.log("  2. Registry ownership (controls upgrades)");
             revert("SAFE_ADDRESS required");
-        }
-        
-        // Load token address (optional)
-        try vm.envAddress("TOKEN_ADDRESS") returns (address addr) {
-            tokenAddress = addr;
-        } catch {
-            tokenAddress = address(0); // Will deploy mock
         }
     }
     
@@ -331,10 +318,8 @@ contract DeployStreaming is Script {
         console.log("CHILIZ-TV STREAMING SYSTEM DEPLOYMENT");
         console.log("=====================================");
         console.log("");
-        console.log("Deployer:", deployer);
-        console.log("Safe Address:", safeAddress);
-        console.log("Treasury:", TREASURY);
-        console.log("Token:", tokenAddress != address(0) ? tokenAddress : "Will deploy mock");
+        console.log("Deployer:", deployer, "(pays gas only)");
+        console.log("Safe/Treasury:", treasury, "(receives fees + owns registries)");
         console.log("Platform Fee:", DEFAULT_PLATFORM_FEE_BPS, "bps (5%)");
         console.log("");
         console.log("=====================================");
@@ -351,13 +336,10 @@ contract DeployStreaming is Script {
         console.log("------------------");
         console.log("StreamWallet Implementation:", address(streamWalletImpl));
         console.log("StreamBeaconRegistry:", address(streamRegistry));
-        console.log("  Owner:", safeAddress);
+        console.log("  Owner:", treasury);
         console.log("  Beacon:", streamRegistry.getBeacon());
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("  Owner:", deployer);
-        if (address(mockToken) != address(0)) {
-            console.log("MockERC20 (TEST):", address(mockToken));
-        }
         console.log("");
         
         console.log("NEXT STEPS:");
@@ -365,10 +347,10 @@ contract DeployStreaming is Script {
         console.log("1. Verify contracts on block explorer");
         console.log("");
         console.log("2. Test creating a streamer wallet:");
-        console.log("   # Subscribe to a stream");
+        console.log("   # Subscribe to a stream with CHZ");
         console.log("   cast send", address(streamFactory));
-        console.log("     'subscribeToStream(address,uint256,uint256)'");
-        console.log("     <STREAMER_ADDRESS> <AMOUNT> <DURATION_SECONDS>");
+        console.log("     'subscribeToStream(address,uint256)' --value <AMOUNT_IN_WEI>");
+        console.log("     <STREAMER_ADDRESS> <DURATION_SECONDS>");
         console.log("");
         console.log("3. Check wallet was created:");
         console.log("   cast call", address(streamFactory));
@@ -382,13 +364,6 @@ contract DeployStreaming is Script {
         console.log("  1. Deploy new StreamWallet implementation");
         console.log("  2. Via Safe multisig: streamRegistry.setImplementation(newImpl)");
         console.log("  3. All existing streamer wallets upgrade automatically!");
-        console.log("");
-        
-        console.log("USING EIP-2612 PERMIT (Better UX):");
-        console.log("----------------------------------");
-        console.log("Instead of approve + subscribe (2 tx):");
-        console.log("  Use subscribeToStreamWithPermit (1 tx with signature)");
-        console.log("  Same for donations: donateToStreamWithPermit");
         console.log("");
         
         console.log("=====================================");

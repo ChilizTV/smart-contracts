@@ -11,7 +11,6 @@ import {UFCBetting} from "../src/betting/UFCBetting.sol";
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 import {MatchHubBeaconFactory} from "../src/matchhub/MatchHubBeaconFactory.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
-import {MockERC20} from "../src/MockERC20.sol";
 
 /**
  * @title DeployAll
@@ -21,9 +20,11 @@ import {MockERC20} from "../src/MockERC20.sol";
  * 
  * IMPORTANT NOTES:
  * ================
- * 1. TREASURY ADDRESS: 0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677
- *    - This is the ChilizTV treasury that receives platform fees
- *    - Different from deployer address (Foundry doesn't support multisig deployment)
+ * 1. SAFE MULTISIG: Acts as both Treasury AND Registry Owner
+ *    - TREASURY: Receives all platform fees from betting & streaming
+ *    - REGISTRY OWNER: Controls upgrades to all implementations
+ *    - Deployer uses PRIVATE_KEY only to pay gas during deployment
+ *    - After deployment, Safe controls both fee collection and upgrades
  * 
  * 2. BEACON PROXY PATTERN:
  *    - Uses OpenZeppelin's UpgradeableBeacon for contract upgradeability
@@ -56,11 +57,9 @@ import {MockERC20} from "../src/MockERC20.sol";
  * 
  * 6. USAGE:
  *    Set environment variables:
- *      - PRIVATE_KEY: Deployer private key
+ *      - PRIVATE_KEY: Deployer private key (pays gas only)
  *      - RPC_URL: Network RPC endpoint
- *      - TREASURY: Treasury address (0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677)
- *      - SAFE_ADDRESS: Gnosis Safe multisig address (for registry ownership)
- *      - TOKEN_ADDRESS: ERC20 token for betting/subscriptions (or deploy mock)
+ *      - SAFE_ADDRESS: Safe multisig (Treasury + Registry Owner)
  *    
  *    Run: forge script script/DeployAll.s.sol --rpc-url $RPC_URL --broadcast --verify
  */
@@ -69,10 +68,6 @@ contract DeployAll is Script {
     // ============================================================================
     // CONFIGURATION CONSTANTS
     // ============================================================================
-    
-    /// @notice ChilizTV treasury address for receiving platform fees
-    /// @dev This is the official treasury address, different from deployer
-    address public constant TREASURY = 0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677;
     
     /// @notice Default platform fee for streaming (5% = 500 basis points)
     uint16 public constant DEFAULT_PLATFORM_FEE_BPS = 500;
@@ -92,7 +87,6 @@ contract DeployAll is Script {
     FootballBetting public footballBettingImpl;
     UFCBetting public ufcBettingImpl;
     StreamWallet public streamWalletImpl;
-    MockERC20 public mockToken;  // Only deployed if no TOKEN_ADDRESS provided
     
     // === Registry Contracts (Beacon Managers) ===
     SportBeaconRegistry public sportRegistry;
@@ -104,8 +98,7 @@ contract DeployAll is Script {
     
     // === Environment Variables ===
     address public deployer;
-    address public safeAddress;
-    address public tokenAddress;
+    address public treasury; // Safe multisig - receives fees AND owns registries
     
     
     // ============================================================================
@@ -126,10 +119,8 @@ contract DeployAll is Script {
         console.log("=====================================");
         console.log("CHILIZ-TV DEPLOYMENT SCRIPT");
         console.log("=====================================");
-        console.log("Deployer:", deployer);
-        console.log("Treasury:", TREASURY);
-        console.log("Safe Address:", safeAddress);
-        console.log("Token Address:", tokenAddress);
+        console.log("Deployer:", deployer, "(pays gas only)");
+        console.log("Safe/Treasury:", treasury, "(receives fees + owns registries)");
         console.log("=====================================\n");
         
         // Execute deployment steps
@@ -159,7 +150,6 @@ contract DeployAll is Script {
      * - FootballBetting: Logic for football match betting (1X2 outcomes)
      * - UFCBetting: Logic for UFC/MMA betting (2-3 outcomes)
      * - StreamWallet: Logic for streamer wallets (subscriptions/donations)
-     * - MockERC20: Test token (only if TOKEN_ADDRESS not provided)
      */
     function _deployImplementations() internal {
         console.log("STEP 1: Deploying Implementation Contracts");
@@ -179,15 +169,6 @@ contract DeployAll is Script {
         // This contract manages streamer revenue (subscriptions/donations)
         streamWalletImpl = new StreamWallet();
         console.log("StreamWallet Implementation:", address(streamWalletImpl));
-        
-        // Deploy mock ERC20 token if no token address provided
-        // In production, use real token address from environment
-        if (tokenAddress == address(0)) {
-            mockToken = new MockERC20("ChilizTV Token", "CHTV");
-            tokenAddress = address(mockToken);
-            console.log("MockERC20 Token (TEST ONLY):", tokenAddress);
-            console.log("WARNING: Using mock token for testing. Use real token in production!");
-        }
         
         console.log("");
     }
@@ -292,15 +273,13 @@ contract DeployAll is Script {
         streamFactory = new StreamWalletFactory(
             deployer,                    // Initial owner
             address(streamRegistry),     // Reference to StreamBeaconRegistry
-            tokenAddress,                // ERC20 token for payments
-            TREASURY,                    // Platform treasury address
+            treasury,                    // Platform treasury address (Safe multisig)
             DEFAULT_PLATFORM_FEE_BPS     // Default 5% platform fee
         );
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("  Owner:", deployer);
         console.log("  Registry:", address(streamRegistry));
-        console.log("  Token:", tokenAddress);
-        console.log("  Treasury:", TREASURY);
+        console.log("  Treasury:", treasury);
         console.log("  Platform Fee:", DEFAULT_PLATFORM_FEE_BPS, "bps (5%)");
         console.log("  Purpose: Deploys streamer wallet proxies");
         console.log("  Functions: subscribeToStream(), donateToStream()");
@@ -385,6 +364,10 @@ contract DeployAll is Script {
      *      Only registries can upgrade implementations
      *      Must be owned by trusted multisig, not EOA
      * 
+     * The Safe multisig serves dual purposes:
+     * 1. TREASURY: Receives all platform fees
+     * 2. REGISTRY OWNER: Controls implementation upgrades
+     * 
      * SECURITY EXPLANATION:
      * --------------------
      * Without this step:
@@ -393,6 +376,7 @@ contract DeployAll is Script {
      * 
      * After this step:
      *   - Only Safe multisig can upgrade implementations
+     *   - Safe receives all platform fees (treasury)
      *   - Requires multiple signers to approve upgrades
      *   - Much more secure for production
      * 
@@ -408,7 +392,7 @@ contract DeployAll is Script {
         console.log("------------------------------------------------");
         
         // Check if Safe address is configured
-        if (safeAddress == address(0)) {
+        if (treasury == address(0)) {
             console.log("WARNING: SAFE_ADDRESS not set!");
             console.log("Registries remain owned by deployer:", deployer);
             console.log("This is INSECURE for production!");
@@ -420,19 +404,20 @@ contract DeployAll is Script {
         // Transfer SportBeaconRegistry ownership to Safe
         console.log("Transferring SportBeaconRegistry ownership...");
         console.log("  From:", deployer);
-        console.log("  To:", safeAddress);
-        sportRegistry.transferOwnership(safeAddress);
+        console.log("  To:", treasury);
+        sportRegistry.transferOwnership(treasury);
         console.log("  Status: Ownership transferred ✓");
         
         // Transfer StreamBeaconRegistry ownership to Safe
         console.log("Transferring StreamBeaconRegistry ownership...");
         console.log("  From:", deployer);
-        console.log("  To:", safeAddress);
-        streamRegistry.transferOwnership(safeAddress);
+        console.log("  To:", treasury);
+        streamRegistry.transferOwnership(treasury);
         console.log("  Status: Ownership transferred ✓");
         
         console.log("");
-        console.log("CRITICAL: Registries now owned by Safe multisig!");
+        console.log("CRITICAL: Registries now owned by Safe multisig:", treasury);
+        console.log("Safe receives all platform fees (treasury)");
         console.log("Only Safe can upgrade implementations from now on.");
         console.log("Deployer can still create matches/wallets via factories.");
         console.log("");
@@ -445,26 +430,21 @@ contract DeployAll is Script {
     
     /**
      * @notice Loads configuration from environment variables
-     * @dev Reads SAFE_ADDRESS and TOKEN_ADDRESS from environment
+     * @dev Reads SAFE_ADDRESS from environment
      *      Falls back to zero address if not set (will trigger warnings)
      */
     function _loadConfig() internal {
         deployer = msg.sender;
         
-        // Try to load Safe address from environment
+        // Try to load Safe address from environment - serves as both treasury and registry owner
         try vm.envAddress("SAFE_ADDRESS") returns (address addr) {
-            safeAddress = addr;
+            treasury = addr;
         } catch {
             console.log("SAFE_ADDRESS not set - will skip ownership transfer");
-            safeAddress = address(0);
-        }
-        
-        // Try to load token address from environment
-        try vm.envAddress("TOKEN_ADDRESS") returns (address addr) {
-            tokenAddress = addr;
-        } catch {
-            console.log("TOKEN_ADDRESS not set - will deploy mock token");
-            tokenAddress = address(0);
+            console.log("Safe address is required for:");
+            console.log("  1. Treasury (receives platform fees)");
+            console.log("  2. Registry ownership (controls upgrades)");
+            treasury = address(0);
         }
     }
     
@@ -481,18 +461,15 @@ contract DeployAll is Script {
         console.log("  FootballBetting:", address(footballBettingImpl));
         console.log("  UFCBetting:", address(ufcBettingImpl));
         console.log("  StreamWallet:", address(streamWalletImpl));
-        if (address(mockToken) != address(0)) {
-            console.log("  MockERC20 (TEST):", address(mockToken));
-        }
         console.log("");
         
         console.log("REGISTRY CONTRACTS (Beacon Managers):");
         console.log("  SportBeaconRegistry:", address(sportRegistry));
-        console.log("    Owner:", safeAddress != address(0) ? safeAddress : deployer);
+        console.log("    Owner:", treasury != address(0) ? treasury : deployer);
         console.log("    Football Beacon:", sportRegistry.getBeacon(SPORT_FOOTBALL));
         console.log("    UFC Beacon:", sportRegistry.getBeacon(SPORT_UFC));
         console.log("  StreamBeaconRegistry:", address(streamRegistry));
-        console.log("    Owner:", safeAddress != address(0) ? safeAddress : deployer);
+        console.log("    Owner:", treasury != address(0) ? treasury : deployer);
         console.log("    StreamWallet Beacon:", streamRegistry.getBeacon());
         console.log("");
         
@@ -501,8 +478,7 @@ contract DeployAll is Script {
         console.log("    Owner:", deployer);
         console.log("  StreamWalletFactory:", address(streamFactory));
         console.log("    Owner:", deployer);
-        console.log("    Token:", tokenAddress);
-        console.log("    Treasury:", TREASURY);
+        console.log("    Treasury:", treasury);
         console.log("");
         
         console.log("NEXT STEPS:");
@@ -516,11 +492,11 @@ contract DeployAll is Script {
         console.log("   streamFactory.subscribeToStream(...)");
         console.log("");
         
-        if (safeAddress == address(0)) {
+        if (treasury == address(0)) {
             console.log("WARNING: Registries not transferred to Safe!");
             console.log("Set SAFE_ADDRESS env variable and transfer ownership manually:");
-            console.log("  sportRegistry.transferOwnership(safeAddress)");
-            console.log("  streamRegistry.transferOwnership(safeAddress)");
+            console.log("  sportRegistry.transferOwnership(treasuryAddress)");
+            console.log("  streamRegistry.transferOwnership(treasuryAddress)");
             console.log("");
         }
         
