@@ -5,24 +5,27 @@ import {Test, console2} from "forge-std/Test.sol";
 import {StreamBeaconRegistry} from "../src/streamer/StreamBeaconRegistry.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
-import {MockERC20} from "../src/MockERC20.sol";
+
+// Mock contract to receive CHZ
+contract MockTreasury {
+    receive() external payable {}
+}
 
 contract StreamBeaconRegistryTest is Test {
     StreamBeaconRegistry public registry;
     StreamWalletFactory public factory;
     StreamWallet public implementation;
-    MockERC20 public token;
 
     address public admin = address(0x1);
     address public gnosisSafe = address(0x2);
-    address public treasury = address(0xA);
+    MockTreasury public treasury;
     address public streamer1 = address(0x4);
     address public streamer2 = address(0x5);
     address public viewer1 = address(0x6);
     address public viewer2 = address(0x7);
 
     uint16 public constant PLATFORM_FEE_BPS = 500; // 5%
-    uint256 public constant INITIAL_BALANCE = 1000e18;
+    uint256 public constant INITIAL_BALANCE = 1000 ether;
 
     event BeaconCreated(address indexed beacon, address indexed implementation);
     event BeaconUpgraded(address indexed newImplementation);
@@ -40,9 +43,9 @@ contract StreamBeaconRegistryTest is Test {
     );
 
     function setUp() public {
-        // Deploy token
-        token = new MockERC20();
-
+        // Deploy mock treasury to receive CHZ
+        treasury = new MockTreasury();
+        
         // Deploy registry with Safe as owner
         vm.prank(gnosisSafe);
         registry = new StreamBeaconRegistry(gnosisSafe);
@@ -54,21 +57,20 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(gnosisSafe);
         registry.setImplementation(address(implementation));
 
-        // Deploy factory with admin as owner
+        // Deploy factory with admin as owner (4 parameters, no token)
         vm.prank(admin);
         factory = new StreamWalletFactory(
             admin,
             address(registry),
-            address(token),
-            treasury,
+            address(treasury),
             PLATFORM_FEE_BPS
         );
 
-        // Fund viewers and streamers
-        token.mint(viewer1, INITIAL_BALANCE);
-        token.mint(viewer2, INITIAL_BALANCE);
-        token.mint(streamer1, INITIAL_BALANCE);
-        token.mint(streamer2, INITIAL_BALANCE);
+        // Fund viewers and streamers with native CHZ
+        vm.deal(viewer1, INITIAL_BALANCE);
+        vm.deal(viewer2, INITIAL_BALANCE);
+        vm.deal(streamer1, INITIAL_BALANCE);
+        vm.deal(streamer2, INITIAL_BALANCE);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -84,8 +86,7 @@ contract StreamBeaconRegistryTest is Test {
     function testFactoryDeployment() public view {
         assertEq(factory.owner(), admin);
         assertEq(address(factory.registry()), address(registry));
-        assertEq(address(factory.token()), address(token));
-        assertEq(factory.treasury(), treasury);
+        assertEq(factory.treasury(), address(treasury));
         assertEq(factory.defaultPlatformFeeBps(), PLATFORM_FEE_BPS);
     }
 
@@ -94,34 +95,30 @@ contract StreamBeaconRegistryTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function testFirstSubscription() public {
-        uint256 subscriptionAmount = 100e18;
+        uint256 subscriptionAmount = 100 ether;
         uint256 duration = 30 days;
-
-        // Approve factory
-        vm.prank(viewer1);
-        token.approve(address(factory), subscriptionAmount);
 
         // Check wallet doesn't exist yet
         assertFalse(factory.hasWallet(streamer1));
 
-        // Subscribe (we'll check events after to get the actual wallet address)
+        // Subscribe with native CHZ
         vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, subscriptionAmount, duration);
+        address wallet = factory.subscribeToStream{value: subscriptionAmount}(streamer1, duration);
 
         // Verify wallet created
         assertTrue(factory.hasWallet(streamer1));
         assertEq(factory.getWallet(streamer1), wallet);
 
         // Check balances
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
         uint256 expectedFee = (subscriptionAmount * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamerAmount = subscriptionAmount - expectedFee;
 
         // Treasury should have received platform fee
-        assertEq(token.balanceOf(treasury), expectedFee);
+        assertEq(address(treasury).balance, expectedFee);
         
         // Streamer should have received payment
-        assertEq(token.balanceOf(streamer1), INITIAL_BALANCE + expectedStreamerAmount);
+        assertEq(streamer1.balance, INITIAL_BALANCE + expectedStreamerAmount);
 
         // Verify subscription data
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -129,30 +126,26 @@ contract StreamBeaconRegistryTest is Test {
         assertEq(streamWallet.totalSubscribers(), 1);
 
         // Viewer balance should be reduced
-        assertEq(token.balanceOf(viewer1), INITIAL_BALANCE - subscriptionAmount);
+        assertEq(viewer1.balance, INITIAL_BALANCE - subscriptionAmount);
     }
 
     function testMultipleSubscriptions() public {
-        uint256 amount1 = 100e18;
-        uint256 amount2 = 200e18;
+        uint256 amount1 = 100 ether;
+        uint256 amount2 = 200 ether;
         uint256 duration = 30 days;
 
         // First subscription from viewer1
         vm.prank(viewer1);
-        token.approve(address(factory), amount1);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, amount1, duration);
+        address wallet = factory.subscribeToStream{value: amount1}(streamer1, duration);
 
         // Second subscription from viewer2 to same streamer
         vm.prank(viewer2);
-        token.approve(address(factory), amount2);
-        vm.prank(viewer2);
-        address wallet2 = factory.subscribeToStream(streamer1, amount2, duration);
+        address wallet2 = factory.subscribeToStream{value: amount2}(streamer1, duration);
 
         // Should use same wallet
         assertEq(wallet, wallet2);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
         // Both should be subscribed
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -166,24 +159,20 @@ contract StreamBeaconRegistryTest is Test {
 
         // Check total fees
         uint256 totalFees = ((amount1 + amount2) * PLATFORM_FEE_BPS) / 10_000;
-        assertEq(token.balanceOf(treasury), totalFees);
+        assertEq(address(treasury).balance, totalFees);
     }
 
     function testSubscriptionToMultipleStreamers() public {
-        uint256 amount = 100e18;
+        uint256 amount = 100 ether;
         uint256 duration = 30 days;
 
         // Subscribe to streamer1
         vm.prank(viewer1);
-        token.approve(address(factory), amount);
-        vm.prank(viewer1);
-        address wallet1 = factory.subscribeToStream(streamer1, amount, duration);
+        address wallet1 = factory.subscribeToStream{value: amount}(streamer1, duration);
 
         // Subscribe to streamer2
         vm.prank(viewer1);
-        token.approve(address(factory), amount);
-        vm.prank(viewer1);
-        address wallet2 = factory.subscribeToStream(streamer2, amount, duration);
+        address wallet2 = factory.subscribeToStream{value: amount}(streamer2, duration);
 
         // Different wallets for different streamers
         assertTrue(wallet1 != wallet2);
@@ -194,20 +183,18 @@ contract StreamBeaconRegistryTest is Test {
 
         // Both streamers should have received payments
         uint256 expectedStreamerAmount = amount - ((amount * PLATFORM_FEE_BPS) / 10_000);
-        assertEq(token.balanceOf(streamer1), INITIAL_BALANCE + expectedStreamerAmount);
-        assertEq(token.balanceOf(streamer2), INITIAL_BALANCE + expectedStreamerAmount);
+        assertEq(streamer1.balance, INITIAL_BALANCE + expectedStreamerAmount);
+        assertEq(streamer2.balance, INITIAL_BALANCE + expectedStreamerAmount);
     }
 
     function testSubscriptionExpiry() public {
-        uint256 amount = 100e18;
+        uint256 amount = 100 ether;
         uint256 duration = 30 days;
 
         vm.prank(viewer1);
-        token.approve(address(factory), amount);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, amount, duration);
+        address wallet = factory.subscribeToStream{value: amount}(streamer1, duration);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
         // Should be subscribed immediately
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -222,16 +209,14 @@ contract StreamBeaconRegistryTest is Test {
     }
 
     function testSubscriptionRenewal() public {
-        uint256 amount = 100e18;
+        uint256 amount = 100 ether;
         uint256 duration = 30 days;
 
         // First subscription
         vm.prank(viewer1);
-        token.approve(address(factory), amount);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, amount, duration);
+        address wallet = factory.subscribeToStream{value: amount}(streamer1, duration);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
         // Fast forward past expiry
         vm.warp(block.timestamp + duration + 1);
@@ -239,60 +224,10 @@ contract StreamBeaconRegistryTest is Test {
 
         // Renew subscription
         vm.prank(viewer1);
-        token.approve(address(factory), amount);
-        vm.prank(viewer1);
-        factory.subscribeToStream(streamer1, amount, duration);
+        factory.subscribeToStream{value: amount}(streamer1, duration);
 
         // Should be subscribed again
         assertTrue(streamWallet.isSubscribed(viewer1));
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                    EIP-2612 PERMIT TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function testSubscribeWithPermit() public {
-        uint256 pk = 0x1234;
-        address user = vm.addr(pk);
-        token.mint(user, INITIAL_BALANCE);
-
-        bytes32 hash = keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), keccak256(abi.encode(keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"), user, address(factory), 100e18, 0, block.timestamp + 1 hours))));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, hash);
-
-        vm.prank(user);
-        address wallet = factory.subscribeToStreamWithPermit(streamer1, 100e18, 30 days, block.timestamp + 1 hours, v, r, s);
-
-        assertTrue(factory.hasWallet(streamer1));
-        assertTrue(StreamWallet(wallet).isSubscribed(user));
-    }
-
-    function testDonateWithPermit() public {
-        uint256 pk = 0x5678;
-        address user = vm.addr(pk);
-        token.mint(user, INITIAL_BALANCE);
-
-        bytes32 hash = keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), keccak256(abi.encode(keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"), user, address(factory), 50e18, 0, block.timestamp + 1 hours))));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, hash);
-
-        vm.prank(user);
-        address wallet = factory.donateToStreamWithPermit(streamer1, 50e18, "Permit!", block.timestamp + 1 hours, v, r, s);
-
-        assertTrue(factory.hasWallet(streamer1));
-        assertEq(StreamWallet(wallet).totalRevenue(), 50e18);
-    }
-
-    function testPermitExpiredDeadline() public {
-        uint256 pk = 0x9999;
-        address user = vm.addr(pk);
-        token.mint(user, INITIAL_BALANCE);
-
-        uint256 pastDeadline = block.timestamp - 1;
-        bytes32 hash = keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), keccak256(abi.encode(keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"), user, address(factory), 100e18, 0, pastDeadline))));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, hash);
-
-        vm.prank(user);
-        vm.expectRevert();
-        factory.subscribeToStreamWithPermit(streamer1, 100e18, 30 days, pastDeadline, v, r, s);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -300,26 +235,21 @@ contract StreamBeaconRegistryTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function testDonation() public {
-        uint256 donationAmount = 50e18;
+        uint256 donationAmount = 50 ether;
         string memory message = "Great stream!";
 
         // First create a wallet via subscription
         vm.prank(viewer1);
-        token.approve(address(factory), 100e18);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, 100e18, 30 days);
+        address wallet = factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
 
-        uint256 streamerBalanceBefore = token.balanceOf(streamer1);
-        uint256 treasuryBalanceBefore = token.balanceOf(treasury);
+        uint256 streamerBalanceBefore = streamer1.balance;
+        uint256 treasuryBalanceBefore = address(treasury).balance;
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
-        // Donate directly to wallet (not through factory)
+        // Donate directly to wallet
         vm.prank(viewer2);
-        token.approve(wallet, donationAmount);
-        
-        vm.prank(viewer2);
-        streamWallet.donate(donationAmount, message);
+        streamWallet.donate{value: donationAmount}(donationAmount, message);
 
         // Check donation recorded
         assertEq(streamWallet.getDonationAmount(viewer2), donationAmount);
@@ -329,63 +259,53 @@ contract StreamBeaconRegistryTest is Test {
         uint256 expectedStreamerAmount = donationAmount - expectedFee;
 
         assertEq(
-            token.balanceOf(treasury),
+            address(treasury).balance,
             treasuryBalanceBefore + expectedFee
         );
         assertEq(
-            token.balanceOf(streamer1),
+            streamer1.balance,
             streamerBalanceBefore + expectedStreamerAmount
         );
     }
 
     function testDonationCreatesWallet() public {
-        uint256 donationAmount = 50e18;
+        uint256 donationAmount = 50 ether;
         string memory message = "First donation!";
 
         // Use factory to create wallet via donation
-        vm.prank(viewer1);
-        token.approve(address(factory), donationAmount);
-        
         vm.expectEmit(true, true, false, true);
         emit DonationProcessed(streamer1, viewer1, donationAmount, message);
         
         vm.prank(viewer1);
-        address wallet = factory.donateToStream(streamer1, donationAmount, message);
+        address wallet = factory.donateToStream{value: donationAmount}(streamer1, message);
 
         // Wallet should now exist
         assertTrue(factory.hasWallet(streamer1));
         assertEq(factory.getWallet(streamer1), wallet);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
         
-        // Note: donation tracking is tied to msg.sender which is the factory
-        // So we check the wallet received revenue
+        // Verify revenue was recorded
         assertEq(streamWallet.totalRevenue(), donationAmount);
     }
 
     function testMultipleDonationsAccumulate() public {
-        uint256 donation1 = 50e18;
-        uint256 donation2 = 75e18;
+        uint256 donation1 = 50 ether;
+        uint256 donation2 = 75 ether;
 
         // First create wallet via subscription
         vm.prank(viewer1);
-        token.approve(address(factory), 100e18);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, 100e18, 30 days);
+        address wallet = factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
         // First donation
         vm.prank(viewer1);
-        token.approve(wallet, donation1);
-        vm.prank(viewer1);
-        streamWallet.donate(donation1, "First!");
+        streamWallet.donate{value: donation1}(donation1, "First!");
 
         // Second donation from same viewer
         vm.prank(viewer1);
-        token.approve(wallet, donation2);
-        vm.prank(viewer1);
-        streamWallet.donate(donation2, "Second!");
+        streamWallet.donate{value: donation2}(donation2, "Second!");
 
         // Should accumulate
         assertEq(streamWallet.getDonationAmount(viewer1), donation1 + donation2);
@@ -397,52 +317,45 @@ contract StreamBeaconRegistryTest is Test {
 
     function testStreamerWithdrawal() public {
         // Create wallet with subscription
-        uint256 subscriptionAmount = 100e18;
+        uint256 subscriptionAmount = 100 ether;
         vm.prank(viewer1);
-        token.approve(address(factory), subscriptionAmount);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, subscriptionAmount, 30 days);
+        address wallet = factory.subscribeToStream{value: subscriptionAmount}(streamer1, 30 days);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
         // Check available balance (should be 0 as payment was instant)
         assertEq(streamWallet.availableBalance(), 0);
 
-        // Now donate directly to wallet to create balance
-        uint256 donationAmount = 50e18;
-        vm.prank(viewer2);
-        token.approve(wallet, donationAmount);
-        vm.prank(viewer2);
-        streamWallet.donate(donationAmount, "Test");
+        // Wallet has 0 balance since payments are immediate, but let's test the withdrawal function
+        // by sending CHZ directly to the wallet
+        vm.deal(wallet, 10 ether);
 
-        // After donation, streamer should have received payment
-        // But let's test withdrawal for any remaining balance
         uint256 balance = streamWallet.availableBalance();
-        
-        if (balance > 0) {
-            uint256 streamerBalanceBefore = token.balanceOf(streamer1);
-            
-            vm.prank(streamer1);
-            streamWallet.withdrawRevenue(balance);
+        assertEq(balance, 10 ether);
 
-            assertEq(token.balanceOf(streamer1), streamerBalanceBefore + balance);
-            assertEq(streamWallet.availableBalance(), 0);
-        }
+        uint256 streamerBalanceBefore = streamer1.balance;
+        
+        vm.prank(streamer1);
+        streamWallet.withdrawRevenue(balance);
+
+        assertEq(streamer1.balance, streamerBalanceBefore + balance);
+        assertEq(streamWallet.availableBalance(), 0);
     }
 
     function testOnlyStreamerCanWithdraw() public {
         // Create wallet
         vm.prank(viewer1);
-        token.approve(address(factory), 100e18);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, 100e18, 30 days);
+        address wallet = factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
+
+        // Fund wallet
+        vm.deal(wallet, 1 ether);
 
         // Try to withdraw as non-streamer
         vm.prank(viewer1);
         vm.expectRevert(StreamWallet.OnlyStreamer.selector);
-        streamWallet.withdrawRevenue(1e18);
+        streamWallet.withdrawRevenue(1 ether);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -451,11 +364,11 @@ contract StreamBeaconRegistryTest is Test {
 
     function testFeeCalculations() public {
         uint256[] memory amounts = new uint256[](5);
-        amounts[0] = 100e18;
-        amounts[1] = 1000e18;
-        amounts[2] = 10000e18;
-        amounts[3] = 1e18;
-        amounts[4] = 999e18;
+        amounts[0] = 100 ether;
+        amounts[1] = 1000 ether;
+        amounts[2] = 10000 ether;
+        amounts[3] = 1 ether;
+        amounts[4] = 999 ether;
 
         uint256 totalFees = 0;
         uint256 totalStreamerPayments = 0;
@@ -463,12 +376,10 @@ contract StreamBeaconRegistryTest is Test {
         for (uint256 i = 0; i < amounts.length; i++) {
             // Create new viewer for each test
             address viewer = address(uint160(1000 + i));
-            token.mint(viewer, amounts[i]);
+            vm.deal(viewer, amounts[i]);
 
             vm.prank(viewer);
-            token.approve(address(factory), amounts[i]);
-            vm.prank(viewer);
-            factory.subscribeToStream(streamer1, amounts[i], 30 days);
+            factory.subscribeToStream{value: amounts[i]}(streamer1, 30 days);
 
             uint256 expectedFee = (amounts[i] * PLATFORM_FEE_BPS) / 10_000;
             uint256 expectedStreamerAmount = amounts[i] - expectedFee;
@@ -478,11 +389,11 @@ contract StreamBeaconRegistryTest is Test {
         }
 
         // Verify total fees collected
-        assertEq(token.balanceOf(treasury), totalFees);
+        assertEq(address(treasury).balance, totalFees);
 
         // Verify total streamer payments
         assertEq(
-            token.balanceOf(streamer1),
+            streamer1.balance,
             INITIAL_BALANCE + totalStreamerPayments
         );
     }
@@ -493,23 +404,20 @@ contract StreamBeaconRegistryTest is Test {
         StreamWalletFactory zeroFeeFactory = new StreamWalletFactory(
             admin,
             address(registry),
-            address(token),
-            treasury,
+            address(treasury),
             0 // 0% fee
         );
 
-        uint256 amount = 100e18;
+        uint256 amount = 100 ether;
         
         vm.prank(viewer1);
-        token.approve(address(zeroFeeFactory), amount);
-        vm.prank(viewer1);
-        zeroFeeFactory.subscribeToStream(streamer2, amount, 30 days);
+        zeroFeeFactory.subscribeToStream{value: amount}(streamer2, 30 days);
 
         // Streamer should receive full amount
-        assertEq(token.balanceOf(streamer2), INITIAL_BALANCE + amount);
+        assertEq(streamer2.balance, INITIAL_BALANCE + amount);
         
-        // Treasury should receive nothing
-        assertEq(token.balanceOf(treasury), 0);
+        // Treasury should receive nothing (still 0 from previous tests)
+        assertEq(address(treasury).balance, 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -519,9 +427,7 @@ contract StreamBeaconRegistryTest is Test {
     function testUpgradeImplementation() public {
         // Create a wallet with first implementation
         vm.prank(viewer1);
-        token.approve(address(factory), 100e18);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, 100e18, 30 days);
+        address wallet = factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
 
         // Deploy new implementation
         StreamWallet newImplementation = new StreamWallet();
@@ -537,7 +443,7 @@ contract StreamBeaconRegistryTest is Test {
         assertEq(registry.getImplementation(), address(newImplementation));
 
         // Existing proxy should still work with new implementation
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
         assertTrue(streamWallet.isSubscribed(viewer1));
     }
 
@@ -562,31 +468,22 @@ contract StreamBeaconRegistryTest is Test {
     function testRevertZeroAmount() public {
         vm.prank(viewer1);
         vm.expectRevert(StreamWalletFactory.InvalidAmount.selector);
-        factory.subscribeToStream(streamer1, 0, 30 days);
+        factory.subscribeToStream{value: 0}(streamer1, 30 days);
     }
 
     function testRevertZeroDuration() public {
         vm.prank(viewer1);
-        token.approve(address(factory), 100e18);
-        vm.prank(viewer1);
         vm.expectRevert(StreamWalletFactory.InvalidDuration.selector);
-        factory.subscribeToStream(streamer1, 100e18, 0);
-    }
-
-    function testRevertInsufficientAllowance() public {
-        vm.prank(viewer1);
-        vm.expectRevert();
-        factory.subscribeToStream(streamer1, 100e18, 30 days);
+        factory.subscribeToStream{value: 100 ether}(streamer1, 0);
     }
 
     function testRevertInsufficientBalance() public {
         address poorViewer = address(0x999);
+        // Don't fund poorViewer
         
         vm.prank(poorViewer);
-        token.approve(address(factory), 100e18);
-        vm.prank(poorViewer);
         vm.expectRevert();
-        factory.subscribeToStream(streamer1, 100e18, 30 days);
+        factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -595,27 +492,21 @@ contract StreamBeaconRegistryTest is Test {
 
     function testCompleteFlow() public {
         // Step 1: First subscription
-        uint256 sub1Amount = 100e18;
+        uint256 sub1Amount = 100 ether;
         vm.prank(viewer1);
-        token.approve(address(factory), sub1Amount);
-        vm.prank(viewer1);
-        address wallet = factory.subscribeToStream(streamer1, sub1Amount, 30 days);
+        address wallet = factory.subscribeToStream{value: sub1Amount}(streamer1, 30 days);
 
-        StreamWallet streamWallet = StreamWallet(wallet);
+        StreamWallet streamWallet = StreamWallet(payable(wallet));
 
         // Step 2: Another viewer subscribes
-        uint256 sub2Amount = 200e18;
+        uint256 sub2Amount = 200 ether;
         vm.prank(viewer2);
-        token.approve(address(factory), sub2Amount);
-        vm.prank(viewer2);
-        factory.subscribeToStream(streamer1, sub2Amount, 60 days);
+        factory.subscribeToStream{value: sub2Amount}(streamer1, 60 days);
 
         // Step 3: First viewer donates directly to wallet
-        uint256 donationAmount = 50e18;
+        uint256 donationAmount = 50 ether;
         vm.prank(viewer1);
-        token.approve(wallet, donationAmount);
-        vm.prank(viewer1);
-        streamWallet.donate(donationAmount, "Love your content!");
+        streamWallet.donate{value: donationAmount}(donationAmount, "Love your content!");
 
         // Calculate expected totals
         uint256 totalRevenue = sub1Amount + sub2Amount + donationAmount;
@@ -628,8 +519,8 @@ contract StreamBeaconRegistryTest is Test {
         assertEq(streamWallet.getDonationAmount(viewer1), donationAmount);
 
         // Verify balances
-        assertEq(token.balanceOf(treasury), totalFees);
-        assertEq(token.balanceOf(streamer1), INITIAL_BALANCE + totalStreamerPayment);
+        assertEq(address(treasury).balance, totalFees);
+        assertEq(streamer1.balance, INITIAL_BALANCE + totalStreamerPayment);
 
         // Verify subscriptions
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -642,9 +533,7 @@ contract StreamBeaconRegistryTest is Test {
 
         // Step 5: Viewer1 resubscribes
         vm.prank(viewer1);
-        token.approve(address(factory), sub1Amount);
-        vm.prank(viewer1);
-        factory.subscribeToStream(streamer1, sub1Amount, 30 days);
+        factory.subscribeToStream{value: sub1Amount}(streamer1, 30 days);
 
         // Should be subscribed again
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -664,28 +553,25 @@ contract StreamBeaconRegistryTest is Test {
     }
 
     function testUpdateTreasury() public {
-        address newTreasury = address(0x999);
-        uint256 subscriptionAmount = 100e18;
+        MockTreasury newTreasury = new MockTreasury();
+        uint256 subscriptionAmount = 100 ether;
 
         // Update treasury BEFORE creating any wallets
         vm.prank(admin);
-        factory.setTreasury(newTreasury);
+        factory.setTreasury(address(newTreasury));
 
         // Verify treasury was updated
-        assertEq(factory.treasury(), newTreasury);
+        assertEq(factory.treasury(), address(newTreasury));
 
-        // Approve and subscribe
+        // Subscribe
         vm.prank(viewer1);
-        token.approve(address(factory), subscriptionAmount);
-        
-        vm.prank(viewer1);
-        factory.subscribeToStream(streamer1, subscriptionAmount, 30 days);
+        factory.subscribeToStream{value: subscriptionAmount}(streamer1, 30 days);
 
         // Calculate expected fee
         uint256 expectedFee = (subscriptionAmount * PLATFORM_FEE_BPS) / 10_000;
         
         // Check new treasury received the fee
-        uint256 newTreasuryBalance = token.balanceOf(newTreasury);
+        uint256 newTreasuryBalance = address(newTreasury).balance;
         assertEq(newTreasuryBalance, expectedFee, "New treasury should have received fee");
     }
 
@@ -708,5 +594,23 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(admin);
         vm.expectRevert(StreamWalletFactory.InvalidFeeBps.selector);
         factory.setPlatformFee(10001); // > 100%
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        RECEIVE FUNCTION TEST
+    //////////////////////////////////////////////////////////////*/
+
+    function testWalletCanReceiveCHZ() public {
+        // Create wallet
+        vm.prank(viewer1);
+        address wallet = factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
+
+        // Send CHZ directly to wallet
+        vm.deal(address(this), 10 ether);
+        (bool success,) = wallet.call{value: 10 ether}("");
+        assertTrue(success);
+
+        // Verify wallet received CHZ
+        assertEq(wallet.balance, 10 ether);
     }
 }

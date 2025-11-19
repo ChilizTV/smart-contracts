@@ -3,9 +3,6 @@ pragma solidity ^0.8.24;
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {StreamWallet} from "./StreamWallet.sol";
 import {StreamBeaconRegistry} from "./StreamBeaconRegistry.sol";
@@ -17,7 +14,6 @@ import {IStreamWalletInit} from "../interfaces/IStreamWalletInit.sol";
  * @dev Uses BeaconProxy pattern via StreamBeaconRegistry for upgradeability
  */
 contract StreamWalletFactory is ReentrancyGuard, Ownable {
-    using SafeERC20 for IERC20;
 
     /*//////////////////////////////////////////////////////////////
                                  STATE
@@ -27,7 +23,6 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     mapping(address => address) public streamerWallets; // streamer => wallet
     address public treasury;
     uint16 public defaultPlatformFeeBps; // e.g., 500 = 5%
-    IERC20 public token;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -74,24 +69,20 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @notice Initialize the factory
      * @param initialOwner The owner of the factory
      * @param registryAddr The StreamBeaconRegistry address
-     * @param token_ The payment token address
      * @param treasury_ The platform treasury address
      * @param defaultPlatformFeeBps_ Default platform fee in basis points
      */
     constructor(
         address initialOwner,
         address registryAddr,
-        address token_,
         address treasury_,
         uint16 defaultPlatformFeeBps_
     ) Ownable(initialOwner) {
         if (registryAddr == address(0)) revert InvalidAddress();
-        if (token_ == address(0)) revert InvalidAddress();
         if (treasury_ == address(0)) revert InvalidAddress();
         if (defaultPlatformFeeBps_ > 10_000) revert InvalidFeeBps();
 
         registry = StreamBeaconRegistry(registryAddr);
-        token = IERC20(token_);
         treasury = treasury_;
         defaultPlatformFeeBps = defaultPlatformFeeBps_;
     }
@@ -103,15 +94,14 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     /**
      * @notice Subscribe to a streamer (creates wallet if needed)
      * @param streamer The streamer address
-     * @param amount The subscription amount
      * @param duration The subscription duration in seconds
      * @return wallet The StreamWallet address
      */
     function subscribeToStream(
         address streamer,
-        uint256 amount,
         uint256 duration
-    ) external nonReentrant returns (address wallet) {
+    ) external payable nonReentrant returns (address wallet) {
+        uint256 amount = msg.value;
         if (amount == 0) revert InvalidAmount();
         if (duration == 0) revert InvalidDuration();
         if (streamer == address(0)) revert InvalidAddress();
@@ -123,58 +113,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             streamerWallets[streamer] = wallet;
         }
 
-        // Transfer tokens from subscriber to wallet
-        token.safeTransferFrom(msg.sender, wallet, amount);
-
-        // Record subscription and split payment
-        StreamWallet(wallet).recordSubscription(msg.sender, amount, duration);
-
-        emit SubscriptionProcessed(streamer, msg.sender, amount);
-    }
-
-    /**
-     * @notice Subscribe to a streamer using EIP-2612 permit (single transaction, no prior approval needed)
-     * @param streamer The streamer address
-     * @param amount The subscription amount
-     * @param duration The subscription duration in seconds
-     * @param deadline The permit deadline timestamp
-     * @param v The recovery byte of the signature
-     * @param r Half of the ECDSA signature pair
-     * @param s Half of the ECDSA signature pair
-     * @return wallet The StreamWallet address
-     */
-    function subscribeToStreamWithPermit(
-        address streamer,
-        uint256 amount,
-        uint256 duration,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external nonReentrant returns (address wallet) {
-        // Execute permit (gasless approval)
-        IERC20Permit(address(token)).permit(
-            msg.sender,
-            address(this),
-            amount,
-            deadline,
-            v,
-            r,
-            s
-        );
-
-        // Get or create wallet
-        wallet = streamerWallets[streamer];
-        if (wallet == address(0)) {
-            wallet = _deployStreamWallet(streamer);
-            streamerWallets[streamer] = wallet;
-        }
-
-        // Transfer tokens from subscriber to wallet
-        token.safeTransferFrom(msg.sender, wallet, amount);
-
-        // Record subscription and split payment
-        StreamWallet(wallet).recordSubscription(msg.sender, amount, duration);
+        // Record subscription and split payment (forward CHZ to wallet)
+        StreamWallet(payable(wallet)).recordSubscription{value: amount}(msg.sender, amount, duration);
 
         emit SubscriptionProcessed(streamer, msg.sender, amount);
     }
@@ -186,15 +126,14 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     /**
      * @notice Send a donation to a streamer (creates wallet if needed)
      * @param streamer The streamer address
-     * @param amount The donation amount
      * @param message Optional message from donor
      * @return wallet The StreamWallet address
      */
     function donateToStream(
         address streamer,
-        uint256 amount,
         string calldata message
-    ) external nonReentrant returns (address wallet) {
+    ) external payable nonReentrant returns (address wallet) {
+        uint256 amount = msg.value;
         if (amount == 0) revert InvalidAmount();
         if (streamer == address(0)) revert InvalidAddress();
 
@@ -205,60 +144,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             streamerWallets[streamer] = wallet;
         }
 
-        // Transfer tokens from donor to this contract, then approve wallet
-        token.safeTransferFrom(msg.sender, address(this), amount);
-        token.forceApprove(wallet, amount);
-
-        // Process donation through wallet
-        StreamWallet(wallet).donate(amount, message);
-
-        emit DonationProcessed(streamer, msg.sender, amount, message);
-    }
-
-    /**
-     * @notice Send a donation to a streamer using EIP-2612 permit (single transaction, no prior approval needed)
-     * @param streamer The streamer address
-     * @param amount The donation amount
-     * @param message Optional message from donor
-     * @param deadline The permit deadline timestamp
-     * @param v The recovery byte of the signature
-     * @param r Half of the ECDSA signature pair
-     * @param s Half of the ECDSA signature pair
-     * @return wallet The StreamWallet address
-     */
-    function donateToStreamWithPermit(
-        address streamer,
-        uint256 amount,
-        string calldata message,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external nonReentrant returns (address wallet) {
-        // Execute permit (gasless approval)
-        IERC20Permit(address(token)).permit(
-            msg.sender,
-            address(this),
-            amount,
-            deadline,
-            v,
-            r,
-            s
-        );
-
-        // Get or create wallet
-        wallet = streamerWallets[streamer];
-        if (wallet == address(0)) {
-            wallet = _deployStreamWallet(streamer);
-            streamerWallets[streamer] = wallet;
-        }
-
-        // Transfer tokens from donor to this contract, then approve wallet
-        token.safeTransferFrom(msg.sender, address(this), amount);
-        token.forceApprove(wallet, amount);
-
-        // Process donation through wallet
-        StreamWallet(wallet).donate(amount, message);
+        // Process donation through wallet (forward CHZ)
+        StreamWallet(payable(wallet)).donate{value: amount}(amount, message);
 
         emit DonationProcessed(streamer, msg.sender, amount, message);
     }
@@ -279,11 +166,10 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         address beacon = registry.getBeacon();
         if (beacon == address(0)) revert BeaconNotSet();
 
-        // Prepare initialization data
+        // Prepare initialization data (no token parameter for native CHZ)
         bytes memory initData = abi.encodeWithSelector(
             IStreamWalletInit.initialize.selector,
             streamer,
-            address(token),
             treasury,
             defaultPlatformFeeBps
         );

@@ -3,8 +3,6 @@ pragma solidity ^0.8.24;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title StreamWallet
@@ -12,7 +10,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * @dev Deployed via BeaconProxy pattern by StreamWalletFactory
  */
 contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
-    using SafeERC20 for IERC20;
 
     /*//////////////////////////////////////////////////////////////
                                  STATE
@@ -21,7 +18,6 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
     address public streamer;
     address public treasury;
     uint16 public platformFeeBps; // basis points (e.g., 500 = 5%)
-    IERC20 public token;
     address public factory;
 
     mapping(address => Subscription) public subscriptions;
@@ -92,20 +88,17 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
     /**
      * @notice Initialize the StreamWallet
      * @param streamer_ The streamer address (owner/beneficiary)
-     * @param token_ The ERC20 token used for payments
      * @param treasury_ The platform treasury address
      * @param platformFeeBps_ Platform fee in basis points
      */
     function initialize(
         address streamer_,
-        address token_,
         address treasury_,
         uint16 platformFeeBps_
     ) external initializer {
         __ReentrancyGuard_init();
 
         streamer = streamer_;
-        token = IERC20(token_);
         treasury = treasury_;
         platformFeeBps = platformFeeBps_;
         factory = msg.sender;
@@ -129,6 +122,7 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
         uint256 duration
     )
         external
+        payable
         onlyFactory
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
@@ -158,12 +152,14 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
 
         // Transfer platform fee to treasury
         if (platformFee > 0) {
-            token.safeTransfer(treasury, platformFee);
+            (bool successTreasury, ) = treasury.call{value: platformFee}("");
+            require(successTreasury, "Treasury transfer failed");
             emit PlatformFeeCollected(platformFee, treasury);
         }
 
         // Transfer streamer amount
-        token.safeTransfer(streamer, streamerAmount);
+        (bool successStreamer, ) = streamer.call{value: streamerAmount}("");
+        require(successStreamer, "Streamer transfer failed");
 
         emit SubscriptionRecorded(subscriber, amount, duration, expiryTime);
     }
@@ -184,13 +180,11 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
         string calldata message
     )
         external
+        payable
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
         if (amount == 0) revert InvalidAmount();
-
-        // Transfer tokens from donor
-        token.safeTransferFrom(msg.sender, address(this), amount);
 
         // Calculate split
         platformFee = (amount * platformFeeBps) / 10_000;
@@ -202,12 +196,14 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
 
         // Transfer platform fee to treasury
         if (platformFee > 0) {
-            token.safeTransfer(treasury, platformFee);
+            (bool successTreasury, ) = treasury.call{value: platformFee}("");
+            require(successTreasury, "Treasury transfer failed");
             emit PlatformFeeCollected(platformFee, treasury);
         }
 
         // Transfer to streamer
-        token.safeTransfer(streamer, streamerAmount);
+        (bool successStreamer, ) = streamer.call{value: streamerAmount}("");
+        require(successStreamer, "Streamer transfer failed");
 
         emit DonationReceived(
             msg.sender,
@@ -233,7 +229,8 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
         if (amount > available) revert InsufficientBalance();
 
         totalWithdrawn += amount;
-        token.safeTransfer(streamer, amount);
+        (bool success, ) = streamer.call{value: amount}("");
+        require(success, "Streamer transfer failed");
 
         emit RevenueWithdrawn(streamer, amount);
     }
@@ -257,7 +254,7 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
      * @return uint256 The available balance
      */
     function availableBalance() public view returns (uint256) {
-        return token.balanceOf(address(this));
+        return address(this).balance;
     }
 
     /**
@@ -279,4 +276,9 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
     function getDonationAmount(address donor) external view returns (uint256) {
         return lifetimeDonations[donor];
     }
+
+    /**
+     * @notice Receive function to accept native CHZ
+     */
+    receive() external payable {}
 }
