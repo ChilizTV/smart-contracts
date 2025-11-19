@@ -10,13 +10,11 @@ interface IStreamWalletInit {
     /**
      * @notice Initialize the StreamWallet
      * @param streamer_ The streamer address (owner/beneficiary)
-     * @param token_ The ERC20 token used for payments
      * @param treasury_ The platform treasury address
      * @param platformFeeBps_ Platform fee in basis points
      */
     function initialize(
         address streamer_,
-        address token_,
         address treasury_,
         uint16 platformFeeBps_
     ) external;

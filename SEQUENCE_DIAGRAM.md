@@ -1,50 +1,60 @@
-# 🎯 Complete Betting System Flow - Sequence Diagram
+# 🎯 ChilizTV System Flows - Sequence Diagrams
 
 ## Overview
 
-This document provides detailed sequence diagrams for both betting systems:
-1. **Parimutuel System** (Current - MatchBettingBase)
-2. **Fixed Odds System** (New - MatchBettingOdds)
+This document provides detailed sequence diagrams for both ChilizTV systems:
+1. **Betting System** (UUPS Pattern - BettingMatch)
+2. **Streaming System** (Beacon Pattern - StreamWallet)
 
 All diagrams use **Mermaid** syntax for easy rendering in GitHub, GitLab, and documentation tools.
 
 ---
 
-## System 1: Parimutuel Betting Flow (Current System)
+## System 1: Betting System Flow (UUPS Pattern)
 
-### Phase 1: Match Creation & Initialization
+### Phase 1: Match Creation & Market Setup
 
 ```mermaid
 sequenceDiagram
-    participant Admin as Admin (Multisig)
-    participant Factory as MatchHubBeaconFactory
-    participant Registry as SportBeaconRegistry
-    participant Proxy as FootballBetting<br/>(BeaconProxy)
+    participant Admin as Admin/Backend
+    participant Factory as BettingMatchFactory
+    participant Impl as BettingMatch<br/>(Implementation)
+    participant Proxy as ERC1967Proxy<br/>(Match Instance)
 
-    Note over Admin,Proxy: Match Creation Parameters:<br/>owner, priceFeed, matchId, cutoffTs,<br/>feeBps: 200 (2%), treasury, minBetUsd: $5
+    Note over Admin,Proxy: Create New Match
 
-    Admin->>Factory: createFootballMatch(params)
+    Admin->>Factory: createMatch("Real Madrid vs Barcelona", owner)
     activate Factory
     
-    Factory->>Registry: getBeacon(SPORT_FOOTBALL)
-    activate Registry
-    Registry-->>Factory: UpgradeableBeacon address
-    deactivate Registry
+    Note right of Factory: Factory creates ERC1967 Proxy<br/>pointing to BettingMatch implementation
     
-    Factory->>Proxy: Deploy BeaconProxy
+    Factory->>Proxy: Deploy ERC1967Proxy(implementation, initData)
     activate Proxy
-    Note right of Proxy: Points to FootballBetting<br/>implementation
     
-    Factory->>Proxy: initialize(owner, priceFeed, matchId, cutoffTs, feeBps, treasury, minBetUsd)
+    Factory->>Proxy: initialize("Real Madrid vs Barcelona", owner)
     
-    Note right of Proxy: Initialize State:<br/>- priceFeed, treasury, matchId<br/>- cutoffTs: 1730822400<br/>- feeBps: 200 (2%)<br/>- outcomesCount: 3<br/>- minBetUsd: 500000000 ($5)<br/>- settled: false<br/>- pool[0..2]: 0<br/><br/>Grant Roles:<br/>- ADMIN_ROLE<br/>- SETTLER_ROLE<br/>- PAUSER_ROLE
+    Note right of Proxy: Initialize State:<br/>- matchName: "Real Madrid vs Barcelona"<br/>- owner: owner address<br/>- marketCount: 0<br/>- Grant ownership
     
-    Proxy-->>Factory: emit Initialized(...)
+    Proxy-->>Factory: emit MatchInitialized(name, owner)
     deactivate Proxy
     
     Factory-->>Admin: Return proxy address (0xABC...)
-    Factory-->>Admin: emit MatchHubCreated(SPORT_FOOTBALL, 0xABC..., matchId, admin)
+    Factory-->>Admin: emit BettingMatchCreated(0xABC..., owner)
     deactivate Factory
+    
+    Note over Admin,Proxy: Add Markets to Match
+    
+    Admin->>Proxy: addMarket(Winner, 150)
+    activate Proxy
+    Note right of Proxy: Market 0 created:<br/>- type: Winner<br/>- odds: 1.5x<br/>- state: Live
+    Proxy-->>Admin: emit MarketAdded(0, Winner, 150)
+    deactivate Proxy
+    
+    Admin->>Proxy: addMarket(GoalsCount, 200)
+    activate Proxy
+    Note right of Proxy: Market 1 created:<br/>- type: GoalsCount<br/>- odds: 2.0x<br/>- state: Live
+    Proxy-->>Admin: emit MarketAdded(1, GoalsCount, 200)
+    deactivate Proxy
 ```
 
 ---
@@ -54,94 +64,76 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User1 as User1 (Bettor)
-    participant Contract as FootballBetting
-    participant Oracle as PriceOracle (Library)
-    participant Chainlink as MockV3Aggregator<br/>(Chainlink Feed)
+    participant User2 as User2 (Bettor)
+    participant Match as BettingMatch<br/>(Proxy)
 
-    User1->>Contract: betHome{value: 100 ether}
-    activate Contract
+    Note over User1,Match: Place Bets on Market 0 (Winner)
+
+    User1->>Match: placeBet{value: 10 CHZ}(marketId: 0, selection: 1)
+    activate Match
     
-    Note right of Contract: Check Modifiers:<br/>✓ whenNotPaused<br/>✓ onlyBeforeCutoff<br/>✓ nonReentrant<br/>✓ msg.value > 0
+    Note right of Match: Validate:<br/>✓ Market exists (marketId < marketCount)<br/>✓ Market is Live<br/>✓ msg.value > 0
     
-    Contract->>Oracle: chzToUsd(100 ether, priceFeed)
-    activate Oracle
+    Note right of Match: Record Bet:<br/>bets[user1] = {<br/>  amount: 10 CHZ,<br/>  selection: 1,<br/>  claimed: false<br/>}<br/>bettors.push(user1)
     
-    Oracle->>Chainlink: latestRoundData()
-    activate Chainlink
-    Chainlink-->>Oracle: price = 10000000 ($0.10)
-    deactivate Chainlink
+    Match-->>User1: emit BetPlaced(0, user1, 10 CHZ, 1)
+    Match-->>User1: Transaction Success ✓
+    deactivate Match
     
-    Note right of Oracle: Calculate USD value:<br/>usdValue = (100 ether × 10000000) / 1e18<br/>usdValue = 1000000000 ($10.00)
+    User2->>Match: placeBet{value: 5 CHZ}(marketId: 0, selection: 2)
+    activate Match
     
-    Oracle-->>Contract: Return: $10.00 (in 8 decimals)
-    deactivate Oracle
+    Note right of Match: Record Bet:<br/>bets[user2] = {<br/>  amount: 5 CHZ,<br/>  selection: 2,<br/>  claimed: false<br/>}<br/>bettors.push(user2)
     
-    Note right of Contract: Validate minimum bet:<br/>1000000000 >= 500000000 ✓<br/>($10 >= $5 minimum)
+    Match-->>User2: emit BetPlaced(0, user2, 5 CHZ, 2)
+    deactivate Match
     
-    Note right of Contract: Update State:<br/>pool[0] += 100 ether<br/>bets[user1][0] += 100 ether
-    
-    Contract-->>User1: emit BetPlaced(user1, 0, 100 ether, 1000000000)
-    Contract-->>User1: Transaction Success ✓
-    deactivate Contract
+    Note over User1,Match: Contract Balance: 15 CHZ
 ```
 
-**Multiple Users Betting:**
+**Multiple Users Betting Example:**
 
 ```
-User1: betHome{value: 500 ether}    → pool[0] = 500 ether (Home)
-User2: betDraw{value: 300 ether}    → pool[1] = 300 ether (Draw)
-User3: betAway{value: 200 ether}    → pool[2] = 200 ether (Away)
-User4: betHome{value: 300 ether}    → pool[0] = 800 ether (Home)
+Market 0 (Winner):
+  User1: 10 CHZ → selection: 1 (Home)
+  User2: 5 CHZ  → selection: 2 (Away)
+  User3: 8 CHZ  → selection: 1 (Home)
 
-Total Pool: 1,300 ether
+Total in Contract: 23 CHZ
 ```
 
 ---
 
-### Phase 3: Match Resolves & Settlement
+### Phase 3: Owner Funds Liquidity & Resolves Market
 
 ```mermaid
 sequenceDiagram
-    participant Admin as Admin (Settler)
-    participant Contract as FootballBetting
+    participant Owner as Match Owner
+    participant Match as BettingMatch<br/>(Proxy)
+    participant Oracle as Oracle/Backend
 
-    Note over Admin,Contract: ⏰ TIME PASSES: cutoffTs reached, match ends
+    Note over Owner,Match: Owner Adds Liquidity for Payouts
 
-    Admin->>Contract: settle(0) - Home team wins
-    activate Contract
+    Owner->>Match: send CHZ{value: 20 CHZ}
+    activate Match
+    Note right of Match: receive() function accepts CHZ<br/>Contract balance: 23 + 20 = 43 CHZ
+    Match-->>Owner: Liquidity Added ✓
+    deactivate Match
     
-    Note right of Contract: Check Authorization:<br/>✓ onlyRole(SETTLER_ROLE)<br/>✓ !settled<br/>✓ outcome < outcomesCount
+    Note over Owner,Oracle: Match Ends - Oracle Provides Result
     
-    Note right of Contract: Calculate Totals:<br/>totalPool = 1,300 ether<br/>feeAmount = (1,300 × 200) / 10,000<br/>feeAmount = 26 ether (2%)<br/>distributable = 1,274 ether
+    Oracle->>Owner: Real result: selection = 1 (Home wins)
     
-    Note right of Contract: Update State:<br/>settled = true<br/>winningOutcome = 0
+    Owner->>Match: resolveMarket(marketId: 0, result: 1)
+    activate Match
     
-    Contract-->>Admin: emit Settled(0, 1300 ether, 26 ether)
-    Contract-->>Admin: Settlement Complete ✓
-    deactivate Contract
-```
-
-**Parimutuel Calculation Logic:**
-
-```
-Total Pool: 1,300 CHZ
-├─ Home (winning): 800 CHZ staked
-├─ Draw (losing): 300 CHZ staked
-└─ Away (losing): 200 CHZ staked
-
-Platform Fee: 1,300 × 2% = 26 CHZ
-Distributable to Winners: 1,300 - 26 = 1,274 CHZ
-
-Payout Formula:
-payout = (userStake / winningPool) × distributable
-
-User1 (500 CHZ on Home):
-payout = (500 / 800) × 1,274 = 796.25 CHZ
-
-User4 (300 CHZ on Home):
-payout = (300 / 800) × 1,274 = 477.75 CHZ
-
-Total Paid: 796.25 + 477.75 = 1,274 CHZ ✓
+    Note right of Match: Validate:<br/>✓ Market exists<br/>✓ Market is Live<br/>✓ Only owner can resolve
+    
+    Note right of Match: Update Market:<br/>- result: 1<br/>- state: Ended
+    
+    Match-->>Owner: emit MarketResolved(0, 1)
+    Match-->>Owner: Market Resolved ✓
+    deactivate Match
 ```
 
 ---
@@ -151,436 +143,344 @@ Total Paid: 796.25 + 477.75 = 1,274 CHZ ✓
 ```mermaid
 sequenceDiagram
     participant User1 as User1 (Winner)
-    participant Contract as FootballBetting
-    participant Treasury as Treasury
+    participant User3 as User3 (Winner)
+    participant User2 as User2 (Loser)
+    participant Match as BettingMatch<br/>(Proxy)
 
-    User1->>Contract: claim()
-    activate Contract
+    Note over User1,Match: Winners Claim Payouts
+
+    User1->>Match: claim(marketId: 0)
+    activate Match
     
-    Note right of Contract: Check Conditions:<br/>✓ settled<br/>✓ !claimed[user1]<br/>✓ bets[user1][0] > 0<br/>✓ pool[0] > 0
+    Note right of Match: Validate:<br/>✓ Market exists<br/>✓ Market is Ended<br/>✓ User has bet (10 CHZ)<br/>✓ Not claimed yet<br/>✓ User selection (1) == result (1) ✓
     
-    Note right of Contract: Calculate Payout:<br/>userStake = 500 ether<br/>winPool = 800 ether<br/>total = 1,300 ether<br/>fee = 26 ether<br/>distributable = 1,274 ether<br/>payout = (500/800) × 1,274<br/>payout = 796.25 ether
+    Note right of Match: Calculate Payout:<br/>payout = (10 CHZ × 150) / 100<br/>payout = 15 CHZ<br/><br/>Check balance: 43 CHZ >= 15 CHZ ✓
     
-    Note right of Contract: Update State (CEI):<br/>claimed[user1] = true<br/>feeBps = 0 (after first claim)
+    Note right of Match: Mark as claimed:<br/>bets[user1].claimed = true
     
-    Contract-->>User1: emit Claimed(user1, 796.25 ether)
+    Match->>User1: Transfer 15 CHZ
+    Match-->>User1: emit Payout(0, user1, 15 CHZ)
+    Note right of Match: Contract balance: 43 - 15 = 28 CHZ
+    deactivate Match
     
-    Contract->>Treasury: Transfer fee: 26 ether
+    User3->>Match: claim(marketId: 0)
+    activate Match
+    
+    Note right of Match: Calculate Payout:<br/>payout = (8 CHZ × 150) / 100<br/>payout = 12 CHZ
+    
+    Match->>User3: Transfer 12 CHZ
+    Match-->>User3: emit Payout(0, user3, 12 CHZ)
+    Note right of Match: Contract balance: 28 - 12 = 16 CHZ
+    deactivate Match
+    
+    Note over User2,Match: Loser Tries to Claim
+    
+    User2->>Match: claim(marketId: 0)
+    activate Match
+    
+    Note right of Match: Validate:<br/>✓ Market exists<br/>✓ Market is Ended<br/>✓ User has bet (5 CHZ)<br/>✗ User selection (2) != result (1)
+    
+    Match-->>User2: ❌ Revert: Lost()
+    deactivate Match
+```
+
+---
+
+## System 2: Streaming System Flow (Beacon Pattern)
+
+### Phase 1: System Deployment
+
+```mermaid
+sequenceDiagram
+    participant Deployer as Deployer
+    participant Safe as Gnosis Safe<br/>(Treasury)
+    participant Registry as StreamBeaconRegistry
+    participant Beacon as UpgradeableBeacon
+    participant Impl as StreamWallet<br/>(Implementation)
+    participant Factory as StreamWalletFactory
+
+    Note over Deployer,Factory: Deploy Streaming System
+
+    Deployer->>Impl: Deploy StreamWallet implementation
+    activate Impl
+    Impl-->>Deployer: Implementation address
+    deactivate Impl
+    
+    Deployer->>Registry: new StreamBeaconRegistry(deployer)
+    activate Registry
+    Registry-->>Deployer: Registry created
+    deactivate Registry
+    
+    Deployer->>Registry: setImplementation(implAddress)
+    activate Registry
+    
+    Registry->>Beacon: Deploy UpgradeableBeacon(implAddress)
+    activate Beacon
+    Beacon-->>Registry: Beacon address
+    deactivate Beacon
+    
+    Registry-->>Deployer: emit BeaconCreated(beacon, implAddress)
+    deactivate Registry
+    
+    Deployer->>Factory: new StreamWalletFactory(deployer, registry, safe, 500)
+    activate Factory
+    Note right of Factory: Factory Config:<br/>- owner: deployer<br/>- registry: registry address<br/>- treasury: safe address<br/>- platformFeeBps: 500 (5%)
+    Factory-->>Deployer: Factory created
+    deactivate Factory
+    
+    Deployer->>Registry: transferOwnership(safe)
+    activate Registry
+    Registry-->>Safe: Ownership transferred
+    Registry-->>Deployer: emit OwnershipTransferred(deployer, safe)
+    deactivate Registry
+```
+
+---
+
+### Phase 2: Create Streamer Wallet
+
+```mermaid
+sequenceDiagram
+    participant Viewer as Viewer (Fan)
+    participant Factory as StreamWalletFactory
+    participant Registry as StreamBeaconRegistry
+    participant Beacon as UpgradeableBeacon
+    participant Wallet as BeaconProxy<br/>(StreamWallet)
+    participant Impl as StreamWallet<br/>(Implementation)
+
+    Note over Viewer,Impl: First Subscription Creates Wallet
+
+    Viewer->>Factory: subscribeToStream{value: 100 CHZ}(streamer, 30 days)
+    activate Factory
+    
+    Note right of Factory: Check if wallet exists:<br/>hasWallet(streamer) = false<br/>→ Need to create wallet
+    
+    Factory->>Registry: getBeacon()
+    activate Registry
+    Registry-->>Factory: Beacon address
+    deactivate Registry
+    
+    Factory->>Wallet: Deploy BeaconProxy(beacon, initData)
+    activate Wallet
+    
+    Wallet->>Beacon: Query implementation()
+    activate Beacon
+    Beacon-->>Wallet: StreamWallet implementation address
+    deactivate Beacon
+    
+    Factory->>Wallet: initialize(streamer, treasury, 500)
+    Note right of Wallet: Wallet initialized:<br/>- streamer: streamer address<br/>- treasury: safe address<br/>- platformFeeBps: 500 (5%)<br/>- factory: factory address
+    
+    Wallet-->>Factory: Initialization complete
+    deactivate Wallet
+    
+    Factory-->>Factory: Store wallet mapping:<br/>streamerWallet[streamer] = wallet
+    
+    Note right of Factory: Now process subscription
+    
+    Factory->>Wallet: recordSubscription(viewer, 100 CHZ, 30 days)
+    
+    Note over Factory,Impl: Continue to Phase 3...
+    
+    deactivate Factory
+```
+
+---
+
+### Phase 3: Subscription with Fee Split
+
+```mermaid
+sequenceDiagram
+    participant Viewer as Viewer
+    participant Factory as StreamWalletFactory
+    participant Wallet as StreamWallet<br/>(BeaconProxy)
+    participant Treasury as Safe Treasury
+    participant Streamer as Streamer
+
+    Note over Viewer,Streamer: Process Subscription Payment
+
+    Factory->>Wallet: recordSubscription{value: 100 CHZ}(viewer, 100 CHZ, 30 days)
+    activate Wallet
+    
+    Note right of Wallet: Validate:<br/>✓ Only factory can call<br/>✓ amount > 0<br/>✓ duration > 0
+    
+    Note right of Wallet: Calculate Split:<br/>platformFee = (100 CHZ × 500) / 10,000<br/>platformFee = 5 CHZ<br/>streamerAmount = 100 - 5 = 95 CHZ
+    
+    Note right of Wallet: Update Subscription:<br/>subscriptions[viewer] = {<br/>  amount: 100 CHZ,<br/>  startTime: now,<br/>  expiryTime: now + 30 days,<br/>  active: true<br/>}<br/>totalSubscribers++<br/>totalRevenue += 100 CHZ
+    
+    Wallet->>Treasury: Transfer 5 CHZ (platform fee)
     activate Treasury
-    Treasury-->>Contract: Fee transfer success ✓
+    Treasury-->>Wallet: Fee received ✓
     deactivate Treasury
     
-    Contract->>User1: Transfer payout: 796.25 ether
-    User1-->>Contract: Receive success ✓
+    Wallet-->>Wallet: emit PlatformFeeCollected(5 CHZ, treasury)
     
-    Contract-->>User1: Claim Complete ✓
-    deactivate Contract
+    Wallet->>Streamer: Transfer 95 CHZ (net amount)
+    activate Streamer
+    Streamer-->>Wallet: Payment received ✓
+    deactivate Streamer
+    
+    Wallet-->>Factory: emit SubscriptionRecorded(viewer, 100 CHZ, 30 days, expiryTime)
+    Wallet-->>Viewer: Subscription Success ✓
+    deactivate Wallet
+    
+    Factory-->>Viewer: emit SubscriptionProcessed(streamer, viewer, 100 CHZ)
 ```
 
-**Full Claiming Process:**
+**Subscription Flow Summary:**
 
 ```
-User1 (500 CHZ on Home): claim() → 796.25 CHZ ✓
-User4 (300 CHZ on Home): claim() → 477.75 CHZ ✓
-User2 (300 CHZ on Draw): claim() → Reverts: NothingToClaim ✗
-User3 (200 CHZ on Away): claim() → Reverts: NothingToClaim ✗
-
-Treasury receives: 26 CHZ (fee)
-Contract final balance: 0 CHZ (all distributed)
+Viewer pays:        100 CHZ
+Platform fee (5%):   -5 CHZ → Treasury
+Streamer receives:   95 CHZ → Streamer wallet
 ```
 
 ---
 
-## System 2: Fixed Odds Betting Flow (New System)
-
-### Phase 1: Match Creation with Odds
+### Phase 4: Donation Flow
 
 ```mermaid
 sequenceDiagram
-    participant Admin as Admin (Owner)
-    participant Contract as MatchBettingOdds<br/>(New Contract)
+    participant Donor as Donor (Fan)
+    participant Wallet as StreamWallet<br/>(BeaconProxy)
+    participant Treasury as Safe Treasury
+    participant Streamer as Streamer
 
-    Note over Admin,Contract: InitParams Preparation:<br/>owner, priceFeed, matchId, cutoffTs,<br/>feeBps: 0, treasury, minBetUsd: $5,<br/>maxLiability: 100,000, maxBetAmount: 10,000,<br/>outcomes: 3, initialOdds: [18000, 32000, 25000]<br/>(Home 1.8x, Draw 3.2x, Away 2.5x)
+    Note over Donor,Streamer: Donate to Streamer
 
-    Admin->>Contract: initialize(InitParams)
-    activate Contract
+    Donor->>Wallet: donate{value: 50 CHZ}(50 CHZ, "Great stream!")
+    activate Wallet
     
-    Note right of Contract: Validate Params:<br/>✓ All addresses != 0x0<br/>✓ outcomes ∈ [2,16]<br/>✓ cutoffTs > 0<br/>✓ feeBps <= 1000<br/>✓ odds.length == outcomes<br/>✓ All odds >= 10000
+    Note right of Wallet: Validate:<br/>✓ amount > 0<br/>✓ nonReentrant
     
-    Note right of Contract: Initialize State:<br/>priceFeed, treasury, matchId<br/>cutoffTs: 1730822400<br/>feeBps: 0<br/>outcomesCount: 3<br/>minBetUsd: 500000000<br/>maxLiability: 100,000 ether<br/>maxBetAmount: 10,000 ether<br/>currentLiability: 0<br/>settled: false<br/><br/>Set Odds:<br/>odds[0] = 18000 (1.8x)<br/>odds[1] = 32000 (3.2x)<br/>odds[2] = 25000 (2.5x)<br/><br/>potentialPayouts[0..2] = 0<br/>pool[0..2] = 0
+    Note right of Wallet: Calculate Split:<br/>platformFee = (50 CHZ × 500) / 10,000<br/>platformFee = 2.5 CHZ<br/>streamerAmount = 50 - 2.5 = 47.5 CHZ
     
-    Contract-->>Admin: emit Initialized(...)
-    Contract-->>Admin: Initialization Complete ✓
-    deactivate Contract
+    Note right of Wallet: Update Metrics:<br/>lifetimeDonations[donor] += 50 CHZ<br/>totalRevenue += 50 CHZ
+    
+    Wallet->>Treasury: Transfer 2.5 CHZ
+    activate Treasury
+    Treasury-->>Wallet: Fee received ✓
+    deactivate Treasury
+    
+    Wallet-->>Wallet: emit PlatformFeeCollected(2.5 CHZ, treasury)
+    
+    Wallet->>Streamer: Transfer 47.5 CHZ
+    activate Streamer
+    Streamer-->>Wallet: Payment received ✓
+    deactivate Streamer
+    
+    Wallet-->>Donor: emit DonationReceived(donor, 50 CHZ, "Great stream!", 2.5, 47.5)
+    Wallet-->>Donor: Donation Success ✓
+    deactivate Wallet
 ```
 
 ---
 
-### Phase 2: Users Place Bets (Odds Locked)
+### Phase 5: Upgrade All Streamer Wallets (Atomic Upgrade)
 
 ```mermaid
 sequenceDiagram
-    participant User1 as User1 (Bettor)
-    participant Contract as MatchBettingOdds
-    participant Oracle as PriceOracle
-    participant Chainlink as MockV3Aggregator
+    participant Safe as Gnosis Safe
+    participant Registry as StreamBeaconRegistry
+    participant Beacon as UpgradeableBeacon
+    participant NewImpl as StreamWallet V2<br/>(New Implementation)
+    participant Wallet1 as Wallet 1
+    participant Wallet2 as Wallet 2
+    participant WalletN as Wallet N
 
-    User1->>Contract: placeBet{value: 1000 ether}(0)<br/>Bet on Home @ current odds
-    activate Contract
+    Note over Safe,WalletN: Upgrade All StreamWallets Atomically
+
+    Safe->>NewImpl: Deploy new StreamWallet V2
+    activate NewImpl
+    NewImpl-->>Safe: New implementation address
+    deactivate NewImpl
     
-    Note right of Contract: Check Modifiers:<br/>✓ whenNotPaused<br/>✓ timestamp < cutoffTs<br/>✓ nonReentrant<br/>✓ outcome < outcomesCount<br/>✓ msg.value > 0<br/>✓ msg.value <= maxBetAmount
+    Safe->>Registry: setImplementation(newImplAddress)
+    activate Registry
     
-    Contract->>Oracle: chzToUsd(1000 ether, priceFeed)
-    activate Oracle
-    Oracle->>Chainlink: latestRoundData()
-    activate Chainlink
-    Chainlink-->>Oracle: price = 10000000 ($0.10)
-    deactivate Chainlink
-    Oracle-->>Contract: Return: 100e8 ($100)
-    deactivate Oracle
+    Note right of Registry: Beacon already exists,<br/>so upgrade it
     
-    Note right of Contract: Get Current Odds:<br/>currentOdds = odds[0]<br/>currentOdds = 18000 (1.8x)<br/><br/>Calculate Payout:<br/>potentialPayout = (1000 × 18000) / 10000<br/>potentialPayout = 1,800 ether<br/>potentialProfit = 800 ether
+    Registry->>Beacon: upgradeTo(newImplAddress)
+    activate Beacon
     
-    Note right of Contract: Check Liquidity:<br/>currentLiability = 0<br/>newLiability = 0 + 800<br/>800 <= 100,000 ✓
+    Note right of Beacon: Update implementation pointer<br/>to StreamWallet V2
     
-    Note right of Contract: Update State:<br/>currentLiability = 800 ether<br/><br/>Record Bet (LOCKED):<br/>userBets[user1].push({<br/>  outcome: 0,<br/>  amountChz: 1000,<br/>  odds: 18000 ← LOCKED!,<br/>  claimed: false<br/>})<br/><br/>pool[0] += 1000 ether<br/>potentialPayouts[0] += 1800
+    Beacon-->>Registry: Upgrade complete
+    deactivate Beacon
     
-    Contract-->>User1: emit BetPlaced(user1, 0, 1000 ether, 100e8, 18000)
-    Contract-->>User1: Bet Placed Successfully ✓
-    deactivate Contract
-```
-
-**Odds Change Between Bets:**
-
-```
-User1: placeBet{value: 1000 ether}(0) @ 1.8x → Locked 1800 CHZ payout
-                    ↓
-Admin: setOdds(0, 16000)  → Update to 1.6x for new bets
-                    ↓
-User2: placeBet{value: 1000 ether}(0) @ 1.6x → Locked 1600 CHZ payout
-                    ↓
-Admin: setOdds(0, 15000)  → Update to 1.5x
-                    ↓
-User3: placeBet{value: 1000 ether}(0) @ 1.5x → Locked 1500 CHZ payout
-
-Result:
-- User1 gets 1.8x (early bet, better odds)
-- User2 gets 1.6x (odds moved against them)
-- User3 gets 1.5x (latest odds, worst price)
-- Each bet PERMANENTLY LOCKED at time of placement
-```
-
----
-
-### Phase 3: Match Settlement (House P&L)
-
-```mermaid
-sequenceDiagram
-    participant Admin as Admin (Settler)
-    participant Contract as MatchBettingOdds
-    participant Treasury as Treasury
-
-    Note over Admin,Contract: ⏰ Match ends, Home team wins
-
-    Admin->>Contract: settle(0) - Home wins
-    activate Contract
+    Registry-->>Safe: emit BeaconUpgraded(newImplAddress)
+    deactivate Registry
     
-    Note right of Contract: Check Authorization:<br/>✓ onlyRole(SETTLER_ROLE)<br/>✓ !settled<br/>✓ outcome < outcomesCount
-    
-    Note right of Contract: Calculate Totals:<br/>totalStaked = pool[0] + pool[1] + pool[2]<br/>totalStaked = 3,000 ether<br/><br/>totalPayouts = potentialPayouts[0]<br/>totalPayouts = 4,900 ether<br/><br/>House P&L:<br/>housePnL = 3,000 - 4,900<br/>housePnL = -1,900 ether (LOSS!)
-    
-    Note right of Contract: Update State:<br/>settled = true<br/>winningOutcome = 0
-    
-    Contract-->>Admin: emit Settled(0, 3000 ether, 4900 ether, -1900 ether)
-    
-    Note right of Contract: Check Contract Balance:<br/>balance = 3,000 ether<br/>needed = 4,900 ether<br/>3,000 < 4,900 ✗
-    
-    Contract--XAdmin: ❌ Revert: InsufficientContractBalance
-    deactivate Contract
-    
-    Note over Admin,Treasury: 📋 Offline: Treasury prepares 1,900 CHZ
+    Note over Wallet1,WalletN: All wallets now delegate to V2
 
-    Treasury->>Contract: fundContract{value: 1900 ether}()
-    activate Contract
+    Wallet1->>Beacon: Query implementation()
+    activate Beacon
+    Beacon-->>Wallet1: StreamWallet V2 address
+    deactivate Beacon
     
-    Note right of Contract: Check Sender:<br/>msg.sender == treasury ✓<br/>balance += 1,900 ether<br/>balance = 4,900 ether ✓
+    Wallet2->>Beacon: Query implementation()
+    activate Beacon
+    Beacon-->>Wallet2: StreamWallet V2 address
+    deactivate Beacon
     
-    Contract-->>Treasury: emit TreasuryFunded(1900 ether)
-    Contract-->>Treasury: Funding Complete ✓
-    deactivate Contract
+    WalletN->>Beacon: Query implementation()
+    activate Beacon
+    Beacon-->>WalletN: StreamWallet V2 address
+    deactivate Beacon
     
-    Note over Admin,Treasury: ✅ Now users can claim payouts
-```
-
-**House P&L Scenarios:**
-
-**Scenario A: House Profits**
-```
-Total Staked: 10,000 CHZ
-├─ Home (loses): 5,000 CHZ
-├─ Draw (loses): 3,000 CHZ
-└─ Away (wins @ 2.0x): 2,000 CHZ
-
-Total Payouts: 2,000 × 2.0 = 4,000 CHZ
-House P&L: 10,000 - 4,000 = +6,000 CHZ (PROFIT)
-
-Action: Send 6,000 CHZ profit to treasury
-Contract keeps: 4,000 CHZ for winner payouts
-```
-
-**Scenario B: House Loses**
-```
-Total Staked: 10,000 CHZ
-├─ Home (wins @ 2.5x): 8,000 CHZ
-├─ Draw (loses): 1,000 CHZ
-└─ Away (loses): 1,000 CHZ
-
-Total Payouts: 8,000 × 2.5 = 20,000 CHZ
-House P&L: 10,000 - 20,000 = -10,000 CHZ (LOSS)
-
-Action: Treasury must fund contract with 10,000 CHZ
-Contract needs: 20,000 CHZ total for payouts
+    Note over Wallet1,WalletN: ✅ All streamers upgraded in 1 transaction!
 ```
 
 ---
 
-### Phase 4: Winners Claim with Locked Odds
+## Key Differences Between Systems
 
-```mermaid
-sequenceDiagram
-    participant User1 as User1 (Winner)
-    participant Contract as MatchBettingOdds
+### Betting System (UUPS)
+- ✅ **Individual Upgrades**: Each match upgradeable by its owner
+- ✅ **Simple Pattern**: ERC1967 proxy → implementation
+- ✅ **Owner Control**: Match owner has full control
+- ✅ **Independent**: Matches don't affect each other
+- ⚠️ **No Atomic Upgrades**: Must upgrade each match separately
 
-    User1->>Contract: claim()
-    activate Contract
-    
-    Note right of Contract: Check Conditions:<br/>✓ settled
-    
-    Note right of Contract: Iterate User Bets:<br/><br/>userBets[user1][0]:<br/>├─ outcome: 0 (matches winningOutcome ✓)<br/>├─ amountChz: 1000<br/>├─ odds: 18000 ← LOCKED ODDS USED<br/>└─ claimed: false ✓<br/><br/>Calculate:<br/>payout = (1000 × 18000) / 10000<br/>payout = 1,800 ether<br/>totalPayout += 1,800<br/><br/>Mark Claimed:<br/>userBets[user1][0].claimed = true
-    
-    Contract-->>User1: emit Claimed(user1, 1800 ether, 1)
-    
-    Contract->>User1: Transfer 1,800 CHZ
-    User1-->>Contract: Receive success ✓
-    
-    Contract-->>User1: Claim Complete ✓
-    deactivate Contract
-```
-
-**Multiple Claims with Different Locked Odds:**
-
-```
-User1 (1000 CHZ @ 1.8x): claim() → 1,800 CHZ ✓
-User2 (1000 CHZ @ 1.6x): claim() → 1,600 CHZ ✓
-User3 (1000 CHZ @ 1.5x): claim() → 1,500 CHZ ✓
-
-Total Paid: 4,900 CHZ
-Contract Balance After: 0 CHZ (if started with exactly 4,900)
-
-User4 (Draw bettor): claim() → Reverts: NothingToClaim ✗
-User5 (Away bettor): claim() → Reverts: NothingToClaim ✗
-```
+### Streaming System (Beacon)
+- ✅ **Atomic Upgrades**: All streamers upgrade together
+- ✅ **Safe Control**: Multisig controls all upgrades
+- ✅ **Platform Updates**: Fix bugs for everyone at once
+- ✅ **Consistent**: All streamers on same version
+- ⚠️ **Less Individual Control**: Streamers can't upgrade independently
 
 ---
 
-## Key Function Reference
+## State Diagrams
 
-### Parimutuel System Functions
-
-| Function | Contract | Caller | Purpose | Gas Cost |
-|----------|----------|--------|---------|----------|
-| `createFootballMatch()` | MatchHubBeaconFactory | Admin | Deploy new match proxy | ~400k |
-| `initialize()` | FootballBetting | Factory (auto) | Initialize match state | ~250k |
-| `betHome()` | FootballBetting | Any user | Bet on home team | ~150k |
-| `betDraw()` | FootballBetting | Any user | Bet on draw | ~150k |
-| `betAway()` | FootballBetting | Any user | Bet on away team | ~150k |
-| `settle(uint8)` | FootballBetting | Admin/Settler | Resolve match outcome | ~50k |
-| `claim()` | FootballBetting | Winner | Claim payout | ~100k |
-| `pendingPayout(address)` | FootballBetting | Anyone (view) | Check claimable amount | - |
-| `totalPoolAmount()` | FootballBetting | Anyone (view) | Total staked | - |
-
-### Fixed Odds System Functions
-
-| Function | Contract | Caller | Purpose | Gas Cost |
-|----------|----------|--------|---------|----------|
-| `initialize(InitParams)` | MatchBettingOdds | Admin | Create match with odds | ~300k |
-| `placeBet(uint8)` | MatchBettingOdds | Any user | Bet with locked odds | ~200k |
-| `setOdds(uint8, uint64)` | MatchBettingOdds | Admin | Update odds for outcome | ~30k |
-| `setMaxLiability(uint256)` | MatchBettingOdds | Admin | Adjust risk limits | ~30k |
-| `settle(uint8)` | MatchBettingOdds | Admin/Settler | Resolve + calc P&L | ~80k |
-| `fundContract()` | MatchBettingOdds | Treasury | Add liquidity for losses | ~30k |
-| `claim()` | MatchBettingOdds | Winner | Claim with locked odds | ~150k |
-| `pendingPayout(address)` | MatchBettingOdds | Anyone (view) | Check claimable amount | - |
-| `getAllOdds()` | MatchBettingOdds | Anyone (view) | Get current odds array | - |
-| `getUserBetCount(address)` | MatchBettingOdds | Anyone (view) | Count user's bets | - |
-| `getUserBet(address, uint256)` | MatchBettingOdds | Anyone (view) | Get specific bet details | - |
-
----
-
-## State Transitions
-
-### Parimutuel Match State Machine
+### Betting Match Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED: initialize()
-    
-    state CREATED {
-        [*] --> Initial
-        Initial: settled = false
-        Initial: pool[*] = 0
-        Initial: totalPool = 0
-    }
-    
-    CREATED --> OPEN: Users start betting
-    
-    state OPEN {
-        [*] --> Accepting
-        Accepting: settled = false
-        Accepting: pool[0] = X (Home)
-        Accepting: pool[1] = Y (Draw)
-        Accepting: pool[2] = Z (Away)
-        Accepting: totalPool = X + Y + Z
-        note right of Accepting
-            betHome(), betDraw(), betAway()
-            Before cutoffTs
-        end note
-    }
-    
-    OPEN --> SETTLED: Admin calls settle(outcome)
-    
-    state SETTLED {
-        [*] --> Resolved
-        Resolved: settled = true
-        Resolved: winningOutcome = N
-        Resolved: feeBps = 200 → 0 (after 1st claim)
-        note right of Resolved
-            Winners can claim
-            Proportional payouts
-        end note
-    }
-    
-    SETTLED --> FINISHED: All winners claim()
-    
-    state FINISHED {
-        [*] --> Complete
-        Complete: All winners claimed
-        Complete: Treasury received fee
-        Complete: Contract balance = 0
-    }
-    
-    FINISHED --> [*]
+    [*] --> Created: Factory creates match
+    Created --> MarketsAdded: Owner adds markets
+    MarketsAdded --> BettingOpen: Markets Live
+    BettingOpen --> BettingOpen: Users place bets
+    BettingOpen --> MatchEnded: Owner resolves markets
+    MatchEnded --> PayoutsProcessing: Winners claim
+    PayoutsProcessing --> PayoutsProcessing: More claims
+    PayoutsProcessing --> Completed: All claims processed
+    Completed --> [*]
 ```
 
-### Fixed Odds Match State Machine
+### Streamer Wallet Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED_WITH_ODDS: initialize(InitParams)
-    
-    state CREATED_WITH_ODDS {
-        [*] --> Initial
-        Initial: settled = false
-        Initial: odds[0..N] set at init
-        Initial: currentLiability = 0
-        Initial: potentialPayouts[*] = 0
-    }
-    
-    CREATED_WITH_ODDS --> OPEN: Users start betting
-    
-    state OPEN {
-        [*] --> Accepting
-        Accepting: settled = false
-        Accepting: odds[N] = dynamic (admin)
-        Accepting: pool[N] = total staked
-        Accepting: potentialPayouts[N] tracked
-        Accepting: Each bet locks odds!
-        note right of Accepting
-            placeBet(outcome)
-            setOdds() can adjust
-            Before cutoffTs
-        end note
-    }
-    
-    OPEN --> SETTLED: Admin calls settle(outcome)
-    
-    state SETTLED {
-        [*] --> Calculate_PnL
-        Calculate_PnL: settled = true
-        Calculate_PnL: winningOutcome = N
-        Calculate_PnL: housePnL calculated
-        
-        Calculate_PnL --> Profit: housePnL > 0
-        Calculate_PnL --> Loss: housePnL < 0
-        
-        Profit: Send profit to treasury
-        Loss: Treasury must fundContract()
-    }
-    
-    SETTLED --> FINISHED: Winners claim() with locked odds
-    
-    state FINISHED {
-        [*] --> Complete
-        Complete: All winners claimed
-        Complete: Treasury got profit OR funded loss
-        Complete: Contract balance = 0
-    }
-    
-    FINISHED --> [*]
+    [*] --> NotCreated: Streamer has no wallet
+    NotCreated --> Created: First subscription/donation
+    Created --> Active: Receiving payments
+    Active --> Active: Subscriptions/Donations
+    Active --> Upgraded: Beacon upgraded
+    Upgraded --> Active: Continue operations
+    Active --> [*]: (Wallet never destroyed)
 ```
 
 ---
 
-## Error Handling & Edge Cases
-
-### Common Reverts
-
-| Error | Condition | Solution |
-|-------|-----------|----------|
-| `BettingClosed` | Bet after cutoffTs | Wait for next match |
-| `BetBelowMinimum` | < $5 USD worth | Increase bet amount |
-| `BetAboveMaximum` | > maxBetAmount | Reduce bet size |
-| `InsufficientLiquidity` | Exceeds maxLiability | Wait for odds adjustment |
-| `NotSettled` | Claim before settlement | Wait for admin to settle |
-| `NothingToClaim` | Bet on losing outcome | Cannot claim (lost bet) |
-| `AlreadySettled` | Settle twice | Match already resolved |
-| `InsufficientContractBalance` | Payouts > balance | Treasury needs to fund |
-
----
-
-## Gas Optimization Notes
-
-**Parimutuel System:**
-- Betting: ~150k gas (state updates + oracle call)
-- Settlement: ~50k gas (minimal calculation)
-- Claim: ~100k gas (proportional payout calculation + transfer)
-- **Total per user**: ~250k gas
-
-**Fixed Odds System:**
-- Betting: ~200k gas (odds locking + liability tracking)
-- Settlement: ~80k gas (P&L calculation)
-- Claim: ~150k gas (iterate bets + locked odds payout)
-- **Total per user**: ~350k gas (30% more than parimutuel)
-
-**Trade-off:** Fixed odds provides better UX (known payout) at cost of higher gas usage.
-
----
-
-## Summary Comparison
-
-| Aspect | Parimutuel | Fixed Odds |
-|--------|-----------|------------|
-| **User knows payout when betting** | ❌ No | ✅ Yes (locked) |
-| **Odds can change** | ✅ Always changes | ✅ But each bet locked |
-| **House risk** | None (peer-to-peer) | High (liquidity required) |
-| **Treasury involvement** | Fee collection only | Provides liquidity + takes P&L |
-| **Claim payout calculation** | Proportional share | Locked odds × stake |
-| **Gas per user** | ~250k | ~350k |
-| **Complexity** | Simple | Complex |
-| **Competitiveness** | Low | High (industry standard) |
-
----
-
-**Status**: Complete Flow Documentation ✓
-**Last Updated**: October 31, 2025
-**Version**: 1.0
+**Last Updated**: 2025-11-19
