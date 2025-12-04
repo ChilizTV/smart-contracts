@@ -3,63 +3,76 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import "./BettingMatch.sol";
+import "./FootballMatch.sol";
+import "./BasketballMatch.sol";
 
 /// @title BettingMatchFactory
-/// @notice Factory contract to deploy UUPS-upgradeable BettingMatch proxies
+/// @notice Factory contract to deploy UUPS-upgradeable sport-specific match proxies
 contract BettingMatchFactory is Ownable {
-    /// @notice Address of the BettingMatch logic contract implementation
-    address public implementation;
+    /// @notice Sport types supported by the factory
+    enum SportType { FOOTBALL, BASKETBALL }
 
-    /// @notice List of all deployed BettingMatch proxy addresses
+    /// @notice List of all deployed match proxy addresses
     address[] public allMatches;
 
-    /// @notice Emitted when the implementation logic address is updated
-    /// @param newImplementation The new implementation address
-    event ImplementationUpdated(address indexed newImplementation);
+    /// @notice Mapping from match address to its sport type
+    mapping(address => SportType) public matchSportType;
 
-    /// @notice Emitted when a new BettingMatch proxy is created
-    /// @param proxy Address of the deployed proxy
-    /// @param owner Address that will own the new proxy
-    event BettingMatchCreated(address indexed proxy, address indexed owner);
+    /// @notice Immutable implementation contracts deployed once
+    address private immutable footballImplementation;
+    address private immutable basketballImplementation;
 
-    /// @notice Custom error for zero-address inputs
-    error ZeroAddress();
+    /// @notice Emitted when a new match proxy is created
+    event MatchCreated(address indexed proxy, SportType sportType, address indexed owner);
 
-    /// @param _implementation Initial BettingMatch implementation address
-    constructor(address _implementation) Ownable(msg.sender) {
-        if (_implementation == address(0)) revert ZeroAddress();
-        implementation = _implementation;
+    /// @notice Deploy implementations and initialize factory
+    constructor() Ownable(msg.sender) {
+        footballImplementation = address(new FootballMatch());
+        basketballImplementation = address(new BasketballMatch());
     }
 
-    /// @notice Update the logic contract address for future proxies
-    /// @param _newImpl New implementation contract address
-    function setImplementation(address _newImpl) external onlyOwner {
-        if (_newImpl == address(0)) revert ZeroAddress();
-        implementation = _newImpl;
-        emit ImplementationUpdated(_newImpl);
-    }
-
-    /// @notice Deploy a new BettingMatch proxy and initialize it
-    /// @dev Uses ERC-1967 proxy pattern to delegate to `implementation`
+    /// @notice Deploy a new FootballMatch proxy and initialize it
     /// @param _matchName The name of the match
     /// @param _owner The owner of the match contract
     /// @return proxy Address of the newly deployed proxy
-    function createMatch(string calldata _matchName, address _owner) external returns (address proxy) {
+    function createFootballMatch(string calldata _matchName, address _owner) external returns (address proxy) {
         bytes memory initData = abi.encodeWithSelector(
-            BettingMatch.initialize.selector,
+            FootballMatch.initialize.selector,
             _matchName,
             _owner
         );
-        proxy = address(new ERC1967Proxy(implementation, initData));
+        proxy = address(new ERC1967Proxy(footballImplementation, initData));
         allMatches.push(proxy);
-        emit BettingMatchCreated(proxy, _owner);
+        matchSportType[proxy] = SportType.FOOTBALL;
+        emit MatchCreated(proxy, SportType.FOOTBALL, _owner);
+    }
+
+    /// @notice Deploy a new BasketballMatch proxy and initialize it
+    /// @param _matchName The name of the match
+    /// @param _owner The owner of the match contract
+    /// @return proxy Address of the newly deployed proxy
+    function createBasketballMatch(string calldata _matchName, address _owner) external returns (address proxy) {
+        bytes memory initData = abi.encodeWithSelector(
+            BasketballMatch.initialize.selector,
+            _matchName,
+            _owner
+        );
+        proxy = address(new ERC1967Proxy(basketballImplementation, initData));
+        allMatches.push(proxy);
+        matchSportType[proxy] = SportType.BASKETBALL;
+        emit MatchCreated(proxy, SportType.BASKETBALL, _owner);
     }
 
     /// @notice Retrieve all deployed proxy addresses
-    /// @return Array of BettingMatch proxy addresses
+    /// @return Array of match proxy addresses
     function getAllMatches() external view returns (address[] memory) {
         return allMatches;
     }
-    
+
+    /// @notice Get the sport type of a specific match
+    /// @param matchAddress The address of the match contract
+    /// @return The sport type (FOOTBALL or BASKETBALL)
+    function getSportType(address matchAddress) external view returns (SportType) {
+        return matchSportType[matchAddress];
+    }
 }

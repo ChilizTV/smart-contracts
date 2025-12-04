@@ -2,14 +2,16 @@
 pragma solidity ^0.8.24;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 
 /**
  * @title StreamWallet
  * @notice Smart wallet for managing streaming revenue (subscriptions and donations)
- * @dev Deployed via BeaconProxy pattern by StreamWalletFactory
+ * @dev Deployed via ERC1967 UUPS proxy by StreamWalletFactory
  */
-contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
+contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable {
 
     /*//////////////////////////////////////////////////////////////
                                  STATE
@@ -81,6 +83,11 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
         _;
     }
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
     //////////////////////////////////////////////////////////////*/
@@ -96,6 +103,8 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
         address treasury_,
         uint16 platformFeeBps_
     ) external initializer {
+        __Ownable_init(streamer_);
+        __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
 
         streamer = streamer_;
@@ -281,4 +290,14 @@ contract StreamWallet is Initializable, ReentrancyGuardUpgradeable {
      * @notice Receive function to accept native CHZ
      */
     receive() external payable {}
+
+    /*//////////////////////////////////////////////////////////////
+                              UUPS UPGRADE
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Authorize upgrade (only streamer/owner can upgrade)
+     * @param newImplementation The new implementation address
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }
