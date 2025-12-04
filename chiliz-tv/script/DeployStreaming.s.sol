@@ -6,35 +6,35 @@ import "forge-std/Script.sol";
 // Import streaming system contracts
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
-import {StreamBeaconRegistry} from "../src/streamer/StreamBeaconRegistry.sol";
 
 /**
  * @title DeployStreaming
  * @author ChilizTV
- * @notice Deployment script for the Streaming System (Beacon Proxy)
- * @dev Deploys StreamWallet implementation, StreamBeaconRegistry, and StreamWalletFactory
+ * @notice Deployment script for the Streaming System (UUPS Proxy)
+ * @dev Deploys StreamWalletFactory which creates ERC1967 UUPS proxies
  * 
  * ARCHITECTURE:
  * ============
- * - StreamWallet: Implementation with subscription & donation logic (native CHZ)
- * - StreamBeaconRegistry: Manages UpgradeableBeacon for atomic upgrades
- * - StreamWalletFactory: Factory to deploy BeaconProxy instances
- * - Each streamer gets their own BeaconProxy wallet
+ * - StreamWallet: UUPS upgradeable implementation with subscription & donation logic
+ * - StreamWalletFactory: Factory that deploys ERC1967 proxy instances
+ * - Each streamer gets their own UUPS proxy wallet
+ * - Each wallet upgrades individually (streamer controls their own upgrades)
  * 
  * STREAMING FLOW:
  * ==============
- * 1. Factory creates a StreamWallet proxy for a streamer
+ * 1. Factory creates a StreamWallet UUPS proxy for a streamer
  * 2. Users subscribe/donate with native CHZ
  * 3. Platform fee split to treasury
  * 4. Streamer receives net amount
  * 5. Streamer can withdraw anytime
+ * 6. Streamer can upgrade their wallet via UUPS
  * 
  * USAGE:
  * =====
  * Set environment variables:
  *   export PRIVATE_KEY=0x...           # Deployer private key
  *   export RPC_URL=https://...         # Network RPC endpoint
- *   export SAFE_ADDRESS=0x...          # Safe multisig (treasury + registry owner)
+ *   export SAFE_ADDRESS=0x...          # Safe multisig (treasury)
  * 
  * Run:
  *   forge script script/DeployStreaming.s.sol --rpc-url $RPC_URL --broadcast --verify
@@ -45,8 +45,6 @@ contract DeployStreaming is Script {
     // DEPLOYED CONTRACTS
     // ============================================================================
     
-    StreamWallet public streamWalletImpl;
-    StreamBeaconRegistry public registry;
     StreamWalletFactory public factory;
     
     address public deployer;
@@ -71,8 +69,6 @@ contract DeployStreaming is Script {
         vm.startBroadcast();
         
         _printHeader();
-        _deployImplementation();
-        _deployRegistry();
         _deployFactory();
         _transferOwnership();
         _printSummary();
@@ -86,67 +82,37 @@ contract DeployStreaming is Script {
     // ============================================================================
     
     /**
-     * @notice STEP 1: Deploy StreamWallet implementation
-     */
-    function _deployImplementation() internal {
-        console.log("STEP 1: Deploying StreamWallet Implementation");
-        console.log("---------------------------------------------");
-        
-        streamWalletImpl = new StreamWallet();
-        console.log("StreamWallet Implementation:", address(streamWalletImpl));
-        console.log("  Type: Beacon Proxy Upgradeable");
-        console.log("  Currency: Native CHZ");
-        console.log("");
-    }
-    
-    /**
-     * @notice STEP 2: Deploy StreamBeaconRegistry
-     */
-    function _deployRegistry() internal {
-        console.log("STEP 2: Deploying StreamBeaconRegistry");
-        console.log("--------------------------------------");
-        
-        registry = new StreamBeaconRegistry(deployer);
-        registry.setImplementation(address(streamWalletImpl));
-        console.log("StreamBeaconRegistry:", address(registry));
-        console.log("  Temporary Owner:", deployer);
-        console.log("  Beacon:", registry.getBeacon());
-        console.log("");
-    }
-    
-    /**
-     * @notice STEP 3: Deploy StreamWalletFactory
+     * @notice Deploy StreamWalletFactory (deploys implementation internally)
+     * @dev Factory creates ERC1967 UUPS proxies for streamers
      */
     function _deployFactory() internal {
-        console.log("STEP 3: Deploying StreamWalletFactory");
-        console.log("-------------------------------------");
+        console.log("Deploying StreamWalletFactory");
+        console.log("-----------------------------");
         
         factory = new StreamWalletFactory(
             deployer,
-            address(registry),
             treasury,
             500  // 5% platform fee
         );
         console.log("StreamWalletFactory:", address(factory));
         console.log("  Owner:", deployer);
-        console.log("  Registry:", address(registry));
+        console.log("  Implementation: deployed internally");
         console.log("  Treasury:", treasury);
         console.log("  Platform Fee: 5%");
         console.log("");
     }
     
     /**
-     * @notice STEP 4: Transfer registry ownership to Safe
+     * @notice Transfer factory ownership to Safe
      */
     function _transferOwnership() internal {
-        console.log("STEP 4: Transferring Ownership to Safe");
-        console.log("---------------------------------------");
+        console.log("Transferring Ownership to Safe");
+        console.log("------------------------------");
         
-        registry.transferOwnership(treasury);
-        console.log("StreamBeaconRegistry -> Safe:", treasury);
+        factory.transferOwnership(treasury);
+        console.log("StreamWalletFactory -> Safe:", treasury);
         console.log("");
     }
-    
     
     // ============================================================================
     // HELPER FUNCTIONS
@@ -172,25 +138,23 @@ contract DeployStreaming is Script {
         
         console.log("DEPLOYED CONTRACTS:");
         console.log("------------------");
-        console.log("StreamWallet Implementation:", address(streamWalletImpl));
-        console.log("StreamBeaconRegistry:", address(registry));
-        console.log("  Owner:", treasury);
-        console.log("  Beacon:", registry.getBeacon());
         console.log("StreamWalletFactory:", address(factory));
+        console.log("  (Implementation deployed internally)");
+        console.log("  Owner:", treasury);
         console.log("");
         
         console.log("CREATE A STREAM WALLET:");
         console.log("----------------------");
         console.log("cast send", address(factory));
-        console.log("  'createStreamWallet(address)'");
+        console.log("  'deployWalletFor(address)'");
         console.log("  <STREAMER_ADDRESS>");
         console.log("");
         
         console.log("SUBSCRIBE TO STREAM:");
         console.log("-------------------");
         console.log("cast send", address(factory), "--value 1ether");
-        console.log("  'subscribeToStream(address)'");
-        console.log("  <STREAMER_ADDRESS>");
+        console.log("  'subscribeToStream(address,uint256)'");
+        console.log("  <STREAMER_ADDRESS> <DURATION_SECONDS>");
         console.log("");
     }
 }

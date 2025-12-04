@@ -4,18 +4,15 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 
 // Import betting system
-import {BettingMatch} from "../src/betting/BettingMatch.sol";
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 
 // Import streaming system
-import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
-import {StreamBeaconRegistry} from "../src/streamer/StreamBeaconRegistry.sol";
 
 /**
  * @title DeployAll
  * @author ChilizTV
- * @notice Complete deployment script for both Betting and Streaming systems
+ * @notice Complete deployment script for both Multi-Sport Betting and Streaming systems
  * 
  * USAGE:
  * =====
@@ -30,12 +27,9 @@ import {StreamBeaconRegistry} from "../src/streamer/StreamBeaconRegistry.sol";
 contract DeployAll is Script {
     
     // Betting contracts
-    BettingMatch public bettingMatchImpl;
     BettingMatchFactory public bettingFactory;
     
     // Streaming contracts
-    StreamWallet public streamWalletImpl;
-    StreamBeaconRegistry public streamRegistry;
     StreamWalletFactory public streamFactory;
     
     address public deployer;
@@ -65,37 +59,28 @@ contract DeployAll is Script {
         // Deploy Betting System
         console.log("BETTING SYSTEM");
         console.log("==============");
-        bettingMatchImpl = new BettingMatch();
-        console.log("BettingMatch Implementation:", address(bettingMatchImpl));
-        
-        bettingFactory = new BettingMatchFactory(address(bettingMatchImpl));
+        bettingFactory = new BettingMatchFactory();
         console.log("BettingMatchFactory:", address(bettingFactory));
+        console.log("  (Implementations deployed internally)");
         console.log("");
         
         // Deploy Streaming System
         console.log("STREAMING SYSTEM");
         console.log("================");
-        streamWalletImpl = new StreamWallet();
-        console.log("StreamWallet Implementation:", address(streamWalletImpl));
-        
-        streamRegistry = new StreamBeaconRegistry(deployer);
-        streamRegistry.setImplementation(address(streamWalletImpl));
-        console.log("StreamBeaconRegistry:", address(streamRegistry));
-        
         streamFactory = new StreamWalletFactory(
             deployer,
-            address(streamRegistry),
             treasury,
             500  // 5% platform fee
         );
         console.log("StreamWalletFactory:", address(streamFactory));
+        console.log("  (Implementation deployed internally)");
         console.log("");
         
         // Transfer ownership
         console.log("OWNERSHIP TRANSFER");
         console.log("==================");
-        streamRegistry.transferOwnership(treasury);
-        console.log("StreamBeaconRegistry -> Safe [OK]");
+        streamFactory.transferOwnership(treasury);
+        console.log("StreamWalletFactory -> Safe [OK]");
         console.log("");
         
         console.log("=========================================");
