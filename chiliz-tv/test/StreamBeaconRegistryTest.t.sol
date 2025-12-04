@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
-import {StreamBeaconRegistry} from "../src/streamer/StreamBeaconRegistry.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 
@@ -12,9 +11,7 @@ contract MockTreasury {
 }
 
 contract StreamBeaconRegistryTest is Test {
-    StreamBeaconRegistry public registry;
     StreamWalletFactory public factory;
-    StreamWallet public implementation;
 
     address public admin = address(0x1);
     address public gnosisSafe = address(0x2);
@@ -27,8 +24,6 @@ contract StreamBeaconRegistryTest is Test {
     uint16 public constant PLATFORM_FEE_BPS = 500; // 5%
     uint256 public constant INITIAL_BALANCE = 1000 ether;
 
-    event BeaconCreated(address indexed beacon, address indexed implementation);
-    event BeaconUpgraded(address indexed newImplementation);
     event StreamWalletCreated(address indexed streamer, address indexed wallet);
     event SubscriptionProcessed(
         address indexed streamer,
@@ -45,23 +40,11 @@ contract StreamBeaconRegistryTest is Test {
     function setUp() public {
         // Deploy mock treasury to receive CHZ
         treasury = new MockTreasury();
-        
-        // Deploy registry with Safe as owner
-        vm.prank(gnosisSafe);
-        registry = new StreamBeaconRegistry(gnosisSafe);
 
-        // Deploy implementation
-        implementation = new StreamWallet();
-
-        // Set implementation via Safe
-        vm.prank(gnosisSafe);
-        registry.setImplementation(address(implementation));
-
-        // Deploy factory with admin as owner (4 parameters, no token)
+        // Deploy factory (deploys implementation internally)
         vm.prank(admin);
         factory = new StreamWalletFactory(
             admin,
-            address(registry),
             address(treasury),
             PLATFORM_FEE_BPS
         );
@@ -77,17 +60,11 @@ contract StreamBeaconRegistryTest is Test {
                         DEPLOYMENT & SETUP TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function testRegistryDeployment() public view {
-        assertEq(registry.owner(), gnosisSafe);
-        assertTrue(registry.isInitialized());
-        assertEq(registry.getImplementation(), address(implementation));
-    }
-
     function testFactoryDeployment() public view {
         assertEq(factory.owner(), admin);
-        assertEq(address(factory.registry()), address(registry));
         assertEq(factory.treasury(), address(treasury));
         assertEq(factory.defaultPlatformFeeBps(), PLATFORM_FEE_BPS);
+        assertTrue(factory.implementation() != address(0));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -403,7 +380,6 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(admin);
         StreamWalletFactory zeroFeeFactory = new StreamWalletFactory(
             admin,
-            address(registry),
             address(treasury),
             0 // 0% fee
         );
@@ -421,7 +397,7 @@ contract StreamBeaconRegistryTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        UPGRADE TESTS
+                        UPGRADE TESTS (UUPS)
     //////////////////////////////////////////////////////////////*/
 
     function testUpgradeImplementation() public {
@@ -432,33 +408,31 @@ contract StreamBeaconRegistryTest is Test {
         // Deploy new implementation
         StreamWallet newImplementation = new StreamWallet();
 
-        // Upgrade via Safe
-        vm.expectEmit(true, false, false, false);
-        emit BeaconUpgraded(address(newImplementation));
-
-        vm.prank(gnosisSafe);
-        registry.setImplementation(address(newImplementation));
-
-        // Verify upgrade
-        assertEq(registry.getImplementation(), address(newImplementation));
+        // Upgrade via streamer (wallet owner)
+        vm.prank(streamer1);
+        StreamWallet(payable(wallet)).upgradeToAndCall(address(newImplementation), "");
 
         // Existing proxy should still work with new implementation
         StreamWallet streamWallet = StreamWallet(payable(wallet));
         assertTrue(streamWallet.isSubscribed(viewer1));
     }
 
-    function testOnlySafeCanUpgrade() public {
+    function testOnlyOwnerCanUpgrade() public {
+        // Create a wallet
+        vm.prank(viewer1);
+        address wallet = factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
+
         StreamWallet newImplementation = new StreamWallet();
 
-        // Try to upgrade as non-owner
-        vm.prank(admin);
-        vm.expectRevert();
-        registry.setImplementation(address(newImplementation));
-
-        // Try as viewer
+        // Try to upgrade as non-owner (viewer)
         vm.prank(viewer1);
         vm.expectRevert();
-        registry.setImplementation(address(newImplementation));
+        StreamWallet(payable(wallet)).upgradeToAndCall(address(newImplementation), "");
+
+        // Try as admin (not wallet owner)
+        vm.prank(admin);
+        vm.expectRevert();
+        StreamWallet(payable(wallet)).upgradeToAndCall(address(newImplementation), "");
     }
 
     /*//////////////////////////////////////////////////////////////
