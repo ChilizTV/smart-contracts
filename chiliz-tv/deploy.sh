@@ -88,10 +88,10 @@ forge script $SCRIPT \
     --rpc-url $RPC_URL \
     --private-key $PRIVATE_KEY \
     --broadcast \
-    --etherscan-api-key $CHILIZ_EXPLORER_API_KEY \
-    --priority-gas-price 1000000000 \
-    --with-gas-price 6000000000000 \
-    --resume \
+    --slow \
+    --legacy \
+    --with-gas-price 3000000000000 \
+    --chain-id $CHAIN_ID \
     -vvvv
 
     # Add verification options if needed

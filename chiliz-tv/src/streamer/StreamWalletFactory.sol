@@ -162,11 +162,11 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             treasury,
             defaultPlatformFeeBps
         );
-
         // Deploy ERC1967 UUPS proxy
         wallet = address(new ERC1967Proxy(streamWalletImplementation, initData));
 
         emit StreamWalletCreated(streamer, wallet);
+ 
     }
 
     /**
