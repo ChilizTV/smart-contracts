@@ -1,19 +1,19 @@
 # StreamWalletFactory
-[Git Source](https://github.com/ChilizTV/smart-contracts/blob/5df5cfe0612ac659a912e036eb003da070811361/src/streamer/StreamWalletFactory.sol)
+[Git Source](https://github.com/ChilizTV/smart-contracts/blob/a4742235a0eb66bd4bec629003d5109eab4558a0/src/streamer/StreamWalletFactory.sol)
 
 **Inherits:**
 ReentrancyGuard, Ownable
 
-Factory for deploying StreamWallet proxies for streamers
+Factory for deploying StreamWallet UUPS proxies for streamers
 
-*Uses BeaconProxy pattern via StreamBeaconRegistry for upgradeability*
+*Uses ERC1967 proxy pattern matching betting system architecture*
 
 
 ## State Variables
-### registry
+### streamWalletImplementation
 
 ```solidity
-StreamBeaconRegistry public immutable registry;
+address private immutable streamWalletImplementation;
 ```
 
 
@@ -38,35 +38,20 @@ uint16 public defaultPlatformFeeBps;
 ```
 
 
-### token
-
-```solidity
-IERC20 public token;
-```
-
-
 ## Functions
 ### constructor
 
-Initialize the factory
+Initialize the factory and deploy implementation
 
 
 ```solidity
-constructor(
-    address initialOwner,
-    address registryAddr,
-    address token_,
-    address treasury_,
-    uint16 defaultPlatformFeeBps_
-) Ownable(initialOwner);
+constructor(address initialOwner, address treasury_, uint16 defaultPlatformFeeBps_) Ownable(initialOwner);
 ```
 **Parameters**
 
 |Name|Type|Description|
 |----|----|-----------|
 |`initialOwner`|`address`|The owner of the factory|
-|`registryAddr`|`address`|The StreamBeaconRegistry address|
-|`token_`|`address`|The payment token address|
 |`treasury_`|`address`|The platform treasury address|
 |`defaultPlatformFeeBps_`|`uint16`|Default platform fee in basis points|
 
@@ -77,53 +62,14 @@ Subscribe to a streamer (creates wallet if needed)
 
 
 ```solidity
-function subscribeToStream(address streamer, uint256 amount, uint256 duration)
-    external
-    nonReentrant
-    returns (address wallet);
+function subscribeToStream(address streamer, uint256 duration) external payable nonReentrant returns (address wallet);
 ```
 **Parameters**
 
 |Name|Type|Description|
 |----|----|-----------|
 |`streamer`|`address`|The streamer address|
-|`amount`|`uint256`|The subscription amount|
 |`duration`|`uint256`|The subscription duration in seconds|
-
-**Returns**
-
-|Name|Type|Description|
-|----|----|-----------|
-|`wallet`|`address`|The StreamWallet address|
-
-
-### subscribeToStreamWithPermit
-
-Subscribe to a streamer using EIP-2612 permit (single transaction, no prior approval needed)
-
-
-```solidity
-function subscribeToStreamWithPermit(
-    address streamer,
-    uint256 amount,
-    uint256 duration,
-    uint256 deadline,
-    uint8 v,
-    bytes32 r,
-    bytes32 s
-) external nonReentrant returns (address wallet);
-```
-**Parameters**
-
-|Name|Type|Description|
-|----|----|-----------|
-|`streamer`|`address`|The streamer address|
-|`amount`|`uint256`|The subscription amount|
-|`duration`|`uint256`|The subscription duration in seconds|
-|`deadline`|`uint256`|The permit deadline timestamp|
-|`v`|`uint8`|The recovery byte of the signature|
-|`r`|`bytes32`|Half of the ECDSA signature pair|
-|`s`|`bytes32`|Half of the ECDSA signature pair|
 
 **Returns**
 
@@ -138,8 +84,9 @@ Send a donation to a streamer (creates wallet if needed)
 
 
 ```solidity
-function donateToStream(address streamer, uint256 amount, string calldata message)
+function donateToStream(address streamer, string calldata message)
     external
+    payable
     nonReentrant
     returns (address wallet);
 ```
@@ -148,43 +95,7 @@ function donateToStream(address streamer, uint256 amount, string calldata messag
 |Name|Type|Description|
 |----|----|-----------|
 |`streamer`|`address`|The streamer address|
-|`amount`|`uint256`|The donation amount|
 |`message`|`string`|Optional message from donor|
-
-**Returns**
-
-|Name|Type|Description|
-|----|----|-----------|
-|`wallet`|`address`|The StreamWallet address|
-
-
-### donateToStreamWithPermit
-
-Send a donation to a streamer using EIP-2612 permit (single transaction, no prior approval needed)
-
-
-```solidity
-function donateToStreamWithPermit(
-    address streamer,
-    uint256 amount,
-    string calldata message,
-    uint256 deadline,
-    uint8 v,
-    bytes32 r,
-    bytes32 s
-) external nonReentrant returns (address wallet);
-```
-**Parameters**
-
-|Name|Type|Description|
-|----|----|-----------|
-|`streamer`|`address`|The streamer address|
-|`amount`|`uint256`|The donation amount|
-|`message`|`string`|Optional message from donor|
-|`deadline`|`uint256`|The permit deadline timestamp|
-|`v`|`uint8`|The recovery byte of the signature|
-|`r`|`bytes32`|Half of the ECDSA signature pair|
-|`s`|`bytes32`|Half of the ECDSA signature pair|
 
 **Returns**
 
@@ -254,6 +165,8 @@ function setTreasury(address newTreasury) external onlyOwner;
 
 Update the default platform fee
 
+Update the default platform fee
+
 
 ```solidity
 function setPlatformFee(uint16 newFeeBps) external onlyOwner;
@@ -271,7 +184,7 @@ Get the wallet address for a streamer
 
 
 ```solidity
-function getWallet(address streamer) external view returns (address wallet);
+function getWallet(address streamer) external view returns (address);
 ```
 **Parameters**
 
@@ -283,7 +196,7 @@ function getWallet(address streamer) external view returns (address wallet);
 
 |Name|Type|Description|
 |----|----|-----------|
-|`wallet`|`address`|The wallet address (address(0) if not deployed)|
+|`<none>`|`address`|wallet The wallet address (address(0) if not deployed)|
 
 
 ### hasWallet
@@ -305,6 +218,21 @@ function hasWallet(address streamer) external view returns (bool);
 |Name|Type|Description|
 |----|----|-----------|
 |`<none>`|`bool`|bool True if wallet exists|
+
+
+### implementation
+
+Get current implementation address
+
+
+```solidity
+function implementation() external view returns (address);
+```
+**Returns**
+
+|Name|Type|Description|
+|----|----|-----------|
+|`<none>`|`address`|Current StreamWallet implementation|
 
 
 ## Events
@@ -367,11 +295,5 @@ error InvalidFeeBps();
 
 ```solidity
 error WalletAlreadyExists();
-```
-
-### BeaconNotSet
-
-```solidity
-error BeaconNotSet();
 ```
 
