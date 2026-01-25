@@ -1,28 +1,40 @@
-// SPDX-License-Identifier: MIT
+// forge script script/DeployAll.s.sol:DeployAll \
+//   --rpc-url https://spicy-rpc.chiliz.com \
+//   --private-key $PRIVATE_KEY \
+//   --broadcast \
+//   --verify \
+//   --verifier blockscout \
+//   --verifier-url https://api.routescan.io/v2/network/testnet/evm/88882/etherscan/api \
+//   --etherscan-api-key $ETHERSCAN_API_KEY \
+//   --with-gas-price 100000000000 \
+//   -vvvv// SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
 
 // Import betting system contracts
-import {BettingMatch} from "../src/betting/BettingMatch.sol";
+import {FootballMatch} from "../src/betting/FootballMatch.sol";
+import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 
 /**
  * @title DeployBetting
  * @author ChilizTV
- * @notice Deployment script for the UUPS-based Betting Match System
- * @dev Deploys BettingMatch implementation and BettingMatchFactory
+ * @notice Deployment script for the UUPS-based Multi-Sport Betting System
+ * @dev Deploys FootballMatch and BasketballMatch implementations, plus BettingMatchFactory
  * 
  * ARCHITECTURE:
  * ============
- * - BettingMatch: UUPS upgradeable match contract with multiple markets
- * - BettingMatchFactory: Factory to deploy ERC1967 proxies of BettingMatch
- * - Each proxy is an independent match with its own markets and bets
+ * - FootballMatch: UUPS upgradeable contract for football betting
+ * - BasketballMatch: UUPS upgradeable contract for basketball betting
+ * - BettingMatchFactory: Factory to deploy ERC1967 proxies for both sports
+ * - Each proxy is an independent match with sport-specific markets
  * 
  * BETTING FLOW:
  * ============
- * 1. Factory creates a new match proxy
- * 2. Match owner adds markets (Winner, GoalsCount, FirstScorer, etc.)
+ * 1. Factory creates a new football or basketball match proxy
+ * 2. Match owner adds sport-specific markets
  * 3. Users bet CHZ on market selections
  * 4. Match owner resolves markets with actual results
  * 5. Winners claim payouts based on odds
@@ -42,7 +54,6 @@ contract DeployBetting is Script {
     // DEPLOYED CONTRACTS
     // ============================================================================
     
-    BettingMatch public bettingMatchImpl;
     BettingMatchFactory public factory;
     
     address public deployer;
@@ -58,7 +69,6 @@ contract DeployBetting is Script {
         vm.startBroadcast();
         
         _printHeader();
-        _deployImplementation();
         _deployFactory();
         _printSummary();
         
@@ -71,34 +81,16 @@ contract DeployBetting is Script {
     // ============================================================================
     
     /**
-     * @notice STEP 1: Deploy BettingMatch implementation
-     * @dev This is the logic contract for all matches
-     */
-    function _deployImplementation() internal {
-        console.log("STEP 1: Deploying BettingMatch Implementation");
-        console.log("---------------------------------------------");
-        
-        bettingMatchImpl = new BettingMatch();
-        console.log("BettingMatch Implementation:", address(bettingMatchImpl));
-        console.log("  Type: UUPS Upgradeable");
-        console.log("  Markets: Winner, GoalsCount, FirstScorer, Custom");
-        console.log("  Betting: Parimutuel with fixed odds");
-        console.log("  Currency: Native CHZ");
-        console.log("");
-    }
-    
-    /**
-     * @notice STEP 2: Deploy BettingMatchFactory
-     * @dev Factory creates ERC1967 proxies of BettingMatch
+     * @notice Deploy BettingMatchFactory (deploys implementations internally)
+     * @dev Factory creates ERC1967 proxies for both sports
      */
     function _deployFactory() internal {
-        console.log("STEP 2: Deploying BettingMatchFactory");
-        console.log("-------------------------------------");
-        
-        factory = new BettingMatchFactory(address(bettingMatchImpl));
+        console.log("Deploying BettingMatchFactory");
+        console.log("------------------------------");
+        factory = new BettingMatchFactory();
         console.log("BettingMatchFactory:", address(factory));
         console.log("  Owner:", deployer);
-        console.log("  Implementation:", address(bettingMatchImpl));
+        console.log("  Implementations deployed internally");
         console.log("");
     }
     
@@ -108,13 +100,13 @@ contract DeployBetting is Script {
     // ============================================================================
     
     function _printHeader() internal view {
-        console.log("=====================================");
-        console.log("CHILIZ-TV BETTING SYSTEM DEPLOYMENT");
-        console.log("=====================================");
+        console.log("=========================================");
+        console.log("CHILIZ-TV MULTI-SPORT BETTING DEPLOYMENT");
+        console.log("=========================================");
         console.log("");
         console.log("Deployer:", deployer);
         console.log("");
-        console.log("=====================================");
+        console.log("=========================================");
         console.log("");
     }
     
@@ -126,44 +118,52 @@ contract DeployBetting is Script {
         
         console.log("DEPLOYED CONTRACTS:");
         console.log("------------------");
-        console.log("BettingMatch Implementation:", address(bettingMatchImpl));
         console.log("BettingMatchFactory:", address(factory));
+        console.log("  (Implementations deployed internally)");
         console.log("");
         
-        console.log("CREATE A MATCH:");
-        console.log("---------------");
+        console.log("CREATE A FOOTBALL MATCH:");
+        console.log("-----------------------");
         console.log("cast send", address(factory));
-        console.log("  'createMatch(string,address)'");
-        console.log("  'Man United vs Chelsea'  # Match name");
-        console.log("  <OWNER_ADDRESS>           # Match admin");
+        console.log("  'createFootballMatch(string,address)'");
+        console.log("  'Barcelona vs Real Madrid'  # Match name");
+        console.log("  <OWNER_ADDRESS>             # Match admin");
+        console.log("");
+        
+        console.log("CREATE A BASKETBALL MATCH:");
+        console.log("-------------------------");
+        console.log("cast send", address(factory));
+        console.log("  'createBasketballMatch(string,address)'");
+        console.log("  'Lakers vs Celtics'    # Match name");
+        console.log("  <OWNER_ADDRESS>        # Match admin");
         console.log("");
         
         console.log("ADD MARKETS TO MATCH:");
         console.log("--------------------");
         console.log("cast send <MATCH_ADDRESS>");
-        console.log("  'addMarket(uint8,uint256)'");
-        console.log("  0                         # MarketType.Winner");
-        console.log("  150                       # Odds: 1.5x (150/100)");
+        console.log("  'addMarket(string,uint256)'");
+        console.log("  'Winner'                  # Market type");
+        console.log("  200                       # Odds: 2.0x (200/100)");
         console.log("");
         
         console.log("BETTING FLOW:");
         console.log("------------");
-        console.log("1. User bets: match.placeBet{value: 1 ether}(0, 1)");
-        console.log("   - marketId: 0 (Winner market)");
-        console.log("   - selection: 1 (their pick)");
-        console.log("2. Owner resolves: match.resolveMarket(0, 1)");
+        console.log("1. User bets: match.placeBet{value: 1 ether}(0, 0)");
+        console.log("   - marketId: 0 (first market)");
+        console.log("   - selection: 0 (Home/Over/Yes/etc.)");
+        console.log("2. Owner resolves: match.resolveMarket(0, 0)");
         console.log("   - marketId: 0");
-        console.log("   - result: 1 (actual outcome)");
+        console.log("   - result: 0 (actual outcome)");
         console.log("3. Winner claims: match.claim(0)");
         console.log("   - Receives bet * odds / 100");
         console.log("");
         
-        console.log("UPGRADING (Factory Owner):");
-        console.log("--------------------------");
-        console.log("1. Deploy new BettingMatch implementation");
-        console.log("2. factory.setImplementation(newImpl)");
-        console.log("3. Future matches use new implementation");
-        console.log("4. Existing matches can be upgraded individually");
+        console.log("UPGRADING:");
+        console.log("---------");
+        console.log("Implementations are immutable in factory.");
+        console.log("Each match can be upgraded individually via UUPS:");
+        console.log("  1. Deploy new implementation (FootballMatch or BasketballMatch)");
+        console.log("  2. Call match.upgradeToAndCall(newImpl, '') as match owner");
         console.log("");
     }
 }

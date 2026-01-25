@@ -3,15 +3,14 @@ pragma solidity ^0.8.24;
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {StreamWallet} from "./StreamWallet.sol";
-import {StreamBeaconRegistry} from "./StreamBeaconRegistry.sol";
 import {IStreamWalletInit} from "../interfaces/IStreamWalletInit.sol";
 
 /**
  * @title StreamWalletFactory
- * @notice Factory for deploying StreamWallet proxies for streamers
- * @dev Uses BeaconProxy pattern via StreamBeaconRegistry for upgradeability
+ * @notice Factory for deploying StreamWallet UUPS proxies for streamers
+ * @dev Uses ERC1967 proxy pattern matching betting system architecture
  */
 contract StreamWalletFactory is ReentrancyGuard, Ownable {
 
@@ -19,7 +18,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
                                  STATE
     //////////////////////////////////////////////////////////////*/
 
-    StreamBeaconRegistry public immutable registry;
+    address private immutable streamWalletImplementation;
     mapping(address => address) public streamerWallets; // streamer => wallet
     address public treasury;
     uint16 public defaultPlatformFeeBps; // e.g., 500 = 5%
@@ -59,37 +58,32 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     error InvalidAddress();
     error InvalidFeeBps();
     error WalletAlreadyExists();
-    error BeaconNotSet();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
-
     /**
-     * @notice Initialize the factory
+     * @notice Initialize the factory and deploy implementation
      * @param initialOwner The owner of the factory
-     * @param registryAddr The StreamBeaconRegistry address
      * @param treasury_ The platform treasury address
      * @param defaultPlatformFeeBps_ Default platform fee in basis points
      */
     constructor(
         address initialOwner,
-        address registryAddr,
         address treasury_,
         uint16 defaultPlatformFeeBps_
     ) Ownable(initialOwner) {
-        if (registryAddr == address(0)) revert InvalidAddress();
         if (treasury_ == address(0)) revert InvalidAddress();
         if (defaultPlatformFeeBps_ > 10_000) revert InvalidFeeBps();
 
-        registry = StreamBeaconRegistry(registryAddr);
+        streamWalletImplementation = address(new StreamWallet());
         treasury = treasury_;
         defaultPlatformFeeBps = defaultPlatformFeeBps_;
     }
 
     /*//////////////////////////////////////////////////////////////
                            SUBSCRIPTION LOGIC
-    //////////////////////////////////////////////////////////////*/
+    //////////////////////////////////////////////////////////////**/
 
     /**
      * @notice Subscribe to a streamer (creates wallet if needed)
@@ -153,7 +147,6 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     /*//////////////////////////////////////////////////////////////
                           WALLET DEPLOYMENT
     //////////////////////////////////////////////////////////////*/
-
     /**
      * @notice Deploy a StreamWallet for a streamer
      * @param streamer The streamer address
@@ -162,22 +155,18 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     function _deployStreamWallet(
         address streamer
     ) internal returns (address wallet) {
-        // Get beacon from registry
-        address beacon = registry.getBeacon();
-        if (beacon == address(0)) revert BeaconNotSet();
-
-        // Prepare initialization data (no token parameter for native CHZ)
+        // Prepare initialization data
         bytes memory initData = abi.encodeWithSelector(
             IStreamWalletInit.initialize.selector,
             streamer,
             treasury,
             defaultPlatformFeeBps
         );
-
-        // Deploy BeaconProxy
-        wallet = address(new BeaconProxy(beacon, initData));
+        // Deploy ERC1967 UUPS proxy
+        wallet = address(new ERC1967Proxy(streamWalletImplementation, initData));
 
         emit StreamWalletCreated(streamer, wallet);
+ 
     }
 
     /**
@@ -217,6 +206,10 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @notice Update the default platform fee
      * @param newFeeBps The new fee in basis points
      */
+    /**
+     * @notice Update the default platform fee
+     * @param newFeeBps The new fee in basis points
+     */
     function setPlatformFee(uint16 newFeeBps) external onlyOwner {
         if (newFeeBps > 10_000) revert InvalidFeeBps();
 
@@ -226,16 +219,12 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         emit PlatformFeeUpdated(oldFeeBps, newFeeBps);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                             VIEW FUNCTIONS
-    //////////////////////////////////////////////////////////////*/
-
     /**
      * @notice Get the wallet address for a streamer
      * @param streamer The streamer address
      * @return wallet The wallet address (address(0) if not deployed)
      */
-    function getWallet(address streamer) external view returns (address wallet) {
+    function getWallet(address streamer) external view returns (address) {
         return streamerWallets[streamer];
     }
 
@@ -246,5 +235,13 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      */
     function hasWallet(address streamer) external view returns (bool) {
         return streamerWallets[streamer] != address(0);
+    }
+
+    /**
+     * @notice Get current implementation address
+     * @return Current StreamWallet implementation
+     */
+    function implementation() external view returns (address) {
+        return streamWalletImplementation;
     }
 }
