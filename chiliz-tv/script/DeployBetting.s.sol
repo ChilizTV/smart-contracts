@@ -9,13 +9,11 @@
 //   --with-gas-price 100000000000 \
 //   -vvvv// SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.22;
 
 import "forge-std/Script.sol";
 
-// Import betting system contracts
-import {FootballMatch} from "../src/betting/FootballMatch.sol";
-import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
+// Import betting system factory (implementations deployed internally)
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 
 /**
@@ -141,21 +139,23 @@ contract DeployBetting is Script {
         console.log("ADD MARKETS TO MATCH:");
         console.log("--------------------");
         console.log("cast send <MATCH_ADDRESS>");
-        console.log("  'addMarket(string,uint256)'");
-        console.log("  'Winner'                  # Market type");
-        console.log("  200                       # Odds: 2.0x (200/100)");
+        console.log("  'addMarket(bytes32,uint32)'");
+        console.log("  keccak256('WINNER')       # Market type (bytes32)");
+        console.log("  20000                     # Odds: 2.0x (20000/10000)");
         console.log("");
         
         console.log("BETTING FLOW:");
         console.log("------------");
-        console.log("1. User bets: match.placeBet{value: 1 ether}(0, 0)");
+        console.log("1. Open market: match.setMarketState(0, MarketState.Open)");
+        console.log("2. User bets: match.placeBet{value: 1 ether}(0, 0)");
         console.log("   - marketId: 0 (first market)");
         console.log("   - selection: 0 (Home/Over/Yes/etc.)");
-        console.log("2. Owner resolves: match.resolveMarket(0, 0)");
+        console.log("   - Odds locked at time of bet (x10000 precision)");
+        console.log("3. Owner resolves: match.resolveMarket(0, 0)");
         console.log("   - marketId: 0");
         console.log("   - result: 0 (actual outcome)");
-        console.log("3. Winner claims: match.claim(0)");
-        console.log("   - Receives bet * odds / 100");
+        console.log("4. Winner claims: match.claim(0)");
+        console.log("   - Receives bet * lockedOdds / 10000");
         console.log("");
         
         console.log("UPGRADING:");

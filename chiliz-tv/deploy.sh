@@ -1,6 +1,6 @@
 #!/bin/bash
 # ChilizTV Quick Deploy Script
-# Usage: ./deploy.sh [testnet|mainnet] [all|betting|streaming]
+# Usage: ./deploy.sh [testnet|mainnet|base-sepolia] [all|betting|streaming]
 
 set -e
 
@@ -42,9 +42,13 @@ elif [ "$NETWORK" = "testnet" ]; then
     RPC_URL="https://spicy-rpc.chiliz.com"
     VERIFIER_URL="https://api.routescan.io/v2/network/testnet/evm/88882/etherscan/api"
     CHAIN_ID=88882
+elif [ "$NETWORK" = "base-sepolia" ]; then
+    RPC_URL="https://base-sepolia.drpc.org"
+    VERIFIER_URL="https://api-sepolia.basescan.org/api"
+    CHAIN_ID=84532
 else
     echo -e "${RED}Invalid network: $NETWORK${NC}"
-    echo "Usage: ./deploy.sh [testnet|mainnet] [all|betting|streaming]"
+    echo "Usage: ./deploy.sh [testnet|mainnet|base-sepolia] [all|betting|streaming]"
     exit 1
 fi
 
@@ -84,15 +88,26 @@ echo -e "${GREEN}Starting deployment...${NC}"
 echo ""
 
 # Run forge script (without verification - verify manually later)
-forge script $SCRIPT \
-    --rpc-url $RPC_URL \
-    --private-key $PRIVATE_KEY \
-    --broadcast \
-    --slow \
-    --legacy \
-    --with-gas-price 3000000000000 \
-    --chain-id $CHAIN_ID \
-    -vvvv
+# Note: For Base Sepolia, remove --legacy and --with-gas-price to auto-detect
+if [ "$NETWORK" = "base-sepolia" ]; then
+    forge script $SCRIPT \
+        --rpc-url $RPC_URL \
+        --private-key $PRIVATE_KEY \
+        --broadcast \
+        --slow \
+        --chain-id $CHAIN_ID \
+        -vvvv
+else
+    forge script $SCRIPT \
+        --rpc-url $RPC_URL \
+        --private-key $PRIVATE_KEY \
+        --broadcast \
+        --slow \
+        --legacy \
+        --with-gas-price 2501 \
+        --chain-id $CHAIN_ID \
+        -vvvv
+fi
 
     # Add verification options if needed
     # --verify \

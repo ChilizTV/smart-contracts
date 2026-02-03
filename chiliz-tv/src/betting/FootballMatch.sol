@@ -1,156 +1,246 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.22;
 
 import "./BettingMatch.sol";
 
-/// @title FootballMatch
-/// @notice Football-specific betting contract with markets like Winner, GoalsCount, FirstScorer, etc.
+/**
+ * @title FootballMatch
+ * @notice Football-specific betting contract with dynamic odds support
+ * @dev Inherits BettingMatch for odds management, implements football-specific markets
+ */
 contract FootballMatch is BettingMatch {
-    /// @notice Types of markets available for football
-    enum FootballMarketType { 
-        Winner,          // Home/Draw/Away (0/1/2)
-        GoalsCount,      // Total goals (0, 1, 2, 3+)
-        FirstScorer,     // Player ID who scores first
-        BothTeamsScore,  // Yes/No (1/0)
-        HalfTimeResult,  // Home/Draw/Away at HT
-        CorrectScore     // Exact score (encoded)
-    }
+    
+    // ══════════════════════════════════════════════════════════════════════════
+    // FOOTBALL MARKET TYPES
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    /// @notice Football market type identifiers (bytes32 for gas efficiency)
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");           // 1X2: Home(0)/Draw(1)/Away(2)
+    bytes32 public constant MARKET_GOALS_TOTAL = keccak256("GOALS_TOTAL"); // Over/Under
+    bytes32 public constant MARKET_BOTH_SCORE = keccak256("BOTH_SCORE");   // Yes(1)/No(0)
+    bytes32 public constant MARKET_HALFTIME = keccak256("HALFTIME");       // 1X2 at halftime
+    bytes32 public constant MARKET_CORRECT_SCORE = keccak256("CORRECT_SCORE"); // Exact score
+    bytes32 public constant MARKET_FIRST_SCORER = keccak256("FIRST_SCORER");   // Player ID
 
-    /// @notice A football-specific market
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORAGE
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    /// @notice Football-specific market data
     struct FootballMarket {
-        FootballMarketType mtype;
-        uint256            odds;
-        State              state;
-        uint256            result;
-        bool               cancelled;  // market cancellation flag
-        mapping(address => Bet) bets;
+        bytes32 marketType;
+        int16   line;          // For O/U or spread (e.g., 2.5 goals = 25, stored as int16)
+        uint8   maxSelections; // Maximum valid selection value
     }
-
-    /// @notice Mapping: marketId → FootballMarket
+    
     mapping(uint256 => FootballMarket) public footballMarkets;
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // ERRORS
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    error InvalidMarketType(bytes32 marketType);
+    error InvalidSelection(uint256 marketId, uint64 selection, uint8 maxAllowed);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // CONSTRUCTOR & INITIALIZER
+    // ══════════════════════════════════════════════════════════════════════════
+    
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
-
-    /// @notice Initialize a football match
-    /// @param _matchName descriptive name (e.g., "Barcelona vs Real Madrid")
-    /// @param _owner owner/admin address
+    
+    /**
+     * @notice Initialize the football match contract
+     * @param _matchName Match name (e.g., "Barcelona vs Real Madrid")
+     * @param _owner Owner address
+     */
     function initialize(string memory _matchName, address _owner) external initializer {
-        __BettingMatch_init(_matchName, "FOOTBALL", _owner);
+        __BettingMatchV2_init(_matchName, "FOOTBALL", _owner);
     }
 
-    /// @notice Add a new football market
-    /// @param marketType string representation of FootballMarketType (e.g., "Winner", "GoalsCount")
-    /// @param odds multiplier ×100 (e.g., 200 = 2.0x)
-    function addMarket(string calldata marketType, uint256 odds) external override onlyRole(ADMIN_ROLE) {
-        // CRITICAL: Validate odds (1.01x to 100x)
-        if (odds < 101 || odds > 10000) revert InvalidOdds();
+    // ══════════════════════════════════════════════════════════════════════════
+    // MARKET CREATION
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    /**
+     * @notice Add a new football betting market
+     * @param marketType Market type identifier
+     * @param initialOdds Initial odds (x10000)
+     */
+    function addMarket(bytes32 marketType, uint32 initialOdds) 
+        external 
+        override 
+        onlyRole(ADMIN_ROLE) 
+    {
+        _validateOdds(initialOdds);
         
-        uint256 mid = marketCount++;
-        FootballMarket storage m = footballMarkets[mid];
-        m.mtype = _parseFootballMarketType(marketType);
-        m.odds = odds;
-        m.state = State.Live;
-        emit MarketAdded(mid, marketType, odds);
-    }
-
-    /// @notice Internal function to store a football bet
-    function _storeBet(uint256 marketId, address user, uint256 amount, uint256 selection) internal override {
-        FootballMarket storage m = footballMarkets[marketId];
-        if (m.state != State.Live) revert WrongState(State.Live);
+        uint8 maxSelections = _getMaxSelections(marketType);
         
-        // CRITICAL: Prevent double betting
-        if (m.bets[user].amount > 0) revert AlreadyBet();
+        uint256 marketId = marketCount++;
         
-        m.bets[user] = Bet({ amount: amount, selection: selection, claimed: false });
-    }
-
-    /// @notice Internal function to resolve a football market
-    function _resolveMarketInternal(uint256 marketId, uint256 result) internal override {
-        FootballMarket storage m = footballMarkets[marketId];
-        if (m.state != State.Live) revert WrongState(State.Live);
+        // Initialize market core
+        _marketCores[marketId] = MarketCore({
+            state: MarketState.Inactive,
+            result: 0,
+            createdAt: uint40(block.timestamp),
+            resolvedAt: 0,
+            totalPool: 0
+        });
         
-        m.result = result;
-        m.state = State.Ended;
+        // Initialize football-specific data
+        footballMarkets[marketId] = FootballMarket({
+            marketType: marketType,
+            line: 0,
+            maxSelections: maxSelections
+        });
+        
+        // Set initial odds
+        _getOrCreateOddsIndex(marketId, initialOdds);
+        _oddsRegistries[marketId].currentIndex = 1;
+        
+        emit MarketCreated(marketId, _marketTypeToString(marketType), initialOdds);
+    }
+    
+    /**
+     * @notice Add a market with a line (for O/U or spread)
+     * @param marketType Market type
+     * @param initialOdds Initial odds
+     * @param line Line value (e.g., 25 = 2.5 goals)
+     */
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) 
+        external 
+        onlyRole(ADMIN_ROLE) 
+    {
+        _validateOdds(initialOdds);
+        
+        uint8 maxSelections = _getMaxSelections(marketType);
+        
+        uint256 marketId = marketCount++;
+        
+        _marketCores[marketId] = MarketCore({
+            state: MarketState.Inactive,
+            result: 0,
+            createdAt: uint40(block.timestamp),
+            resolvedAt: 0,
+            totalPool: 0
+        });
+        
+        footballMarkets[marketId] = FootballMarket({
+            marketType: marketType,
+            line: line,
+            maxSelections: maxSelections
+        });
+        
+        _getOrCreateOddsIndex(marketId, initialOdds);
+        _oddsRegistries[marketId].currentIndex = 1;
+        
+        emit MarketCreated(marketId, _marketTypeToString(marketType), initialOdds);
     }
 
-    /// @notice Internal helper to get market and bet data for claim logic
-    function _getMarketAndBet(uint256 marketId, address user) internal view override returns (
-        uint256 odds,
-        State state,
-        uint256 result,
-        Bet storage userBet
-    ) {
-        FootballMarket storage m = footballMarkets[marketId];
-        return (m.odds, m.state, m.result, m.bets[user]);
+    // ══════════════════════════════════════════════════════════════════════════
+    // VALIDATION
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    /**
+     * @notice Validate selection for football market
+     */
+    function _validateSelection(uint256 marketId, uint64 selection) internal view override {
+        FootballMarket storage fm = footballMarkets[marketId];
+        if (selection > fm.maxSelections) {
+            revert InvalidSelection(marketId, selection, fm.maxSelections);
+        }
+    }
+    
+    /**
+     * @notice Get max valid selection for market type
+     */
+    function _getMaxSelections(bytes32 marketType) internal pure returns (uint8) {
+        if (marketType == MARKET_WINNER) return 2;          // 0,1,2 (Home/Draw/Away)
+        if (marketType == MARKET_GOALS_TOTAL) return 1;     // 0,1 (Under/Over)
+        if (marketType == MARKET_BOTH_SCORE) return 1;      // 0,1 (No/Yes)
+        if (marketType == MARKET_HALFTIME) return 2;        // 0,1,2
+        if (marketType == MARKET_CORRECT_SCORE) return 99;  // Encoded scores
+        if (marketType == MARKET_FIRST_SCORER) return 255;  // Player IDs
+        revert InvalidMarketType(marketType);
     }
 
-    /// @notice Get football market details
-    function getMarket(uint256 marketId) external view override returns (
-        string memory marketType,
-        uint256 odds,
-        State state,
-        uint256 result
-    ) {
-        if (marketId >= marketCount) revert InvalidMarket(marketId);
-        FootballMarket storage m = footballMarkets[marketId];
-        return (
-            _footballMarketTypeToString(m.mtype),
-            m.odds,
-            m.state,
-            m.result
-        );
+    // ══════════════════════════════════════════════════════════════════════════
+    // VIEW FUNCTIONS
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    /**
+     * @notice Get complete market information
+     */
+    function getMarketInfo(uint256 marketId) 
+        external 
+        view 
+        override 
+        validMarket(marketId) 
+        returns (
+            bytes32 marketType,
+            MarketState state,
+            uint32 currentOdds,
+            uint64 result,
+            uint256 totalPool
+        ) 
+    {
+        FootballMarket storage fm = footballMarkets[marketId];
+        MarketCore storage core = _marketCores[marketId];
+        
+        marketType = fm.marketType;
+        state = core.state;
+        currentOdds = _getCurrentOdds(marketId);
+        result = core.result;
+        totalPool = core.totalPool;
+    }
+    
+    /**
+     * @notice Get football-specific market details
+     */
+    function getFootballMarket(uint256 marketId) 
+        external 
+        view 
+        validMarket(marketId) 
+        returns (
+            string memory marketTypeStr,
+            int16 line,
+            uint8 maxSelections,
+            MarketState state,
+            uint32 currentOdds,
+            uint64 result,
+            uint256 totalPool
+        ) 
+    {
+        FootballMarket storage fm = footballMarkets[marketId];
+        MarketCore storage core = _marketCores[marketId];
+        
+        marketTypeStr = _marketTypeToString(fm.marketType);
+        line = fm.line;
+        maxSelections = fm.maxSelections;
+        state = core.state;
+        currentOdds = _getCurrentOdds(marketId);
+        result = core.result;
+        totalPool = core.totalPool;
+    }
+    
+    /**
+     * @notice Convert market type to string for events
+     */
+    function _marketTypeToString(bytes32 marketType) internal pure returns (string memory) {
+        if (marketType == MARKET_WINNER) return "WINNER";
+        if (marketType == MARKET_GOALS_TOTAL) return "GOALS_TOTAL";
+        if (marketType == MARKET_BOTH_SCORE) return "BOTH_SCORE";
+        if (marketType == MARKET_HALFTIME) return "HALFTIME";
+        if (marketType == MARKET_CORRECT_SCORE) return "CORRECT_SCORE";
+        if (marketType == MARKET_FIRST_SCORER) return "FIRST_SCORER";
+        return "UNKNOWN";
     }
 
-    /// @notice Get user's bet on a football market
-    function getBet(uint256 marketId, address user) external view override returns (
-        uint256 amount,
-        uint256 selection,
-        bool claimed
-    ) {
-        if (marketId >= marketCount) revert InvalidMarket(marketId);
-        Bet storage b = footballMarkets[marketId].bets[user];
-        return (b.amount, b.selection, b.claimed);
-    }
-
-    /// @notice Parse string to FootballMarketType enum
-    function _parseFootballMarketType(string calldata marketType) internal pure returns (FootballMarketType) {
-        bytes32 hash = keccak256(bytes(marketType));
-        if (hash == keccak256("Winner")) return FootballMarketType.Winner;
-        if (hash == keccak256("GoalsCount")) return FootballMarketType.GoalsCount;
-        if (hash == keccak256("FirstScorer")) return FootballMarketType.FirstScorer;
-        if (hash == keccak256("BothTeamsScore")) return FootballMarketType.BothTeamsScore;
-        if (hash == keccak256("HalfTimeResult")) return FootballMarketType.HalfTimeResult;
-        if (hash == keccak256("CorrectScore")) return FootballMarketType.CorrectScore;
-        revert("Invalid market type");
-    }
-
-    /// @notice Convert FootballMarketType enum to string
-    function _footballMarketTypeToString(FootballMarketType mtype) internal pure returns (string memory) {
-        if (mtype == FootballMarketType.Winner) return "Winner";
-        if (mtype == FootballMarketType.GoalsCount) return "GoalsCount";
-        if (mtype == FootballMarketType.FirstScorer) return "FirstScorer";
-        if (mtype == FootballMarketType.BothTeamsScore) return "BothTeamsScore";
-        if (mtype == FootballMarketType.HalfTimeResult) return "HalfTimeResult";
-        if (mtype == FootballMarketType.CorrectScore) return "CorrectScore";
-        return "Unknown";
-    }
-
-    /// @notice Internal function to cancel a football market
-    function _cancelMarketInternal(uint256 marketId) internal override {
-        FootballMarket storage m = footballMarkets[marketId];
-        if (m.state == State.Ended && m.cancelled) revert("Market already resolved or cancelled");
-        m.cancelled = true;
-    }
-
-    /// @notice Internal function to check if market is cancelled and get bet
-    function _getMarketCancellationStatus(uint256 marketId, address user) internal view override returns (
-        Bet storage userBet,
-        bool isCancelled
-    ) {
-        FootballMarket storage m = footballMarkets[marketId];
-        return (m.bets[user], m.cancelled);
-    }
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORAGE GAP
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    uint256[48] private __gap_football;
 }

@@ -18,7 +18,7 @@ Both systems use native CHZ token for all transactions.
 
 ## 2. Architecture
 
-### 2.1 Betting System (UUPS Pattern)
+### 2.1 Betting System (UUPS Pattern + Multi-Sport)
 
 ```mermaid
 flowchart LR
@@ -26,50 +26,60 @@ flowchart LR
         BMF[BettingMatchFactory]
     end
     
-    subgraph Implementation
-        BM[BettingMatch UUPS]
+    subgraph Implementations
+        FM[FootballMatch UUPS]
+        BM[BasketballMatch UUPS]
     end
     
     subgraph Proxies
-        P1[Match Proxy 1]
-        P2[Match Proxy 2]
-        P3[Match Proxy N...]
+        P1[Football Match 1]
+        P2[Football Match 2]
+        P3[Basketball Match 1]
     end
     
     subgraph Users
         U[Bettors]
     end
     
-    BMF -->|creates ERC1967 Proxy| P1
-    BMF -->|creates ERC1967 Proxy| P2
-    BMF -->|creates ERC1967 Proxy| P3
+    BMF -->|createFootballMatch| P1
+    BMF -->|createFootballMatch| P2
+    BMF -->|createBasketballMatch| P3
     
-    P1 -.->|delegates to| BM
-    P2 -.->|delegates to| BM
+    P1 -.->|delegates to| FM
+    P2 -.->|delegates to| FM
     P3 -.->|delegates to| BM
     
     U -->|bets CHZ| P1
     U -->|bets CHZ| P2
+    U -->|bets CHZ| P3
 ```
 
 **Components:**
-- **BettingMatch** (`src/betting/BettingMatch.sol`): UUPS upgradeable match contract
-  - Supports multiple markets (Winner, GoalsCount, FirstScorer, etc.)
-  - Each market has odds, state (Live/Ended), and result
-  - Users bet CHZ on market selections
-  - Owner resolves markets and users claim payouts
+- **BettingMatch** (`src/betting/BettingMatch.sol`): Abstract base contract with dynamic odds
+  - Per-market odds registry with index-based deduplication
+  - Each bet locks its odds at placement time (x10000 precision)
+  - Market lifecycle: Inactive → Open → Suspended → Closed → Resolved
+  - Role-based access: ADMIN, RESOLVER, ODDS_SETTER, PAUSER, TREASURY
   
-- **BettingMatchFactory** (`src/betting/BettingMatchFactory.sol`): Factory for deploying match proxies
-  - Creates ERC1967 proxies pointing to BettingMatch implementation
-  - Tracks all deployed matches
-  - Can upgrade implementation for future matches
+- **FootballMatch** (`src/betting/FootballMatch.sol`): Football-specific markets
+  - WINNER (1X2), GOALS_TOTAL (O/U), BOTH_SCORE, HALFTIME, CORRECT_SCORE, FIRST_SCORER
+  
+- **BasketballMatch** (`src/betting/BasketballMatch.sol`): Basketball-specific markets
+  - WINNER, TOTAL_POINTS, SPREAD, QUARTER_WINNER, FIRST_TO_SCORE, HIGHEST_QUARTER
+  
+- **BettingMatchFactory** (`src/betting/BettingMatchFactory.sol`): Factory for sport-specific proxies
+  - Deploys implementations internally (immutable)
+  - `createFootballMatch()` / `createBasketballMatch()`
+  - Tracks all deployed matches by sport type
 
 **Betting Flow:**
-1. Factory creates new match proxy with name and owner
-2. Owner adds markets to the match (market type + odds)
-3. Users place bets with CHZ on specific market selections
-4. Owner resolves markets with actual results
-5. Winners claim payouts based on locked odds
+1. Factory creates sport-specific match proxy (football or basketball)
+2. Admin adds markets with bytes32 type + initial odds (x10000)
+3. Admin opens markets for betting
+4. Users place bets → odds locked at bet time
+5. Odds can change → new bets get new odds, old bets keep locked odds
+6. Admin resolves markets with result
+7. Winners claim payouts: `amount × lockedOdds / 10000`
 
 ---
 
@@ -145,28 +155,82 @@ flowchart LR
 
 ### 3.1 Betting Contracts
 
-#### BettingMatch.sol
+#### BettingMatch.sol (Abstract Base)
 ```solidity
-// UUPS upgradeable match with multiple betting markets
-contract BettingMatch {
-    enum MarketType { Winner, GoalsCount, FirstScorer }
-    enum State { Live, Ended }
+// UUPS upgradeable match with dynamic odds system
+abstract contract BettingMatch {
+    // Odds precision: x10000 (2.18x = 21800, min 1.0001x = 10001, max 100x = 1000000)
+    uint32 public constant ODDS_PRECISION = 10000;
     
-    function initialize(string calldata _matchName, address _owner) external;
-    function addMarket(MarketType mtype, uint256 odds) external onlyOwner;
-    function placeBet(uint256 marketId, uint256 selection) external payable;
-    function resolveMarket(uint256 marketId, uint256 result) external onlyOwner;
-    function claim(uint256 marketId) external nonReentrant;
+    enum MarketState { Inactive, Open, Suspended, Closed, Resolved, Cancelled }
+    
+    // Core betting functions
+    function placeBet(uint256 marketId, uint64 selection) external payable;
+    function claim(uint256 marketId, uint256 betIndex) external;
+    function claimRefund(uint256 marketId, uint256 betIndex) external;
+    function claimAll(uint256 marketId) external;
+    
+    // Market management (ADMIN_ROLE)
+    function openMarket(uint256 marketId) external;
+    function suspendMarket(uint256 marketId) external;
+    function closeMarket(uint256 marketId) external;
+    function cancelMarket(uint256 marketId, string calldata reason) external;
+    
+    // Odds management (ODDS_SETTER_ROLE)  
+    function setMarketOdds(uint256 marketId, uint32 newOdds) external;
+    
+    // Resolution (RESOLVER_ROLE)
+    function resolveMarket(uint256 marketId, uint64 result) external;
+    
+    // Abstract (implemented by sport-specific contracts)
+    function addMarket(bytes32 marketType, uint32 initialOdds) external virtual;
+}
+```
+
+#### FootballMatch.sol
+```solidity
+// Football-specific betting markets
+contract FootballMatch is BettingMatch {
+    // Market types (bytes32 for gas efficiency)
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");        // 0=Home, 1=Draw, 2=Away
+    bytes32 public constant MARKET_GOALS_TOTAL = keccak256("GOALS_TOTAL"); // 0=Under, 1=Over
+    bytes32 public constant MARKET_BOTH_SCORE = keccak256("BOTH_SCORE");   // 0=No, 1=Yes
+    bytes32 public constant MARKET_HALFTIME = keccak256("HALFTIME");
+    bytes32 public constant MARKET_CORRECT_SCORE = keccak256("CORRECT_SCORE");
+    bytes32 public constant MARKET_FIRST_SCORER = keccak256("FIRST_SCORER");
+    
+    function initialize(string memory _matchName, address _owner) external;
+    function addMarket(bytes32 marketType, uint32 initialOdds) external override;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) external;
+    function getFootballMarket(uint256 marketId) external view returns (...);
+}
+```
+
+#### BasketballMatch.sol
+```solidity
+// Basketball-specific betting markets
+contract BasketballMatch is BettingMatch {
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");           // 0=Home, 1=Away
+    bytes32 public constant MARKET_TOTAL_POINTS = keccak256("TOTAL_POINTS");
+    bytes32 public constant MARKET_SPREAD = keccak256("SPREAD");
+    bytes32 public constant MARKET_QUARTER_WINNER = keccak256("QUARTER_WINNER");
+    
+    function initialize(string memory _matchName, address _owner) external;
+    function addMarket(bytes32 marketType, uint32 initialOdds) external override;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) external;
 }
 ```
 
 #### BettingMatchFactory.sol
 ```solidity
-// Factory for creating match proxies
+// Factory for creating sport-specific match proxies
 contract BettingMatchFactory {
-    function createMatch(string calldata _matchName, address _owner) external returns (address proxy);
-    function setImplementation(address _newImpl) external onlyOwner;
+    enum SportType { FOOTBALL, BASKETBALL }
+    
+    function createFootballMatch(string calldata _matchName, address _owner) external returns (address proxy);
+    function createBasketballMatch(string calldata _matchName, address _owner) external returns (address proxy);
     function getAllMatches() external view returns (address[] memory);
+    function getSportType(address matchAddress) external view returns (SportType);
 }
 ```
 
@@ -260,54 +324,107 @@ forge script script/DeployAll.s.sol \
 
 ## 5. Usage Examples
 
-### 5.1 Create a Betting Match
+### 5.1 Create a Football Match
 
 ```bash
 cast send $BETTING_FACTORY \
-  "createMatch(string,address)" \
+  "createFootballMatch(string,address)" \
   "Real Madrid vs Barcelona" \
   $OWNER_ADDRESS \
-  --rpc-url $RPC_URL
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
 
-### 5.2 Add Market to Match
+### 5.2 Add Market with Odds (x10000 precision)
+
+```bash
+# Add WINNER market (1X2) with initial odds 2.20x = 22000
+cast send $MATCH_ADDRESS \
+  "addMarket(bytes32,uint32)" \
+  $(cast keccak "WINNER") \
+  22000 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.3 Open Market for Betting
 
 ```bash
 cast send $MATCH_ADDRESS \
-  "addMarket(uint8,uint256)" \
-  0 \      # MarketType.Winner
-  150 \    # Odds: 1.5x
-  --rpc-url $RPC_URL
+  "openMarket(uint256)" \
+  0 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
 
-### 5.3 Place a Bet
+### 5.4 Place a Bet
 
 ```bash
+# Bet 1 CHZ on Home Win (market 0, selection 0)
 cast send $MATCH_ADDRESS \
-  "placeBet(uint256,uint256)" \
-  0 \      # Market ID
-  1 \      # Selection
+  "placeBet(uint256,uint64)" \
+  0 \
+  0 \
   --value 1ether \
-  --rpc-url $RPC_URL
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
 
-### 5.4 Create Streamer Wallet
+### 5.5 Update Odds
+
+```bash
+# Change odds to 2.50x = 25000 (existing bets keep their locked odds)
+cast send $MATCH_ADDRESS \
+  "setMarketOdds(uint256,uint32)" \
+  0 \
+  25000 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.6 Resolve Market
+
+```bash
+# Home team won (result = 0)
+cast send $MATCH_ADDRESS \
+  "resolveMarket(uint256,uint64)" \
+  0 \
+  0 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.7 Claim Winnings
+
+```bash
+# Claim bet at index 0 from market 0
+cast send $MATCH_ADDRESS \
+  "claim(uint256,uint256)" \
+  0 \
+  0 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.8 Create Streamer Wallet
 
 ```bash
 cast send $STREAM_FACTORY \
   "createStreamWallet(address)" \
   $STREAMER_ADDRESS \
-  --rpc-url $RPC_URL
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
 
-### 5.5 Subscribe to Stream
+### 5.9 Subscribe to Stream
 
 ```bash
 cast send $STREAM_FACTORY \
   "subscribeToStream(address)" \
   $STREAMER_ADDRESS \
   --value 10ether \
-  --rpc-url $RPC_URL
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
 
 ---
@@ -315,9 +432,13 @@ cast send $STREAM_FACTORY \
 ## 6. Security & Access Control
 
 ### 6.1 Betting System
-- **BettingMatch Owner**: Can add markets and resolve results
-- **Factory Owner**: Can update implementation for future matches
-- **UUPS**: Each match can be upgraded individually by its owner
+- **ADMIN_ROLE**: Add markets, control market state (open/suspend/close/cancel)
+- **ODDS_SETTER_ROLE**: Update market odds in real-time
+- **RESOLVER_ROLE**: Set final results for markets
+- **PAUSER_ROLE**: Emergency pause/unpause
+- **TREASURY_ROLE**: Emergency fund withdrawal
+- **Factory Owner**: No upgrade capability (implementations are immutable)
+- **UUPS**: Each match can be upgraded individually by its DEFAULT_ADMIN
 
 ### 6.2 Streaming System
 - **StreamWallet Owner (Streamer)**: Can withdraw their balance
@@ -384,4 +505,4 @@ For technical questions or integration support, contact the ChilizTV development
 
 ---
 
-**Last Updated**: 2025-11-19
+**Last Updated**: 2026-02-03
