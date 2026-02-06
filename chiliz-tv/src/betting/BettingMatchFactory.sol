@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.22;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -7,7 +7,7 @@ import "./FootballMatch.sol";
 import "./BasketballMatch.sol";
 
 /// @title BettingMatchFactory
-/// @notice Factory contract to deploy UUPS-upgradeable sport-specific match proxies
+/// @notice Factory contract to deploy UUPS-upgradeable sport-specific match proxies with dynamic odds
 contract BettingMatchFactory is Ownable {
     /// @notice Sport types supported by the factory
     enum SportType { FOOTBALL, BASKETBALL }

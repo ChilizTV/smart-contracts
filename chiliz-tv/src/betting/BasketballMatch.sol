@@ -1,156 +1,217 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.22;
 
 import "./BettingMatch.sol";
 
-/// @title BasketballMatch
-/// @notice Basketball-specific betting contract with markets like Winner, TotalPoints, PointSpread, etc.
+/**
+ * @title BasketballMatch
+ * @notice Basketball-specific betting contract with dynamic odds support
+ * @dev Inherits BettingMatch for odds management, implements basketball-specific markets
+ */
 contract BasketballMatch is BettingMatch {
-    /// @notice Types of markets available for basketball
-    enum BasketballMarketType { 
-        Winner,           // Home/Away (0/1)
-        TotalPoints,      // Over/Under total points
-        PointSpread,      // Home + spread vs Away
-        QuarterWinner,    // Winner of specific quarter
-        FirstToScore,     // Team to score first (Home=0, Away=1)
-        HighestScoringQuarter  // Which quarter has most points (1/2/3/4)
-    }
+    
+    // ══════════════════════════════════════════════════════════════════════════
+    // BASKETBALL MARKET TYPES
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");             // Home(0)/Away(1)
+    bytes32 public constant MARKET_TOTAL_POINTS = keccak256("TOTAL_POINTS"); // Over/Under
+    bytes32 public constant MARKET_SPREAD = keccak256("SPREAD");             // Point spread
+    bytes32 public constant MARKET_QUARTER_WINNER = keccak256("QUARTER_WINNER");
+    bytes32 public constant MARKET_FIRST_TO_SCORE = keccak256("FIRST_TO_SCORE");
+    bytes32 public constant MARKET_HIGHEST_QUARTER = keccak256("HIGHEST_QUARTER");
 
-    /// @notice A basketball-specific market
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORAGE
+    // ══════════════════════════════════════════════════════════════════════════
+    
     struct BasketballMarket {
-        BasketballMarketType mtype;
-        uint256              odds;
-        State                state;
-        uint256              result;
-        bool                 cancelled;  // market cancellation flag
-        mapping(address => Bet) bets;
+        bytes32 marketType;
+        int16   line;          // For O/U or spread (e.g., 215.5 = 2155)
+        uint8   quarter;       // For quarter-specific markets (1-4, 0 = full game)
+        uint8   maxSelections;
     }
-
-    /// @notice Mapping: marketId → BasketballMarket
+    
     mapping(uint256 => BasketballMarket) public basketballMarkets;
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // ERRORS
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    error InvalidMarketType(bytes32 marketType);
+    error InvalidSelection(uint256 marketId, uint64 selection, uint8 maxAllowed);
+    error InvalidQuarter(uint8 quarter);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // CONSTRUCTOR & INITIALIZER
+    // ══════════════════════════════════════════════════════════════════════════
+    
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
-
-    /// @notice Initialize a basketball match
-    /// @param _matchName descriptive name (e.g., "Lakers vs Celtics")
-    /// @param _owner owner/admin address
+    
     function initialize(string memory _matchName, address _owner) external initializer {
-        __BettingMatch_init(_matchName, "BASKETBALL", _owner);
+        __BettingMatchV2_init(_matchName, "BASKETBALL", _owner);
     }
 
-    /// @notice Add a new basketball market
-    /// @param marketType string representation of BasketballMarketType
-    /// @param odds multiplier ×100 (e.g., 180 = 1.8x)
-    function addMarket(string calldata marketType, uint256 odds) external override onlyRole(ADMIN_ROLE) {
-        // CRITICAL: Validate odds (1.01x to 100x)
-        if (odds < 101 || odds > 10000) revert InvalidOdds();
+    // ══════════════════════════════════════════════════════════════════════════
+    // MARKET CREATION
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    function addMarket(bytes32 marketType, uint32 initialOdds) 
+        external 
+        override 
+        onlyRole(ADMIN_ROLE) 
+    {
+        _validateOdds(initialOdds);
         
-        uint256 mid = marketCount++;
-        BasketballMarket storage m = basketballMarkets[mid];
-        m.mtype = _parseBasketballMarketType(marketType);
-        m.odds = odds;
-        m.state = State.Live;
-        emit MarketAdded(mid, marketType, odds);
-    }
-
-    /// @notice Internal function to store a basketball bet
-    function _storeBet(uint256 marketId, address user, uint256 amount, uint256 selection) internal override {
-        BasketballMarket storage m = basketballMarkets[marketId];
-        if (m.state != State.Live) revert WrongState(State.Live);
+        uint8 maxSelections = _getMaxSelections(marketType);
         
-        // CRITICAL: Prevent double betting
-        if (m.bets[user].amount > 0) revert AlreadyBet();
+        uint256 marketId = marketCount++;
         
-        m.bets[user] = Bet({ amount: amount, selection: selection, claimed: false });
-    }
-
-    /// @notice Internal function to resolve a basketball market
-    function _resolveMarketInternal(uint256 marketId, uint256 result) internal override {
-        BasketballMarket storage m = basketballMarkets[marketId];
-        if (m.state != State.Live) revert WrongState(State.Live);
+        _marketCores[marketId] = MarketCore({
+            state: MarketState.Inactive,
+            result: 0,
+            createdAt: uint40(block.timestamp),
+            resolvedAt: 0,
+            totalPool: 0
+        });
         
-        m.result = result;
-        m.state = State.Ended;
+        basketballMarkets[marketId] = BasketballMarket({
+            marketType: marketType,
+            line: 0,
+            quarter: 0,
+            maxSelections: maxSelections
+        });
+        
+        _getOrCreateOddsIndex(marketId, initialOdds);
+        _oddsRegistries[marketId].currentIndex = 1;
+        
+        emit MarketCreated(marketId, _marketTypeToString(marketType), initialOdds);
+    }
+    
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) 
+        external 
+        onlyRole(ADMIN_ROLE) 
+    {
+        _validateOdds(initialOdds);
+        if (quarter > 4) revert InvalidQuarter(quarter);
+        
+        uint8 maxSelections = _getMaxSelections(marketType);
+        
+        uint256 marketId = marketCount++;
+        
+        _marketCores[marketId] = MarketCore({
+            state: MarketState.Inactive,
+            result: 0,
+            createdAt: uint40(block.timestamp),
+            resolvedAt: 0,
+            totalPool: 0
+        });
+        
+        basketballMarkets[marketId] = BasketballMarket({
+            marketType: marketType,
+            line: line,
+            quarter: quarter,
+            maxSelections: maxSelections
+        });
+        
+        _getOrCreateOddsIndex(marketId, initialOdds);
+        _oddsRegistries[marketId].currentIndex = 1;
+        
+        emit MarketCreated(marketId, _marketTypeToString(marketType), initialOdds);
     }
 
-    /// @notice Internal helper to get market and bet data for claim logic
-    function _getMarketAndBet(uint256 marketId, address user) internal view override returns (
-        uint256 odds,
-        State state,
-        uint256 result,
-        Bet storage userBet
-    ) {
-        BasketballMarket storage m = basketballMarkets[marketId];
-        return (m.odds, m.state, m.result, m.bets[user]);
+    // ══════════════════════════════════════════════════════════════════════════
+    // VALIDATION
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    function _validateSelection(uint256 marketId, uint64 selection) internal view override {
+        BasketballMarket storage bm = basketballMarkets[marketId];
+        if (selection > bm.maxSelections) {
+            revert InvalidSelection(marketId, selection, bm.maxSelections);
+        }
+    }
+    
+    function _getMaxSelections(bytes32 marketType) internal pure returns (uint8) {
+        if (marketType == MARKET_WINNER) return 1;           // 0,1 (Home/Away)
+        if (marketType == MARKET_TOTAL_POINTS) return 1;     // 0,1 (Under/Over)
+        if (marketType == MARKET_SPREAD) return 1;           // 0,1 (Home covers/Away covers)
+        if (marketType == MARKET_QUARTER_WINNER) return 1;   // 0,1
+        if (marketType == MARKET_FIRST_TO_SCORE) return 1;   // 0,1
+        if (marketType == MARKET_HIGHEST_QUARTER) return 3;  // 0,1,2,3 (Q1/Q2/Q3/Q4)
+        revert InvalidMarketType(marketType);
     }
 
-    /// @notice Get basketball market details
-    function getMarket(uint256 marketId) external view override returns (
-        string memory marketType,
-        uint256 odds,
-        State state,
-        uint256 result
-    ) {
-        if (marketId >= marketCount) revert InvalidMarket(marketId);
-        BasketballMarket storage m = basketballMarkets[marketId];
-        return (
-            _basketballMarketTypeToString(m.mtype),
-            m.odds,
-            m.state,
-            m.result
-        );
+    // ══════════════════════════════════════════════════════════════════════════
+    // VIEW FUNCTIONS
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    function getMarketInfo(uint256 marketId) 
+        external 
+        view 
+        override 
+        validMarket(marketId) 
+        returns (
+            bytes32 marketType,
+            MarketState state,
+            uint32 currentOdds,
+            uint64 result,
+            uint256 totalPool
+        ) 
+    {
+        BasketballMarket storage bm = basketballMarkets[marketId];
+        MarketCore storage core = _marketCores[marketId];
+        
+        marketType = bm.marketType;
+        state = core.state;
+        currentOdds = _getCurrentOdds(marketId);
+        result = core.result;
+        totalPool = core.totalPool;
+    }
+    
+    function getBasketballMarket(uint256 marketId) 
+        external 
+        view 
+        validMarket(marketId) 
+        returns (
+            string memory marketTypeStr,
+            int16 line,
+            uint8 quarter,
+            uint8 maxSelections,
+            MarketState state,
+            uint32 currentOdds,
+            uint64 result,
+            uint256 totalPool
+        ) 
+    {
+        BasketballMarket storage bm = basketballMarkets[marketId];
+        MarketCore storage core = _marketCores[marketId];
+        
+        marketTypeStr = _marketTypeToString(bm.marketType);
+        line = bm.line;
+        quarter = bm.quarter;
+        maxSelections = bm.maxSelections;
+        state = core.state;
+        currentOdds = _getCurrentOdds(marketId);
+        result = core.result;
+        totalPool = core.totalPool;
+    }
+    
+    function _marketTypeToString(bytes32 marketType) internal pure returns (string memory) {
+        if (marketType == MARKET_WINNER) return "WINNER";
+        if (marketType == MARKET_TOTAL_POINTS) return "TOTAL_POINTS";
+        if (marketType == MARKET_SPREAD) return "SPREAD";
+        if (marketType == MARKET_QUARTER_WINNER) return "QUARTER_WINNER";
+        if (marketType == MARKET_FIRST_TO_SCORE) return "FIRST_TO_SCORE";
+        if (marketType == MARKET_HIGHEST_QUARTER) return "HIGHEST_QUARTER";
+        return "UNKNOWN";
     }
 
-    /// @notice Get user's bet on a basketball market
-    function getBet(uint256 marketId, address user) external view override returns (
-        uint256 amount,
-        uint256 selection,
-        bool claimed
-    ) {
-        if (marketId >= marketCount) revert InvalidMarket(marketId);
-        Bet storage b = basketballMarkets[marketId].bets[user];
-        return (b.amount, b.selection, b.claimed);
-    }
-
-    /// @notice Parse string to BasketballMarketType enum
-    function _parseBasketballMarketType(string calldata marketType) internal pure returns (BasketballMarketType) {
-        bytes32 hash = keccak256(bytes(marketType));
-        if (hash == keccak256("Winner")) return BasketballMarketType.Winner;
-        if (hash == keccak256("TotalPoints")) return BasketballMarketType.TotalPoints;
-        if (hash == keccak256("PointSpread")) return BasketballMarketType.PointSpread;
-        if (hash == keccak256("QuarterWinner")) return BasketballMarketType.QuarterWinner;
-        if (hash == keccak256("FirstToScore")) return BasketballMarketType.FirstToScore;
-        if (hash == keccak256("HighestScoringQuarter")) return BasketballMarketType.HighestScoringQuarter;
-        revert("Invalid market type");
-    }
-
-    /// @notice Convert BasketballMarketType enum to string
-    function _basketballMarketTypeToString(BasketballMarketType mtype) internal pure returns (string memory) {
-        if (mtype == BasketballMarketType.Winner) return "Winner";
-        if (mtype == BasketballMarketType.TotalPoints) return "TotalPoints";
-        if (mtype == BasketballMarketType.PointSpread) return "PointSpread";
-        if (mtype == BasketballMarketType.QuarterWinner) return "QuarterWinner";
-        if (mtype == BasketballMarketType.FirstToScore) return "FirstToScore";
-        if (mtype == BasketballMarketType.HighestScoringQuarter) return "HighestScoringQuarter";
-        return "Unknown";
-    }
-
-    /// @notice Internal function to cancel a basketball market
-    function _cancelMarketInternal(uint256 marketId) internal override {
-        BasketballMarket storage m = basketballMarkets[marketId];
-        if (m.state == State.Ended && m.cancelled) revert("Market already resolved or cancelled");
-        m.cancelled = true;
-    }
-
-    /// @notice Internal function to check if market is cancelled and get bet
-    function _getMarketCancellationStatus(uint256 marketId, address user) internal view override returns (
-        Bet storage userBet,
-        bool isCancelled
-    ) {
-        BasketballMarket storage m = basketballMarkets[marketId];
-        return (m.bets[user], m.cancelled);
-    }
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORAGE GAP
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    uint256[48] private __gap_basketball;
 }

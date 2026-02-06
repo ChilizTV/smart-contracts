@@ -1,12 +1,12 @@
 # StreamWallet
-[Git Source](https://github.com/ChilizTV/smart-contracts/blob/5df5cfe0612ac659a912e036eb003da070811361/src/streamer/StreamWallet.sol)
+[Git Source](https://github.com/ChilizTV/smart-contracts/blob/a4742235a0eb66bd4bec629003d5109eab4558a0/src/streamer/StreamWallet.sol)
 
 **Inherits:**
-Initializable, ReentrancyGuardUpgradeable
+Initializable, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable
 
 Smart wallet for managing streaming revenue (subscriptions and donations)
 
-*Deployed via BeaconProxy pattern by StreamWalletFactory*
+*Deployed via ERC1967 UUPS proxy by StreamWalletFactory*
 
 
 ## State Variables
@@ -28,13 +28,6 @@ address public treasury;
 
 ```solidity
 uint16 public platformFeeBps;
-```
-
-
-### token
-
-```solidity
-IERC20 public token;
 ```
 
 
@@ -95,22 +88,29 @@ modifier onlyFactory();
 modifier onlyStreamer();
 ```
 
+### constructor
+
+**Note:**
+oz-upgrades-unsafe-allow: constructor
+
+
+```solidity
+constructor();
+```
+
 ### initialize
 
 Initialize the StreamWallet
 
 
 ```solidity
-function initialize(address streamer_, address token_, address treasury_, uint16 platformFeeBps_)
-    external
-    initializer;
+function initialize(address streamer_, address treasury_, uint16 platformFeeBps_) external initializer;
 ```
 **Parameters**
 
 |Name|Type|Description|
 |----|----|-----------|
 |`streamer_`|`address`|The streamer address (owner/beneficiary)|
-|`token_`|`address`|The ERC20 token used for payments|
 |`treasury_`|`address`|The platform treasury address|
 |`platformFeeBps_`|`uint16`|Platform fee in basis points|
 
@@ -123,6 +123,7 @@ Record a subscription and distribute funds
 ```solidity
 function recordSubscription(address subscriber, uint256 amount, uint256 duration)
     external
+    payable
     onlyFactory
     nonReentrant
     returns (uint256 platformFee, uint256 streamerAmount);
@@ -151,6 +152,7 @@ Accept a donation with optional message
 ```solidity
 function donate(uint256 amount, string calldata message)
     external
+    payable
     nonReentrant
     returns (uint256 platformFee, uint256 streamerAmount);
 ```
@@ -260,6 +262,30 @@ function getDonationAmount(address donor) external view returns (uint256);
 |Name|Type|Description|
 |----|----|-----------|
 |`<none>`|`uint256`|uint256 Total donated amount|
+
+
+### receive
+
+Receive function to accept native CHZ
+
+
+```solidity
+receive() external payable;
+```
+
+### _authorizeUpgrade
+
+Authorize upgrade (only streamer/owner can upgrade)
+
+
+```solidity
+function _authorizeUpgrade(address newImplementation) internal override onlyOwner;
+```
+**Parameters**
+
+|Name|Type|Description|
+|----|----|-----------|
+|`newImplementation`|`address`|The new implementation address|
 
 
 ## Events

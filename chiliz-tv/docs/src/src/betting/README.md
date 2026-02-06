@@ -1,6 +1,7 @@
 
 
 # Contents
-- [FootballBetting](FootballBetting.sol/contract.FootballBetting.md)
-- [MatchBettingBase](MatchBettingBase.sol/abstract.MatchBettingBase.md)
-- [UFCBetting](UFCBetting.sol/contract.UFCBetting.md)
+- [BasketballMatch](BasketballMatch.sol/contract.BasketballMatch.md)
+- [BettingMatch](BettingMatch.sol/abstract.BettingMatch.md)
+- [BettingMatchFactory](BettingMatchFactory.sol/contract.BettingMatchFactory.md)
+- [FootballMatch](FootballMatch.sol/contract.FootballMatch.md)

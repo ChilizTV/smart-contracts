@@ -1,786 +1,508 @@
-# Technical Documentation – MatchHub & MatchHubFactory
+# ChilizTV Smart Contracts - Technical Documentation
 
-**Role**: Product Owner / Product Manager  
-**Target Audience**: Solidity development teams, DevOps, QA, backend/frontend integrators
+**Author**: ChilizTV Team  
+**Target Audience**: Solidity developers, DevOps, QA, backend/frontend integrators
+
+---
+
+## 1. Overview
+
+ChilizTV provides a decentralized platform with two main systems:
+
+1. **Betting System** - UUPS-based match betting with multiple markets
+2. **Streaming System** - Beacon-based streamer wallets with subscriptions and donations
+
+Both systems use native CHZ token for all transactions.
 
 ---
 
-## 1. Context & Product Vision
+## 2. Architecture
 
-We offer a decentralized platform where each **MatchHub** represents a unique sports match: its name, betting markets (win/lose/draw, number of goals, first goalscorer), stakes in ETH, market resolution, and automatic payout distribution.
-The **MatchHubFactory** factory allows any whitelisted address to easily deploy new hubs, ensuring uniformity, security, and upgradeability via the UUPS+ERC-1967 pattern.
-
----
+### 2.1 Betting System (UUPS Pattern + Multi-Sport)
 
 ```mermaid
 flowchart LR
-  %% Factory & Registry
-  subgraph FactoryAndRegistry [Factory & Registry]
-    MHBF[MatchHubBeaconFactory src/MatchHubBeaconFactory.sol]
-    SBR[SportBeaconRegistry src/SportBeaconRegistry.sol]
-  end
-
-  %% Beacon/Proxy layer
-  subgraph BeaconLayer [Beacon and Proxies]
-    BEACON[Beacon stores implementation address]
-    PROXY[BeaconProxy per match deployed by factory]
-  end
-
-  %% Implementations
-  subgraph Implementations [Sport implementations]
-    MB[MatchBettingBase abstractsrc/betting/MatchBettingBase.sol]
-    FB[FootballBettingsrc/betting/FootballBetting.sol]
-    UFC[UFCBettingsrc/betting/UFCBetting.sol]
-  end
-
-  %% Actors
-  subgraph Actors [Actors and External]
-    USER[User / Frontend]
-    TOKEN[ERC20 betToken]
-    ORACLE[Oracle with SETTLER_ROLE]
-    TREASURY[Treasury - fee receiver]
-    ADMIN[Owner / Admin / Factory Owner]
-  end
-
-  %% Relationships
-  MHBF -->|uses registry to get sport beacon| SBR
-  SBR -->|stores beacon per sport| BEACON
-
-  MHBF -->|deploys| PROXY
-  PROXY -. reads impl address .-> BEACON
-
-  BEACON -. points to impl .-> FB
-  BEACON -. points to impl .-> UFC
-
-  FB -->|inherits| MB
-  UFC -->|inherits| MB
-
-  %% User flows
-  USER -->|approve and bet| PROXY
-  PROXY -->|transferFrom on bet| TOKEN
-  TOKEN -->|funds held by| PROXY
-
-  ORACLE -->|settle winning outcome| PROXY
-  PROXY -->|on claim: send fee| TREASURY
-  PROXY -->|on claim: send payout| USER
-
-  ADMIN -->|createFootballMatch / createUFCMatch| MHBF
-  ADMIN -->|grants roles on| PROXY
+    subgraph Factory
+        BMF[BettingMatchFactory]
+    end
+    
+    subgraph Implementations
+        FM[FootballMatch UUPS]
+        BM[BasketballMatch UUPS]
+    end
+    
+    subgraph Proxies
+        P1[Football Match 1]
+        P2[Football Match 2]
+        P3[Basketball Match 1]
+    end
+    
+    subgraph Users
+        U[Bettors]
+    end
+    
+    BMF -->|createFootballMatch| P1
+    BMF -->|createFootballMatch| P2
+    BMF -->|createBasketballMatch| P3
+    
+    P1 -.->|delegates to| FM
+    P2 -.->|delegates to| FM
+    P3 -.->|delegates to| BM
+    
+    U -->|bets CHZ| P1
+    U -->|bets CHZ| P2
+    U -->|bets CHZ| P3
 ```
+
+**Components:**
+- **BettingMatch** (`src/betting/BettingMatch.sol`): Abstract base contract with dynamic odds
+  - Per-market odds registry with index-based deduplication
+  - Each bet locks its odds at placement time (x10000 precision)
+  - Market lifecycle: Inactive → Open → Suspended → Closed → Resolved
+  - Role-based access: ADMIN, RESOLVER, ODDS_SETTER, PAUSER, TREASURY
+  
+- **FootballMatch** (`src/betting/FootballMatch.sol`): Football-specific markets
+  - WINNER (1X2), GOALS_TOTAL (O/U), BOTH_SCORE, HALFTIME, CORRECT_SCORE, FIRST_SCORER
+  
+- **BasketballMatch** (`src/betting/BasketballMatch.sol`): Basketball-specific markets
+  - WINNER, TOTAL_POINTS, SPREAD, QUARTER_WINNER, FIRST_TO_SCORE, HIGHEST_QUARTER
+  
+- **BettingMatchFactory** (`src/betting/BettingMatchFactory.sol`): Factory for sport-specific proxies
+  - Deploys implementations internally (immutable)
+  - `createFootballMatch()` / `createBasketballMatch()`
+  - Tracks all deployed matches by sport type
+
+**Betting Flow:**
+1. Factory creates sport-specific match proxy (football or basketball)
+2. Admin adds markets with bytes32 type + initial odds (x10000)
+3. Admin opens markets for betting
+4. Users place bets → odds locked at bet time
+5. Odds can change → new bets get new odds, old bets keep locked odds
+6. Admin resolves markets with result
+7. Winners claim payouts: `amount × lockedOdds / 10000`
 
 ---
 
-## 2. Streaming & Smart Wallet Architecture
-
-### 2.1 Sequence Diagram: Complete Interaction Flow
+### 2.2 Streaming System (Beacon Pattern)
 
 ```mermaid
-sequenceDiagram
-    participant Viewer as 👤 Viewer/Fan
-    participant Frontend as 🖥️ Frontend
-    participant WalletFactory as 🏭 StreamWalletFactory
-    participant StreamWallet as 💰 StreamWallet (Proxy)
-    participant Token as 🪙 ERC20 Token
-    participant Streamer as 🎥 Streamer
-    participant Treasury as 🏦 Platform Treasury
-    participant BettingProxy as 🎲 Betting Proxy
-    participant Oracle as 🔮 Oracle
-
-    %% === STREAMING: First Subscription ===
-    Note over Viewer,StreamWallet: STREAMING FLOW - First Subscription
-    Viewer->>Frontend: Subscribe to stream
-    Frontend->>Token: Check allowance
-    Token-->>Frontend: allowance = 0
-    Frontend->>Viewer: Request approval
-    Viewer->>Token: approve(WalletFactory, amount)
-    Token-->>Viewer: Approval confirmed
-    
-    Frontend->>WalletFactory: subscribeToStream(streamerId, amount)
-    WalletFactory->>WalletFactory: Check if wallet exists
-    alt Wallet doesn't exist
-        WalletFactory->>StreamWallet: Deploy new Smart-wallet
-        StreamWallet-->>WalletFactory: wallet address
-        WalletFactory->>StreamWallet: initialize(streamer, platformFee)
-        StreamWallet-->>WalletFactory: initialized
-        Note right of StreamWallet: Wallet created with:<br/>- Streamer as owner<br/>- Platform fee %<br/>- Revenue split rules
+flowchart LR
+    subgraph Registry
+        SBR[StreamBeaconRegistry]
+        BEACON[UpgradeableBeacon]
     end
     
-    WalletFactory->>Token: transferFrom(viewer, StreamWallet, amount)
-    Token-->>StreamWallet: Tokens received
-    WalletFactory->>StreamWallet: recordSubscription(viewer, amount, duration)
-    StreamWallet->>StreamWallet: Calculate split:<br/>platformFee = amount * feeBps / 10000<br/>streamerAmount = amount - platformFee
-    StreamWallet->>Token: transfer(Treasury, platformFee)
-    Token-->>Treasury: Platform fee received
-    StreamWallet->>Token: transfer(Streamer, streamerAmount)
-    Token-->>Streamer: Streamer payment received
-    StreamWallet-->>WalletFactory: Subscription recorded
-    WalletFactory-->>Frontend: SubscriptionCreated event
-    Frontend-->>Viewer: ✅ Subscribed!
-
-    %% === STREAMING: Donation ===
-    Note over Viewer,StreamWallet: STREAMING FLOW - Donation
-    Viewer->>Frontend: Send donation
-    Frontend->>Token: approve(StreamWallet, donationAmount)
-    Token-->>Frontend: Approved
-    Frontend->>StreamWallet: donate(amount, message)
-    StreamWallet->>Token: transferFrom(viewer, this, amount)
-    Token-->>StreamWallet: Tokens received
-    StreamWallet->>StreamWallet: Calculate split
-    StreamWallet->>Token: transfer(Treasury, platformFee)
-    StreamWallet->>Token: transfer(Streamer, donationAmount - platformFee)
-    StreamWallet-->>Frontend: DonationReceived event
-    Frontend-->>Viewer: 💝 Donation sent!
-    Frontend-->>Streamer: 🎁 New donation notification
-
-    %% === STREAMING: Revenue Withdrawal ===
-    Note over Streamer,StreamWallet: STREAMING FLOW - Streamer Withdrawal
-    Streamer->>Frontend: Request withdrawal
-    Frontend->>StreamWallet: withdrawRevenue(amount)
-    StreamWallet->>StreamWallet: Check balance & ownership
-    StreamWallet->>Token: transfer(Streamer, amount)
-    Token-->>Streamer: Withdrawal complete
-    StreamWallet-->>Frontend: RevenueWithdrawn event
-    Frontend-->>Streamer: ✅ Funds transferred
-
-    %% === BETTING: Match Creation ===
-    Note over Viewer,BettingProxy: BETTING FLOW - Match Creation
-    Streamer->>Frontend: Create betting match
-    Frontend->>WalletFactory: MatchHubBeaconFactory.createFootballMatch(matchId, cutoff, feeBps)
-    WalletFactory->>BettingProxy: Deploy new BeaconProxy
-    BettingProxy-->>WalletFactory: proxy address
-    WalletFactory->>BettingProxy: initialize(owner, token, matchId, cutoff, feeBps, treasury)
-    BettingProxy->>BettingProxy: Grant roles:<br/>ADMIN_ROLE → ADMIN<br/>SETTLER_ROLE → Oracle <br/>PAUSER_ROLE → ADMIN (Safe or back-end)
-    BettingProxy-->>Frontend: MatchHubCreated event
-    Frontend-->>Streamer: 🎲 Match created!
-
-    %% === BETTING: Place Bet ===
-    Note over Viewer,BettingProxy: BETTING FLOW - Place Bet
-    Viewer->>Frontend: Place bet on HOME (amount)
-    Frontend->>Token: approve(BettingProxy, amount)
-    Token-->>Frontend: Approved
-    Frontend->>BettingProxy: betHome(amount)
-    BettingProxy->>BettingProxy: Check onlyBeforeCutoff
-    BettingProxy->>BettingProxy: Update pool[HOME] += amount
-    BettingProxy->>BettingProxy: Update bets[viewer][HOME] += amount
-    BettingProxy->>Token: transferFrom(viewer, this, amount)
-    Token-->>BettingProxy: Tokens received
-    BettingProxy-->>Frontend: BetPlaced event
-    Frontend-->>Viewer: ✅ Bet placed!
-
-    %% === BETTING: Settlement ===
-    Note over Oracle,BettingProxy: BETTING FLOW - Match Settlement
-    Oracle->>Oracle: Match ends, determine winner
-    Oracle->>Frontend: Submit settlement (winningOutcome)
-    Frontend->>BettingProxy: settle(HOME)
-    BettingProxy->>BettingProxy: Check SETTLER_ROLE
-    BettingProxy->>BettingProxy: Set settled = true<br/>winningOutcome = HOME
-    BettingProxy->>BettingProxy: Calculate totalPool & feeAmount
-    BettingProxy-->>Frontend: Settled event
-    Frontend-->>Viewer: 🏆 Match settled!
-
-    %% === BETTING: Claim Payout ===
-    Note over Viewer,BettingProxy: BETTING FLOW - Claim Payout
-    Viewer->>Frontend: Claim winnings
-    Frontend->>BettingProxy: claim()
-    BettingProxy->>BettingProxy: Check settled = true
-    BettingProxy->>BettingProxy: Check claimed[viewer] = false
-    BettingProxy->>BettingProxy: Calculate payout:<br/>userShare = userStake / winPool<br/>payout = userShare * distributable
-    BettingProxy->>Token: transfer(Treasury, fee)
-    Token-->>Treasury: Platform fee received
-    BettingProxy->>Token: transfer(Viewer, payout)
-    Token-->>Viewer: Winnings received
-    BettingProxy->>BettingProxy: Set feeBps = 0 (MVP)<br/>Set claimed[viewer] = true
-    BettingProxy-->>Frontend: Claimed event
-    Frontend-->>Viewer: 💰 Winnings claimed!
-
-    %% === INTEGRATION [AS AN IDEA NOT TO IMPLEMENT] ===
-    Note over Viewer,Oracle: CROSS-FEATURE INTEGRATION
-    Viewer->>Frontend: Subscribe + Bet in one transaction
-    Frontend->>WalletFactory: multicall([subscribe, createBet])
-    WalletFactory-->>Frontend: Both actions completed
-    Frontend-->>Viewer: ✅ Subscribed & Bet placed!
-```
-
-### 2.2 StreamWallet Contract (`src/streamer/StreamWallet.sol`)
-
-The **StreamWallet** is a proxy contract automatically deployed during the first subscription or donation to a stream.
-
-#### 2.2.1 Responsibilities
-- **Revenue Collection**: Collects subscriptions and donations
-- **Automatic Split**: Automatic distribution between streamer and platform (via `platformFeeBps`)
-- **Streamer Control**: The streamer is the owner and can withdraw their funds
-- **Transparency**: All transactions are traced on-chain with events
-- **Integration**: Can interact with betting contracts
-
-#### 2.2.2 Main Functions
-- `initialize()`: Initializes the wallet with streamer, token, treasury, and fee
-- `recordSubscription()`: Records a subscription and distributes funds (called by factory)
-- `donate()`: Accepts a donation with optional message
-- `withdrawRevenue()`: Allows the streamer to withdraw accumulated revenue
-- `isSubscribed()`: Checks if a user has an active subscription
-- `availableBalance()`: Returns the balance available for withdrawal
-
-#### 2.2.3 Key State
-- User subscription mapping (`subscriptions`)
-- Lifetime donation mapping per donor (`lifetimeDonations`)
-- Metrics: `totalRevenue`, `totalWithdrawn`, `totalSubscribers`
-- Configuration: `streamer`, `treasury`, `platformFeeBps`, `token`
-
-### 2.3 StreamWalletFactory Contract (`src/streamer/StreamWalletFactory.sol`)
-
-The **factory** manages deployment and interaction with StreamWallets via the BeaconProxy pattern.
-
-#### 2.3.1 Responsibilities
-- Automatic wallet deployment for streamers (lazy deployment)
-- Centralized subscription and donation management
-- Wallet uniformity via Beacon pattern (upgradeability)
-- Global configuration (treasury, platform fee)
-
-#### 2.3.2 Main Functions
-- `subscribeToStream()`: Subscribes to a stream (creates wallet if necessary)
-- `donateToStream()`: Sends a donation (creates wallet if necessary)
-- `deployWalletFor()`: Manual wallet deployment (admin only)
-- `setBeacon()`, `setTreasury()`, `setPlatformFee()`: Configuration (owner only)
-- `getWallet()`, `hasWallet()`: View functions
-
-#### 2.3.3 Architecture
-- Uses `StreamBeaconRegistry` (immutable) to manage upgradeable implementation
-- `streamerWallets` mapping to track deployed wallets
-- BeaconProxy pattern for upgradeability without redeploying each wallet
-
-### 2.4 Upgradeable Architecture with Beacon Pattern
-
-#### 2.4.1 Overview
-
-The streaming system uses the **Beacon Pattern** to enable upgrading all StreamWallets simultaneously via a single transaction.
-
-```mermaid
-sequenceDiagram
-    participant Admin as 👨‍💼 Admin
-    participant Safe as 🔐 Gnosis Safe
-    participant SBR as 📋 StreamBeaconRegistry
-    participant BEACON as 🔔 UpgradeableBeacon
-    participant IMPL as 📦 StreamWallet Impl
-    participant SWF as 🏭 StreamWalletFactory
-    participant PROXY1 as 💰 Proxy Streamer 1
-    participant PROXY2 as 💰 Proxy Streamer 2
-    participant PROXY3 as 💰 Proxy Streamer N
-    participant User as 👤 User
-
-    Note over Admin,Safe: SETUP: Ownership & Registry
-    Admin->>SBR: Deploy StreamBeaconRegistry(safeAddress)
-    SBR-->>Admin: Registry deployed
-    Safe->>SBR: Owns registry
-    
-    Note over Admin,IMPL: SETUP: Implementation
-    Admin->>IMPL: Deploy StreamWallet implementation
-    IMPL-->>Admin: Implementation deployed
-    
-    Note over Safe,BEACON: SETUP: Create Beacon
-    Safe->>SBR: setImplementation(implAddress)
-    SBR->>BEACON: Create UpgradeableBeacon(impl)
-    BEACON->>IMPL: points to implementation
-    BEACON-->>SBR: Beacon created
-    SBR-->>Safe: ✅ BeaconCreated event
-    
-    Note over Admin,SWF: SETUP: Deploy Factory
-    Admin->>SWF: Deploy StreamWalletFactory(admin, registry, token, treasury, fee)
-    SWF->>SBR: registry = immutable reference
-    SWF-->>Admin: Factory deployed
-    
-    Note over User,PROXY1: RUNTIME: First Subscription
-    User->>SWF: subscribeToStream(streamer1, amount)
-    SWF->>SBR: getBeacon()
-    SBR-->>SWF: beacon address
-    SWF->>PROXY1: Deploy BeaconProxy(beacon, initData)
-    PROXY1->>BEACON: Store beacon reference
-    PROXY1->>BEACON: getImplementation()
-    BEACON-->>PROXY1: returns IMPL address
-    PROXY1->>IMPL: delegatecall initialize()
-    IMPL-->>PROXY1: initialized
-    PROXY1-->>SWF: proxy deployed
-    SWF-->>User: ✅ Subscribed!
-    
-    Note over User,PROXY2: RUNTIME: More Subscriptions
-    User->>SWF: subscribeToStream(streamer2, amount)
-    SWF->>SBR: getBeacon()
-    SBR-->>SWF: beacon address
-    SWF->>PROXY2: Deploy BeaconProxy(beacon, initData)
-    PROXY2->>BEACON: Store beacon reference
-    PROXY2->>IMPL: delegatecall to IMPL
-    SWF-->>User: ✅ Subscribed!
-    
-    User->>SWF: subscribeToStream(streamerN, amount)
-    SWF->>PROXY3: Deploy BeaconProxy(beacon, initData)
-    PROXY3->>BEACON: Store beacon reference
-    PROXY3->>IMPL: delegatecall to IMPL
-    
-    Note over User,PROXY1: RUNTIME: User Interactions
-    User->>PROXY1: donate(amount, message)
-    PROXY1->>BEACON: getImplementation()
-    BEACON-->>PROXY1: IMPL address
-    PROXY1->>IMPL: delegatecall donate()
-    IMPL-->>PROXY1: donation recorded
-    PROXY1-->>User: ✅ Donation sent!
-    
-    Note over Safe,IMPL: All proxies use same implementation via beacon
-    
-    rect rgb(200, 220, 255)
-    Note over Safe,PROXY3: Key Architecture Points:<br/>- SBR owned by Gnosis Safe (security)<br/>- SWF has immutable registry reference<br/>- All proxies delegate to IMPL via BEACON<br/>- Upgrading BEACON upgrades ALL proxies atomically
+    subgraph Factory
+        SWF[StreamWalletFactory]
     end
+    
+    subgraph Implementation
+        SW[StreamWallet]
+    end
+    
+    subgraph Proxies
+        W1[Streamer Wallet 1]
+        W2[Streamer Wallet 2]
+        W3[Streamer Wallet N...]
+    end
+    
+    subgraph Users
+        FANS[Fans/Subscribers]
+    end
+    
+    SBR -->|manages| BEACON
+    BEACON -->|points to| SW
+    
+    SWF -->|queries beacon| SBR
+    SWF -->|creates BeaconProxy| W1
+    SWF -->|creates BeaconProxy| W2
+    SWF -->|creates BeaconProxy| W3
+    
+    W1 -.->|delegates via beacon to| SW
+    W2 -.->|delegates via beacon to| SW
+    W3 -.->|delegates via beacon to| SW
+    
+    FANS -->|subscribe/donate CHZ| W1
+    FANS -->|subscribe/donate CHZ| W2
 ```
 
-**Architecture Summary:**
-- **StreamBeaconRegistry**: Owned by Gnosis Safe, manages the unique beacon
-- **UpgradeableBeacon**: Points to the current implementation
-- **StreamWalletFactory**: Immutable reference to registry, deploys proxies
-- **BeaconProxy (per streamer)**: Delegates all calls to implementation via beacon
-- **StreamWallet Implementation**: Business logic shared by all proxies
+**Components:**
+- **StreamWallet** (`src/streamer/StreamWallet.sol`): Beacon-upgradeable wallet for streamers
+  - Receives subscriptions and donations in CHZ
+  - Splits platform fee to treasury
+  - Streamer can withdraw their balance anytime
+  
+- **StreamBeaconRegistry** (`src/streamer/StreamBeaconRegistry.sol`): Manages UpgradeableBeacon
+  - Stores beacon pointing to StreamWallet implementation
+  - Owned by Safe multisig for secure upgrades
+  - All streamer wallets upgrade atomically when implementation changes
+  
+- **StreamWalletFactory** (`src/streamer/StreamWalletFactory.sol`): Factory for deploying streamer wallets
+  - Creates BeaconProxy instances for each streamer
+  - Handles subscriptions and donations on behalf of streamers
+  - Enforces platform fee split
 
-#### 2.4.2 Components
+**Streaming Flow:**
+1. Factory creates StreamWallet proxy for a streamer
+2. Users subscribe/donate with CHZ via factory
+3. Platform fee automatically sent to treasury
+4. Net amount recorded in streamer's wallet
+5. Streamer withdraws accumulated balance
 
-**1. StreamBeaconRegistry** (`src/streamer/StreamBeaconRegistry.sol`)
-- **Role**: Manages the unique UpgradeableBeacon for all StreamWallets
-- **Owner**: Gnosis Safe (multisig recommended)
-- **Key functions**:
-  - `setImplementation(address)`: Creates or upgrades the implementation
-  - `getBeacon()`: Returns the beacon address
-  - `getImplementation()`: Returns the current implementation
-  - `isInitialized()`: Checks if the beacon exists
+---
 
-**2. StreamWalletFactory** (`src/streamer/StreamWalletFactory.sol`)
-- **Role**: Deploys BeaconProxy for each streamer
-- **Registry**: Immutable reference to StreamBeaconRegistry
-- **Security**: Cannot change beacon (immutable), only registry owner can upgrade
+## 3. Smart Contracts Reference
 
-**3. StreamWallet Implementation** (`src/streamer/StreamWallet.sol`)
-- **Role**: Business logic for streamer wallets
-- **Pattern**: Upgradeable via Initializable & ReentrancyGuardUpgradeable
-- **State**: Stored individually in each proxy
+### 3.1 Betting Contracts
 
-#### 2.4.3 Initial Deployment Flow
-
-```mermaid
-sequenceDiagram
-    participant Admin as 👨‍💼 Admin/DevOps
-    participant Safe as 🔐 Gnosis Safe
-    participant Registry as 📋 StreamBeaconRegistry
-    participant Factory as 🏭 StreamWalletFactory
-    participant Beacon as 🔔 UpgradeableBeacon
-
-    Note over Admin,Beacon: PHASE 1: Initial Deployment
-    
-    Admin->>Registry: 1. Deploy StreamBeaconRegistry(safeAddress)
-    Registry-->>Admin: registry deployed
-    
-    Admin->>Admin: 2. Deploy StreamWallet implementation v1
-    Admin-->>Admin: implV1 address
-    
-    Admin->>Safe: 3. Transfer ownership request
-    Safe->>Registry: transferOwnership(safe)
-    Registry-->>Safe: Ownership transferred
-    
-    Note over Safe,Beacon: PHASE 2: Beacon Configuration
-    
-    Safe->>Registry: 4. setImplementation(implV1)
-    Registry->>Beacon: Create UpgradeableBeacon(implV1)
-    Beacon-->>Registry: beacon created
-    Registry-->>Safe: ✅ BeaconCreated event
-    
-    Note over Admin,Factory: PHASE 3: Factory Deployment
-    
-    Admin->>Factory: 5. Deploy StreamWalletFactory(<br/>adminAddress,<br/>registryAddress,<br/>tokenAddress,<br/>treasuryAddress,<br/>platformFeeBps)
-    Factory->>Registry: Check registry.getBeacon()
-    Registry-->>Factory: beacon address
-    Factory-->>Admin: ✅ factory deployed
-    
-    Note over Admin,Factory: PHASE 4: First Usage
-    
-    Admin->>Factory: 6. User calls subscribeToStream()
-    Factory->>Registry: getBeacon()
-    Registry-->>Factory: beacon address
-    Factory->>Factory: Deploy BeaconProxy(beacon, initData)
-    Factory-->>Admin: ✅ StreamWallet proxy created
-```
-
-#### 2.4.4 Flux d'Upgrade
-
-```mermaid
-sequenceDiagram
-    participant Safe as 🔐 Gnosis Safe (Owner)
-    participant Registry as 📋 StreamBeaconRegistry
-    participant Beacon as 🔔 UpgradeableBeacon
-    participant OldImpl as 📦 StreamWallet v1
-    participant NewImpl as 🆕 StreamWallet v2
-    participant Proxy1 as 💰 Proxy Streamer 1
-    participant Proxy2 as 💰 Proxy Streamer 2
-    participant ProxyN as 💰 Proxy Streamer N
-
-    Note over Safe,ProxyN: UPGRADE PROCESS - All wallets upgrade together!
-    
-    Safe->>NewImpl: 1. Deploy StreamWallet v2 (new implementation)
-    NewImpl-->>Safe: newImpl address
-    
-    Safe->>Safe: 2. Verify new implementation<br/>(tests, audit, simulation)
-    
-    Note over Safe,Beacon: 3. Execute Upgrade Transaction
-    
-    Safe->>Registry: setImplementation(newImplAddress)
-    Registry->>Beacon: Check if beacon exists
-    Beacon-->>Registry: beacon exists
-    Registry->>Beacon: upgradeTo(newImplAddress)
-    Beacon->>Beacon: Update implementation pointer
-    Beacon-->>Registry: ✅ upgraded
-    Registry-->>Safe: ✅ BeaconUpgraded event
-    
-    Note over Proxy1,ProxyN: All proxies now use v2 automatically!
-    
-    Proxy1->>Beacon: Next call: getImplementation()
-    Beacon-->>Proxy1: returns newImpl (v2)
-    Proxy1->>NewImpl: delegatecall to v2
-    
-    Proxy2->>Beacon: Next call: getImplementation()
-    Beacon-->>Proxy2: returns newImpl (v2)
-    Proxy2->>NewImpl: delegatecall to v2
-    
-    ProxyN->>Beacon: Next call: getImplementation()
-    Beacon-->>ProxyN: returns newImpl (v2)
-    ProxyN->>NewImpl: delegatecall to v2
-    
-    Note over Safe,ProxyN: ✅ All wallets upgraded in 1 transaction!
-```
-
-#### 2.4.5 Deployment Commands
-
-**Step 1: Deploy StreamWallet Implementation**
-```bash
-forge create src/streamer/StreamWallet.sol:StreamWallet \
-  --rpc-url $RPC_URL \
-  --private-key $DEPLOYER_PK \
-  --verify
-```
-
-**Step 2: Deploy StreamBeaconRegistry**
-```bash
-forge create src/streamer/StreamBeaconRegistry.sol:StreamBeaconRegistry \
-  --constructor-args $GNOSIS_SAFE_ADDRESS \
-  --rpc-url $RPC_URL \
-  --private-key $DEPLOYER_PK \
-  --verify
-```
-
-**Step 3: Configure Beacon (via Gnosis Safe)**
-```bash
-# Prepare transaction via Safe UI or cast
-cast send $REGISTRY_ADDRESS \
-  "setImplementation(address)" $STREAM_WALLET_IMPL \
-  --rpc-url $RPC_URL \
-  --private-key $SAFE_SIGNER_PK
-```
-
-**Step 4: Deploy StreamWalletFactory**
-```bash
-forge create src/streamer/StreamWalletFactory.sol:StreamWalletFactory \
-  --constructor-args \
-    $ADMIN_ADDRESS \
-    $REGISTRY_ADDRESS \
-    $TOKEN_ADDRESS \
-    $TREASURY_ADDRESS \
-    500 \
-  --rpc-url $RPC_URL \
-  --private-key $DEPLOYER_PK \
-  --verify
-```
-
-**Upgrade (via Gnosis Safe only)**
-```bash
-# 1. Deploy new implementation
-forge create src/streamer/StreamWallet.sol:StreamWallet \
-  --rpc-url $RPC_URL \
-  --private-key $DEPLOYER_PK \
-  --verify
-
-# 2. Upgrade via Safe
-cast send $REGISTRY_ADDRESS \
-  "setImplementation(address)" $NEW_IMPL_ADDRESS \
-  --rpc-url $RPC_URL \
-  --private-key $SAFE_SIGNER_PK
-```
-
-#### 2.4.6 Security Checks
-
-**Before upgrade:**
-- ✅ Complete tests on testnet with mainnet fork
-- ✅ Audit of the new implementation
-- ✅ Verification of storage layout compatibility
-- ✅ Upgrade simulation with Tenderly/Hardhat
-- ✅ Multisig approval (Gnosis Safe)
-
-**After upgrade:**
-- ✅ Verify `registry.getImplementation()` returns the new address
-- ✅ Test critical functions on an existing proxy
-- ✅ Monitor user transactions
-- ✅ Rollback plan if necessary
-
-#### 2.4.7 Architecture Advantages
-
-| Advantage | Description |
-|----------|-------------|
-| **Atomic Upgrade** | All wallets upgrade simultaneously in 1 transaction |
-| **Gas Efficient** | Single beacon shared by all proxies |
-| **Security** | Factory cannot upgrade (immutable registry) |
-| **Governance** | Only Gnosis Safe can upgrade |
-| **Rollback** | Possible to revert to old implementation if needed |
-| **Transparency** | `BeaconCreated` and `BeaconUpgraded` events on-chain |
-| **Consistency** | Same pattern as SportBeaconRegistry (betting) |
-
-### 2.5 EIP-2612 Permit: UX Improvement
-
-#### 2.5.1 Problem Solved
-
-**Before EIP-2612:**
-- Users had to make **2 transactions** to subscribe or donate:
-  1. `approve(factory, amount)` - Approve tokens
-  2. `subscribeToStream(...)` or `donateToStream(...)` - Perform action
-
-**After EIP-2612:**
-- Users make **1 single transaction** with an off-chain signature:
-  1. Sign a permit message (free, no gas)
-  2. `subscribeToStreamWithPermit(...)` or `donateToStreamWithPermit(...)` - Approve + action in one transaction
-
-#### 2.5.2 Permit Functions
-
-**StreamWalletFactory** now provides two new functions:
-
+#### BettingMatch.sol (Abstract Base)
 ```solidity
-function subscribeToStreamWithPermit(
-    address streamer,
-    uint256 amount,
-    uint256 duration,
-    uint256 deadline,    // Signature expiration timestamp
-    uint8 v,             // ECDSA signature
-    bytes32 r,           // ECDSA signature
-    bytes32 s            // ECDSA signature
-) external nonReentrant returns (address wallet)
-
-function donateToStreamWithPermit(
-    address streamer,
-    uint256 amount,
-    string calldata message,
-    uint256 deadline,    // Signature expiration timestamp
-    uint8 v,             // ECDSA signature
-    bytes32 r,           // ECDSA signature
-    bytes32 s            // ECDSA signature
-) external nonReentrant returns (address wallet)
+// UUPS upgradeable match with dynamic odds system
+abstract contract BettingMatch {
+    // Odds precision: x10000 (2.18x = 21800, min 1.0001x = 10001, max 100x = 1000000)
+    uint32 public constant ODDS_PRECISION = 10000;
+    
+    enum MarketState { Inactive, Open, Suspended, Closed, Resolved, Cancelled }
+    
+    // Core betting functions
+    function placeBet(uint256 marketId, uint64 selection) external payable;
+    function claim(uint256 marketId, uint256 betIndex) external;
+    function claimRefund(uint256 marketId, uint256 betIndex) external;
+    function claimAll(uint256 marketId) external;
+    
+    // Market management (ADMIN_ROLE)
+    function openMarket(uint256 marketId) external;
+    function suspendMarket(uint256 marketId) external;
+    function closeMarket(uint256 marketId) external;
+    function cancelMarket(uint256 marketId, string calldata reason) external;
+    
+    // Odds management (ODDS_SETTER_ROLE)  
+    function setMarketOdds(uint256 marketId, uint32 newOdds) external;
+    
+    // Resolution (RESOLVER_ROLE)
+    function resolveMarket(uint256 marketId, uint64 result) external;
+    
+    // Abstract (implemented by sport-specific contracts)
+    function addMarket(bytes32 marketType, uint32 initialOdds) external virtual;
+}
 ```
 
-#### 2.5.3 User Flow with Permit
-
-```mermaid
-sequenceDiagram
-    participant User as 👤 User
-    participant Frontend as 🖥️ Frontend
-    participant Wallet as 🦊 MetaMask
-    participant Factory as 🏭 StreamWalletFactory
-    participant Token as 🪙 ERC20Permit Token
-    participant StreamWallet as 💰 StreamWallet
-
-    Note over User,StreamWallet: Single Transaction Flow with EIP-2612
-
-    User->>Frontend: Click "Subscribe"
-    Frontend->>Wallet: Request signature (EIP-2612)
-    Note right of Wallet: Sign permit message<br/>(Off-chain, NO GAS)
-    Wallet-->>Frontend: Return signature (v, r, s)
+#### FootballMatch.sol
+```solidity
+// Football-specific betting markets
+contract FootballMatch is BettingMatch {
+    // Market types (bytes32 for gas efficiency)
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");        // 0=Home, 1=Draw, 2=Away
+    bytes32 public constant MARKET_GOALS_TOTAL = keccak256("GOALS_TOTAL"); // 0=Under, 1=Over
+    bytes32 public constant MARKET_BOTH_SCORE = keccak256("BOTH_SCORE");   // 0=No, 1=Yes
+    bytes32 public constant MARKET_HALFTIME = keccak256("HALFTIME");
+    bytes32 public constant MARKET_CORRECT_SCORE = keccak256("CORRECT_SCORE");
+    bytes32 public constant MARKET_FIRST_SCORER = keccak256("FIRST_SCORER");
     
-    Frontend->>Factory: subscribeToStreamWithPermit(streamer, amount, duration, deadline, v, r, s)
-    
-    Factory->>Token: permit(user, factory, amount, deadline, v, r, s)
-    Note right of Token: Gasless approval<br/>via signature verification
-    Token-->>Factory: Approved ✅
-    
-    Factory->>Token: transferFrom(user, streamWallet, amount)
-    Token-->>Factory: Transferred ✅
-    
-    Factory->>StreamWallet: recordSubscription(user, amount, duration)
-    StreamWallet-->>Factory: Recorded ✅
-    
-    Factory-->>Frontend: Success + wallet address
-    Frontend-->>User: "Subscription active! 🎉"
-    
-    Note over User,StreamWallet: ✨ Single transaction = Better UX!
+    function initialize(string memory _matchName, address _owner) external;
+    function addMarket(bytes32 marketType, uint32 initialOdds) external override;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) external;
+    function getFootballMarket(uint256 marketId) external view returns (...);
+}
 ```
 
-#### 2.5.4 Advantages
-
-| Advantage | Description |
-|----------|-------------|
-| **Improved UX** | 1 transaction instead of 2 → smoother experience |
-| **Gas Saved** | ~45,000 gas saved (no separate `approve()` call) |
-| **Security** | Deadline + nonce prevent signature replay |
-| **Standard** | EIP-2612 supported by all major tokens (USDC, DAI, etc.) |
-| **Flexibility** | Both patterns supported (classic approve + permit) |
-| **Mobile-Friendly** | Fewer interactions = better for mobile wallets |
-
-#### 2.5.5 Frontend Integration (Example with ethers.js)
-
-```javascript
-// 1. Prepare parameters
-const domain = {
-  name: await token.name(),
-  version: '1',
-  chainId: await provider.getNetwork().then(n => n.chainId),
-  verifyingContract: token.address
-};
-
-const types = {
-  Permit: [
-    { name: 'owner', type: 'address' },
-    { name: 'spender', type: 'address' },
-    { name: 'value', type: 'uint256' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'deadline', type: 'uint256' }
-  ]
-};
-
-const value = {
-  owner: userAddress,
-  spender: factoryAddress,
-  value: amount,
-  nonce: await token.nonces(userAddress),
-  deadline: Math.floor(Date.now() / 1000) + 3600 // 1 hour
-};
-
-// 2. Request signature (off-chain, free)
-const signature = await signer._signTypedData(domain, types, value);
-const { v, r, s } = ethers.utils.splitSignature(signature);
-
-// 3. Call function with permit (single transaction)
-const tx = await factory.subscribeToStreamWithPermit(
-  streamerAddress,
-  amount,
-  duration,
-  value.deadline,
-  v, r, s
-);
-
-await tx.wait();
-console.log('Subscription successful! 🎉');
+#### BasketballMatch.sol
+```solidity
+// Basketball-specific betting markets
+contract BasketballMatch is BettingMatch {
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");           // 0=Home, 1=Away
+    bytes32 public constant MARKET_TOTAL_POINTS = keccak256("TOTAL_POINTS");
+    bytes32 public constant MARKET_SPREAD = keccak256("SPREAD");
+    bytes32 public constant MARKET_QUARTER_WINNER = keccak256("QUARTER_WINNER");
+    
+    function initialize(string memory _matchName, address _owner) external;
+    function addMarket(bytes32 marketType, uint32 initialOdds) external override;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) external;
+}
 ```
 
-#### 2.5.6 Tests
-
-EIP-2612 tests cover:
-- ✅ Subscription with permit (single transaction)
-- ✅ Donation with permit (single transaction)
-- ✅ Multiple operations with permit (nonce increment)
-- ✅ Revert if deadline expired
-- ✅ Invalid signature revert
-
-**Test command:**
-```bash
-forge test --match-test testSubscribeWithPermit
-forge test --match-test testDonateWithPermit
-forge test --match-test testPermit
+#### BettingMatchFactory.sol
+```solidity
+// Factory for creating sport-specific match proxies
+contract BettingMatchFactory {
+    enum SportType { FOOTBALL, BASKETBALL }
+    
+    function createFootballMatch(string calldata _matchName, address _owner) external returns (address proxy);
+    function createBasketballMatch(string calldata _matchName, address _owner) external returns (address proxy);
+    function getAllMatches() external view returns (address[] memory);
+    function getSportType(address matchAddress) external view returns (SportType);
+}
 ```
-
 
 ---
 
-## 3. User Flow
+### 3.2 Streaming Contracts
+
+#### StreamWallet.sol
+```solidity
+// Beacon-upgradeable wallet for streamers
+contract StreamWallet {
+    function initialize(address _streamer, address _treasury, uint16 _feeBps) external;
+    function recordSubscription(address _subscriber, uint256 _amount) external payable;
+    function donate(address _donor, uint256 _amount) external payable;
+    function withdraw() external;
+}
+```
+
+#### StreamWalletFactory.sol
+```solidity
+// Factory for creating streamer wallets
+contract StreamWalletFactory {
+    function createStreamWallet(address _streamer) external returns (address);
+    function subscribeToStream(address _streamer) external payable;
+    function donateToStream(address _streamer) external payable;
+}
+```
+
+#### StreamBeaconRegistry.sol
+```solidity
+// Registry managing beacon for upgrades
+contract StreamBeaconRegistry {
+    function setImplementation(address newImplementation) external onlyOwner;
+    function beacon() external view returns (address);
+    function implementation() external view returns (address);
+}
+```
+
+---
+
+## 4. Deployment
+
+### 4.1 Environment Variables
 
 ```bash
-# 1. Deploy the factory
-forge create MatchHubFactory.sol:MatchHubFactory \
-  --constructor-args <MATCHHUB_IMPL_ADDR> \
-  --rpc-url <RPC> \
-  --private-key $PK \
-  --broadcast
+export PRIVATE_KEY=0x...           # Deployer private key
+export RPC_URL=https://...         # Network RPC endpoint
+export SAFE_ADDRESS=0x...          # Safe multisig (treasury + registry owner)
+export ETHERSCAN_API_KEY=...       # For contract verification
+```
 
-# 2. Create a new match (hub)
-cast send <FACTORY_ADDR> "createHub()" \
-  --rpc-url <RPC> \
-  --private-key $PK
+### 4.2 Deploy Betting System Only
 
-# 3. Add a market
-cast send <HUB_PROXY_ADDR> "addMarket(uint8,uint256)" 0 150 \
-  --rpc-url <RPC> \
-  --private-key $PK
+```bash
+forge script script/DeployBetting.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast \
+  --verify
+```
 
-# 4. Place bet
-cast send <HUB_PROXY_ADDR> "placeBet(uint256,uint256)" <marketId> <selection> \
-  --value 1000000000000000000 \
-  --rpc-url <RPC> \
-  --private-key $PK
+**Deploys:**
+- BettingMatch implementation
+- BettingMatchFactory
 
-# 5. Resolve (owner)
-cast send <HUB_PROXY_ADDR> "resolveMarket(uint256,uint256)" <marketId> <result> \
-  --rpc-url <RPC> \
-  --private-key $PK
+### 4.3 Deploy Streaming System Only
 
-# 6. Claim (bettor)
-cast send <HUB_PROXY_ADDR> "claim(uint256)" <marketId> \
-  --rpc-url <RPC> \
-  --private-key $PK
+```bash
+forge script script/DeployStreaming.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast \
+  --verify
+```
+
+**Deploys:**
+- StreamWallet implementation
+- StreamBeaconRegistry (transfers ownership to Safe)
+- StreamWalletFactory
+
+### 4.4 Deploy Complete System
+
+```bash
+forge script script/DeployAll.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast \
+  --verify
+```
+
+**Deploys both betting and streaming systems.**
+
+---
+
+## 5. Usage Examples
+
+### 5.1 Create a Football Match
+
+```bash
+cast send $BETTING_FACTORY \
+  "createFootballMatch(string,address)" \
+  "Real Madrid vs Barcelona" \
+  $OWNER_ADDRESS \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.2 Add Market with Odds (x10000 precision)
+
+```bash
+# Add WINNER market (1X2) with initial odds 2.20x = 22000
+cast send $MATCH_ADDRESS \
+  "addMarket(bytes32,uint32)" \
+  $(cast keccak "WINNER") \
+  22000 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.3 Open Market for Betting
+
+```bash
+cast send $MATCH_ADDRESS \
+  "openMarket(uint256)" \
+  0 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.4 Place a Bet
+
+```bash
+# Bet 1 CHZ on Home Win (market 0, selection 0)
+cast send $MATCH_ADDRESS \
+  "placeBet(uint256,uint64)" \
+  0 \
+  0 \
+  --value 1ether \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.5 Update Odds
+
+```bash
+# Change odds to 2.50x = 25000 (existing bets keep their locked odds)
+cast send $MATCH_ADDRESS \
+  "setMarketOdds(uint256,uint32)" \
+  0 \
+  25000 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.6 Resolve Market
+
+```bash
+# Home team won (result = 0)
+cast send $MATCH_ADDRESS \
+  "resolveMarket(uint256,uint64)" \
+  0 \
+  0 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.7 Claim Winnings
+
+```bash
+# Claim bet at index 0 from market 0
+cast send $MATCH_ADDRESS \
+  "claim(uint256,uint256)" \
+  0 \
+  0 \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.8 Create Streamer Wallet
+
+```bash
+cast send $STREAM_FACTORY \
+  "createStreamWallet(address)" \
+  $STREAMER_ADDRESS \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
+```
+
+### 5.9 Subscribe to Stream
+
+```bash
+cast send $STREAM_FACTORY \
+  "subscribeToStream(address)" \
+  $STREAMER_ADDRESS \
+  --value 10ether \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY
 ```
 
 ---
 
-## 4. Upgrade Strategy
+## 6. Security & Access Control
 
-1. **Deploy new implementation**
+### 6.1 Betting System
+- **ADMIN_ROLE**: Add markets, control market state (open/suspend/close/cancel)
+- **ODDS_SETTER_ROLE**: Update market odds in real-time
+- **RESOLVER_ROLE**: Set final results for markets
+- **PAUSER_ROLE**: Emergency pause/unpause
+- **TREASURY_ROLE**: Emergency fund withdrawal
+- **Factory Owner**: No upgrade capability (implementations are immutable)
+- **UUPS**: Each match can be upgraded individually by its DEFAULT_ADMIN
 
-   ```bash
-   forge create MatchHub.sol:MatchHubImplV2 \
-     --rpc-url <RPC> --private-key $PK --broadcast
-   ```
-2. **Upgrade existing proxy**
+### 6.2 Streaming System
+- **StreamWallet Owner (Streamer)**: Can withdraw their balance
+- **Factory Owner**: Can create wallets and update fee parameters
+- **Registry Owner (Safe Multisig)**: Can upgrade StreamWallet implementation
+  - All streamer wallets upgrade atomically
+  - Controlled by Safe multisig for security
 
-   ```solidity
-   // via Foundry script or Hardhat/Ethers
-   MatchHub proxy = MatchHub(<PROXY_ADDR>);
-   proxy.upgradeTo(<NEW_IMPL_ADDR>);
-   ```
-3. **Update the factory**
-
-   ```bash
-   cast send <FACTORY_ADDR> "setImplementation(address)" <NEW_IMPL_ADDR> \
-     --rpc-url <RPC> --private-key $PK
-   ```
-
----
-
-## 5. Tests & Audit
-
-* **Unit Tests**: 100% coverage on all scenarios (Foundry).
-* **Fuzzing**: `forge test --fuzz`.
-* **Static Analysis**: Slither, MythX.
-* **Manual Review**: Validation of custom errors, events, critical flows.
+### 6.3 Treasury
+- **Safe Multisig**: Receives platform fees from streaming system
+- Controlled by multiple signers for security
 
 ---
 
-## 6. Roadmap
+## 7. Testing
 
-* External oracle to automate resolution (`resolveMarket`).
-* React/Next.js frontend with `ethers.js`/`wagmi`.
-* DAO for hub owner governance.
-* Multi-token support (WCHZ, stablecoins).
+Run all tests:
+```bash
+forge test -vvv
+```
 
-> **Product note**: Each hub is isolated, upgradeable and individually auditable, ensuring modularity and security.
-
-## 5. Tests & Audit
-
-* **Unit Tests**: 100% coverage on all scenarios (Foundry).
-* **Fuzzing**: `forge test --fuzz`.
-* **Static Analysis**: Slither, MythX.
-* **Manual Review**: Validation of custom errors, events, critical flows.
+Run specific test:
+```bash
+forge test --match-contract BettingMatchTest -vvv
+forge test --match-contract StreamBeaconRegistryTest -vvv
+```
 
 ---
 
-## 6. Roadmap
+## 8. Architecture Benefits
 
-* External oracle to automate resolution (`resolveMarket`).
-* React/Next.js frontend with `ethers.js`/`wagmi`.
-* DAO for hub owner governance.
-* Multi-token support (WCHZ, stablecoins).
+### 8.1 Betting System (UUPS)
+✅ Each match is independently upgradeable  
+✅ Simple factory pattern  
+✅ Low gas costs for proxy deployment  
+✅ Match owners have full control over their matches  
 
-> **Product note**: Each hub is isolated, upgradeable and individually auditable, ensuring modularity and security.
+### 8.2 Streaming System (Beacon)
+✅ All streamers upgrade atomically  
+✅ Safe multisig controls upgrades  
+✅ Platform can fix bugs for all streamers at once  
+✅ Streamers don't need to worry about upgrades  
+
+---
+
+## 9. Contract Addresses
+
+### Chiliz Spicy Testnet (Chain ID: 88882)
+
+**Betting System:**
+- BettingMatch Implementation: `TBD`
+- BettingMatchFactory: `TBD`
+
+**Streaming System:**
+- StreamWallet Implementation: `TBD`
+- StreamBeaconRegistry: `TBD`
+- StreamWalletFactory: `TBD`
+
+---
+
+## 10. Support & Contact
+
+For technical questions or integration support, contact the ChilizTV development team.
+
+---
+
+**Last Updated**: 2026-02-03
