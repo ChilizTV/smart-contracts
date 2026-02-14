@@ -7,6 +7,8 @@ import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/acce
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title BettingMatchV2
@@ -60,6 +62,7 @@ abstract contract BettingMatch is
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
     bytes32 public constant ODDS_SETTER_ROLE = keccak256("ODDS_SETTER_ROLE");
+    bytes32 public constant SWAP_ROUTER_ROLE = keccak256("SWAP_ROUTER_ROLE");
     
     /// @notice Odds precision: multiply by 10000 (4 decimals)
     /// @dev 2.18x = 21800, min 1.0001x = 10001, max 100x = 1000000
@@ -92,11 +95,12 @@ abstract contract BettingMatch is
      *      Slot 2: selection (64) + oddsIndex (16) + timestamp (40) + claimed (8) = 128 bits
      */
     struct Bet {
-        uint256 amount;       // Bet amount in CHZ (wei)
+        uint256 amount;       // Bet amount in CHZ (wei) or USDC (6 decimals)
         uint64  selection;    // Encoded user pick (outcome ID)
         uint16  oddsIndex;    // Index into market's oddsRegistry
         uint40  timestamp;    // Block timestamp when bet was placed
         bool    claimed;      // Whether payout/refund was claimed
+        bool    isUSDC;       // Whether bet was placed in USDC
     }
     
     /**
@@ -142,6 +146,15 @@ abstract contract BettingMatch is
     /// @notice Market core data
     mapping(uint256 => MarketCore) internal _marketCores;
 
+    /// @notice USDC token address (set during initialization, address(0) = USDC disabled)
+    IERC20 public usdcToken;
+
+    /// @notice Total outstanding USDC liabilities (potential payouts for winning bets)
+    uint256 public totalUSDCLiabilities;
+
+    /// @notice Total USDC pool deposited via bets
+    uint256 public totalUSDCPool;
+
     // ══════════════════════════════════════════════════════════════════════════
     // EVENTS
     // ══════════════════════════════════════════════════════════════════════════
@@ -159,10 +172,22 @@ abstract contract BettingMatch is
         uint32 odds,
         uint16 oddsIndex
     );
+    event USDCBetPlaced(
+        uint256 indexed marketId,
+        address indexed user,
+        uint256 betIndex,
+        uint256 amount,
+        uint64 selection,
+        uint32 odds,
+        uint16 oddsIndex
+    );
     event MarketResolved(uint256 indexed marketId, uint64 result, uint40 resolvedAt);
     event MarketCancelled(uint256 indexed marketId, string reason);
     event Payout(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
+    event USDCPayout(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
     event Refund(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
+    event USDCRefund(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
+    event USDCTokenSet(address indexed token);
 
     // ══════════════════════════════════════════════════════════════════════════
     // CUSTOM ERRORS
@@ -181,6 +206,9 @@ abstract contract BettingMatch is
     error MarketNotCancelled(uint256 marketId);
     error ContractNotPaused();
     error MaxOddsEntriesReached(uint256 marketId);
+    error USDCNotConfigured();
+    error InsufficientUSDCBalance(uint256 required, uint256 available);
+    error USDCSolvencyExceeded(uint256 newLiability, uint256 availableUSDC);
 
     // ══════════════════════════════════════════════════════════════════════════
     // MODIFIERS
@@ -241,6 +269,15 @@ abstract contract BettingMatch is
         sportType = _sportType;
         
         emit MatchInitialized(_matchName, _sportType, _owner);
+    }
+
+    /**
+     * @notice Set the USDC token address for USDC-denominated betting
+     * @param _usdcToken Address of the USDC token contract
+     */
+    function setUSDCToken(address _usdcToken) external onlyRole(ADMIN_ROLE) {
+        usdcToken = IERC20(_usdcToken);
+        emit USDCTokenSet(_usdcToken);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -438,7 +475,8 @@ abstract contract BettingMatch is
             selection: selection,
             oddsIndex: oddsIndex,
             timestamp: uint40(block.timestamp),
-            claimed: false
+            claimed: false,
+            isUSDC: false
         });
         
         _userBets[marketId][msg.sender].push(newBet);
@@ -448,6 +486,103 @@ abstract contract BettingMatch is
         _marketCores[marketId].totalPool += msg.value;
         
         emit BetPlaced(marketId, msg.sender, betIndex, msg.value, selection, odds, oddsIndex);
+    }
+
+    /**
+     * @notice Place a bet using USDC tokens
+     * @param marketId Market identifier
+     * @param selection Encoded user pick (outcome ID)
+     * @param amount USDC amount (6 decimals)
+     * @dev Caller must have approved this contract to spend `amount` USDC.
+     *      Tracks liabilities to ensure treasury solvency.
+     */
+    function placeBetUSDC(uint256 marketId, uint64 selection, uint256 amount) 
+        external 
+        validMarket(marketId)
+        inState(marketId, MarketState.Open)
+        whenNotPaused 
+    {
+        _placeBetUSDCInternal(msg.sender, marketId, selection, amount, true);
+    }
+
+    /**
+     * @notice Place a USDC bet on behalf of a user (called by swap router)
+     * @param user The user to place the bet for
+     * @param marketId Market identifier
+     * @param selection Encoded user pick (outcome ID)
+     * @param amount USDC amount (already transferred to this contract)
+     * @dev Only callable by addresses with SWAP_ROUTER_ROLE.
+     *      USDC must have been transferred to this contract before calling.
+     */
+    function placeBetUSDCFor(address user, uint256 marketId, uint64 selection, uint256 amount)
+        external
+        validMarket(marketId)
+        inState(marketId, MarketState.Open)
+        whenNotPaused
+        onlyRole(SWAP_ROUTER_ROLE)
+    {
+        _placeBetUSDCInternal(user, marketId, selection, amount, false);
+    }
+
+    /**
+     * @dev Internal: shared logic for USDC bet placement
+     * @param user The user placing the bet
+     * @param marketId Market identifier
+     * @param selection User pick
+     * @param amount USDC amount
+     * @param transferFrom If true, transfers USDC from user via safeTransferFrom
+     */
+    function _placeBetUSDCInternal(
+        address user,
+        uint256 marketId,
+        uint64 selection,
+        uint256 amount,
+        bool transferFrom
+    ) internal {
+        if (address(usdcToken) == address(0)) revert USDCNotConfigured();
+        if (amount == 0) revert ZeroBetAmount();
+        
+        OddsRegistry storage registry = _oddsRegistries[marketId];
+        if (registry.currentIndex == 0) revert OddsNotSet(marketId);
+        
+        _validateSelection(marketId, selection);
+        
+        uint32 odds = registry.values[registry.currentIndex - 1];
+        uint256 potentialPayout = (amount * odds) / ODDS_PRECISION;
+
+        if (transferFrom) {
+            // Check solvency including incoming deposit
+            uint256 availableAfterDeposit = usdcToken.balanceOf(address(this)) + amount;
+            if (totalUSDCLiabilities + potentialPayout > availableAfterDeposit) {
+                revert USDCSolvencyExceeded(totalUSDCLiabilities + potentialPayout, availableAfterDeposit);
+            }
+            SafeERC20.safeTransferFrom(usdcToken, user, address(this), amount);
+        } else {
+            // USDC already transferred to this contract
+            uint256 usdcBalance = usdcToken.balanceOf(address(this));
+            if (totalUSDCLiabilities + potentialPayout > usdcBalance) {
+                revert USDCSolvencyExceeded(totalUSDCLiabilities + potentialPayout, usdcBalance);
+            }
+        }
+        
+        _userBets[marketId][user].push(Bet({
+            amount: amount,
+            selection: selection,
+            oddsIndex: registry.currentIndex,
+            timestamp: uint40(block.timestamp),
+            claimed: false,
+            isUSDC: true
+        }));
+        
+        _marketCores[marketId].totalPool += amount;
+        totalUSDCPool += amount;
+        totalUSDCLiabilities += potentialPayout;
+        
+        emit USDCBetPlaced(
+            marketId, user,
+            _userBets[marketId][user].length - 1,
+            amount, selection, odds, registry.currentIndex
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -510,16 +645,29 @@ abstract contract BettingMatch is
         // CEI: Effects before Interactions
         bet.claimed = true;
         
-        // Check balance
-        if (address(this).balance < payout) {
-            revert InsufficientContractBalance(payout, address(this).balance);
+        if (bet.isUSDC) {
+            // USDC payout
+            // Reduce liabilities
+            if (totalUSDCLiabilities >= payout) {
+                totalUSDCLiabilities -= payout;
+            } else {
+                totalUSDCLiabilities = 0;
+            }
+            uint256 usdcBalance = usdcToken.balanceOf(address(this));
+            if (usdcBalance < payout) {
+                revert InsufficientUSDCBalance(payout, usdcBalance);
+            }
+            SafeERC20.safeTransfer(usdcToken, msg.sender, payout);
+            emit USDCPayout(marketId, msg.sender, betIndex, payout);
+        } else {
+            // CHZ payout
+            if (address(this).balance < payout) {
+                revert InsufficientContractBalance(payout, address(this).balance);
+            }
+            (bool success, ) = payable(msg.sender).call{value: payout}("");
+            if (!success) revert TransferFailed(msg.sender, payout);
+            emit Payout(marketId, msg.sender, betIndex, payout);
         }
-        
-        // Transfer
-        (bool success, ) = payable(msg.sender).call{value: payout}("");
-        if (!success) revert TransferFailed(msg.sender, payout);
-        
-        emit Payout(marketId, msg.sender, betIndex, payout);
     }
     
     /**
@@ -546,14 +694,29 @@ abstract contract BettingMatch is
         // CEI
         bet.claimed = true;
         
-        if (address(this).balance < refundAmount) {
-            revert InsufficientContractBalance(refundAmount, address(this).balance);
+        if (bet.isUSDC) {
+            // USDC refund - reduce liabilities by potential payout
+            uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+            uint256 potentialPayout = (refundAmount * betOdds) / ODDS_PRECISION;
+            if (totalUSDCLiabilities >= potentialPayout) {
+                totalUSDCLiabilities -= potentialPayout;
+            } else {
+                totalUSDCLiabilities = 0;
+            }
+            uint256 usdcBalance = usdcToken.balanceOf(address(this));
+            if (usdcBalance < refundAmount) {
+                revert InsufficientUSDCBalance(refundAmount, usdcBalance);
+            }
+            SafeERC20.safeTransfer(usdcToken, msg.sender, refundAmount);
+            emit USDCRefund(marketId, msg.sender, betIndex, refundAmount);
+        } else {
+            if (address(this).balance < refundAmount) {
+                revert InsufficientContractBalance(refundAmount, address(this).balance);
+            }
+            (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
+            if (!success) revert TransferFailed(msg.sender, refundAmount);
+            emit Refund(marketId, msg.sender, betIndex, refundAmount);
         }
-        
-        (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
-        if (!success) revert TransferFailed(msg.sender, refundAmount);
-        
-        emit Refund(marketId, msg.sender, betIndex, refundAmount);
     }
     
     /**
@@ -569,7 +732,8 @@ abstract contract BettingMatch is
         MarketCore storage core = _marketCores[marketId];
         Bet[] storage userBets = _userBets[marketId][msg.sender];
         
-        uint256 totalPayout = 0;
+        uint256 totalCHZPayout = 0;
+        uint256 totalUSDCPayout = 0;
         
         for (uint256 i = 0; i < userBets.length; i++) {
             Bet storage bet = userBets[i];
@@ -589,23 +753,57 @@ abstract contract BettingMatch is
             
             if (shouldPay) {
                 bet.claimed = true;
-                totalPayout += amount;
                 
-                if (core.state == MarketState.Cancelled) {
-                    emit Refund(marketId, msg.sender, i, amount);
+                if (bet.isUSDC) {
+                    // Reduce liabilities
+                    uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+                    uint256 potentialPayout = (bet.amount * betOdds) / ODDS_PRECISION;
+                    if (core.state == MarketState.Cancelled) {
+                        // For cancelled, liability was the potential payout
+                        if (totalUSDCLiabilities >= potentialPayout) {
+                            totalUSDCLiabilities -= potentialPayout;
+                        } else {
+                            totalUSDCLiabilities = 0;
+                        }
+                    } else {
+                        // For resolved, amount IS the potential payout
+                        if (totalUSDCLiabilities >= amount) {
+                            totalUSDCLiabilities -= amount;
+                        } else {
+                            totalUSDCLiabilities = 0;
+                        }
+                    }
+                    totalUSDCPayout += amount;
+                    if (core.state == MarketState.Cancelled) {
+                        emit USDCRefund(marketId, msg.sender, i, amount);
+                    } else {
+                        emit USDCPayout(marketId, msg.sender, i, amount);
+                    }
                 } else {
-                    emit Payout(marketId, msg.sender, i, amount);
+                    totalCHZPayout += amount;
+                    if (core.state == MarketState.Cancelled) {
+                        emit Refund(marketId, msg.sender, i, amount);
+                    } else {
+                        emit Payout(marketId, msg.sender, i, amount);
+                    }
                 }
             }
         }
         
-        if (totalPayout > 0) {
-            if (address(this).balance < totalPayout) {
-                revert InsufficientContractBalance(totalPayout, address(this).balance);
+        if (totalCHZPayout > 0) {
+            if (address(this).balance < totalCHZPayout) {
+                revert InsufficientContractBalance(totalCHZPayout, address(this).balance);
             }
-            
-            (bool success, ) = payable(msg.sender).call{value: totalPayout}("");
-            if (!success) revert TransferFailed(msg.sender, totalPayout);
+            (bool success, ) = payable(msg.sender).call{value: totalCHZPayout}("");
+            if (!success) revert TransferFailed(msg.sender, totalCHZPayout);
+        }
+        
+        if (totalUSDCPayout > 0) {
+            uint256 usdcBalance = usdcToken.balanceOf(address(this));
+            if (usdcBalance < totalUSDCPayout) {
+                revert InsufficientUSDCBalance(totalUSDCPayout, usdcBalance);
+            }
+            SafeERC20.safeTransfer(usdcToken, msg.sender, totalUSDCPayout);
         }
     }
 
@@ -681,6 +879,34 @@ abstract contract BettingMatch is
         returns (MarketCore memory) 
     {
         return _marketCores[marketId];
+    }
+
+    /**
+     * @notice Get USDC treasury solvency information
+     * @return usdcBalance Current USDC balance held by contract
+     * @return liabilities Outstanding potential USDC payouts
+     * @return pool Total USDC deposited from bets
+     */
+    function getUSDCSolvency() external view returns (
+        uint256 usdcBalance,
+        uint256 liabilities,
+        uint256 pool
+    ) {
+        if (address(usdcToken) != address(0)) {
+            usdcBalance = usdcToken.balanceOf(address(this));
+        }
+        liabilities = totalUSDCLiabilities;
+        pool = totalUSDCPool;
+    }
+
+    /**
+     * @notice Fund the contract with USDC to ensure treasury solvency for payouts
+     * @param amount USDC amount to deposit
+     * @dev Caller must approve this contract to spend `amount` USDC
+     */
+    function fundUSDCTreasury(uint256 amount) external onlyRole(TREASURY_ROLE) {
+        if (address(usdcToken) == address(0)) revert USDCNotConfigured();
+        SafeERC20.safeTransferFrom(usdcToken, msg.sender, address(this), amount);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
