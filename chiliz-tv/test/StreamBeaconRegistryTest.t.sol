@@ -322,7 +322,7 @@ contract StreamBeaconRegistryTest is Test {
 
         // Donate directly to wallet
         vm.prank(viewer2);
-        streamWallet.donate(donationAmount, message);
+        streamWallet.donate(donationAmount, message, 0);
 
         // Check donation recorded
         assertEq(streamWallet.getDonationAmount(viewer2), donationAmount);
@@ -378,11 +378,11 @@ contract StreamBeaconRegistryTest is Test {
 
         // First donation
         vm.prank(viewer1);
-        streamWallet.donate(donation1, "First!");
+        streamWallet.donate(donation1, "First!", 0);
 
         // Second donation from same viewer
         vm.prank(viewer1);
-        streamWallet.donate(donation2, "Second!");
+        streamWallet.donate(donation2, "Second!", 0);
 
         // Should accumulate
         assertEq(streamWallet.getDonationAmount(viewer1), donation1 + donation2);
@@ -591,7 +591,7 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(viewer1);
         fanToken.approve(address(streamWallet), donationAmount);
         vm.prank(viewer1);
-        streamWallet.donate(donationAmount, "Love your content!");
+        streamWallet.donate(donationAmount, "Love your content!", 0);
 
         // Calculate expected totals
         uint256 totalRevenue = sub1Amount + sub2Amount + donationAmount;

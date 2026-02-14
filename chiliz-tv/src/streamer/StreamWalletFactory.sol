@@ -134,7 +134,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         require(IERC20(fanToken).approve(wallet, amount), "Approval failed");
 
         // Record subscription (wallet pulls fan tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration);
+        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0);
 
         emit SubscriptionProcessed(streamer, msg.sender, amount);
     }
@@ -172,7 +172,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         require(IERC20(fanToken).approve(wallet, amount), "Approval failed");
 
         // Process donation through wallet (wallet pulls fan tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).donate(amount, message);
+        StreamWallet(payable(wallet)).donate(amount, message, 0);
 
         emit DonationProcessed(streamer, msg.sender, amount, message);
     }

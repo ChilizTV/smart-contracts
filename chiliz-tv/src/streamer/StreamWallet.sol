@@ -73,6 +73,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     error InvalidAmount();
     error InvalidDuration();
     error InsufficientBalance();
+    error SwapSlippageExceeded();
 
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
@@ -142,15 +143,17 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     /**
      * @notice Record a subscription and distribute funds
      * @param subscriber The subscriber address
-     * @param amount The subscription amount
+     * @param amount The subscription amount in fan tokens
      * @param duration The subscription duration in seconds
-     * @return platformFee The fee sent to treasury
-     * @return streamerAmount The amount sent to streamer
+     * @param amountOutMin Minimum USDC to receive from swap (slippage protection)
+     * @return platformFee The fee portion in fan tokens
+     * @return streamerAmount The streamer portion in fan tokens
      */
     function recordSubscription(
         address subscriber,
         uint256 amount,
-        uint256 duration
+        uint256 duration,
+        uint256 amountOutMin
     )
         external
         onlyFactory
@@ -183,9 +186,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         // Update metrics
         totalRevenue += amount;
 
-        // Swap all fan tokens to USDC via Kayen
-        // NOTE: amountOutMin is 0 for simplicity; slippage protection should be added in production
-        require(IERC20(fanToken).approve(kayenRouter, amount), "Router approval failed");
+        // Approve router if needed
+        _ensureRouterApproval(amount);
 
         address[] memory path = new address[](2);
         path[0] = fanToken;
@@ -204,13 +206,16 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         }
 
         // Swap streamer portion to USDC and send to streamer
-        IKayenRouter(kayenRouter).swapExactTokensForTokens(
+        uint256[] memory amounts = IKayenRouter(kayenRouter).swapExactTokensForTokens(
             streamerAmount,
             0,
             path,
             streamer,
             block.timestamp
         );
+
+        // Verify slippage on streamer's USDC output
+        if (amountOutMin > 0 && amounts[amounts.length - 1] < amountOutMin) revert SwapSlippageExceeded();
 
         emit SubscriptionRecorded(subscriber, amount, duration, expiryTime);
     }
@@ -221,14 +226,16 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
 
     /**
      * @notice Accept a donation with optional message
-     * @param amount The donation amount
+     * @param amount The donation amount in fan tokens
      * @param message Optional message from donor
-     * @return platformFee The fee sent to treasury
-     * @return streamerAmount The amount sent to streamer
+     * @param amountOutMin Minimum USDC to receive from swap (slippage protection)
+     * @return platformFee The fee portion in fan tokens
+     * @return streamerAmount The streamer portion in fan tokens
      */
     function donate(
         uint256 amount,
-        string calldata message
+        string calldata message,
+        uint256 amountOutMin
     )
         external
         nonReentrant
@@ -247,9 +254,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         lifetimeDonations[msg.sender] += amount;
         totalRevenue += amount;
 
-        // Swap all fan tokens to USDC via Kayen
-        // NOTE: amountOutMin is 0 for simplicity; slippage protection should be added in production
-        require(IERC20(fanToken).approve(kayenRouter, amount), "Router approval failed");
+        // Approve router if needed
+        _ensureRouterApproval(amount);
 
         address[] memory path = new address[](2);
         path[0] = fanToken;
@@ -268,13 +274,16 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         }
 
         // Swap streamer portion to USDC and send to streamer
-        IKayenRouter(kayenRouter).swapExactTokensForTokens(
+        uint256[] memory amounts = IKayenRouter(kayenRouter).swapExactTokensForTokens(
             streamerAmount,
             0,
             path,
             streamer,
             block.timestamp
         );
+
+        // Verify slippage
+        if (amountOutMin > 0 && amounts[amounts.length - 1] < amountOutMin) revert SwapSlippageExceeded();
 
         emit DonationReceived(
             msg.sender,
@@ -345,6 +354,21 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      */
     function getDonationAmount(address donor) external view returns (uint256) {
         return lifetimeDonations[donor];
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                             INTERNAL HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Ensure the Kayen router has sufficient approval to spend fan tokens
+     * @param amount The minimum approval needed
+     */
+    function _ensureRouterApproval(uint256 amount) internal {
+        uint256 currentAllowance = IERC20(fanToken).allowance(address(this), kayenRouter);
+        if (currentAllowance < amount) {
+            require(IERC20(fanToken).approve(kayenRouter, type(uint256).max), "Router approval failed");
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
