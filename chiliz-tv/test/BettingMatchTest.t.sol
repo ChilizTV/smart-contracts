@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import "forge-std/Test.sol";
-import "../src/betting/BettingMatch.sol";
-import "../src/betting/FootballMatch.sol";
-import "../src/betting/BasketballMatch.sol";
-import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Test, console} from "forge-std/Test.sol";
+import {BettingMatch} from "../src/betting/BettingMatch.sol";
+import {FootballMatch} from "../src/betting/FootballMatch.sol";
+import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /**
  * @title BettingMatchTest
@@ -145,8 +145,8 @@ contract BettingMatchTest is Test {
         footballMatch.placeBet{value: 1 ether}(0, 0);
         
         // Verify both bets have same oddsIndex
-        (uint256 aliceAmount,, uint32 aliceOdds,,, ) = footballMatch.getBetDetails(0, alice, 0);
-        (uint256 bobAmount,, uint32 bobOdds,,, ) = footballMatch.getBetDetails(0, bob, 0);
+        (,, uint32 aliceOdds,,, ) = footballMatch.getBetDetails(0, alice, 0);
+        (,, uint32 bobOdds,,, ) = footballMatch.getBetDetails(0, bob, 0);
         
         assertEq(aliceOdds, 21800, "Alice odds should be 2.18x");
         assertEq(bobOdds, 21800, "Bob odds should be 2.18x");

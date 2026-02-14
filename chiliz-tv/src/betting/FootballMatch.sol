@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import "./BettingMatch.sol";
+import {BettingMatch} from "./BettingMatch.sol";
 
 /**
  * @title FootballMatch
@@ -242,5 +242,6 @@ contract FootballMatch is BettingMatch {
     // STORAGE GAP
     // ══════════════════════════════════════════════════════════════════════════
     
+    // forge-lint: disable-next-line(mixed-case-variable)
     uint256[48] private __gap_football;
 }

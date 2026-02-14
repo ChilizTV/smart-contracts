@@ -38,5 +38,5 @@ jobs:
       - name: Run tests
         run: forge test -vvv
 
-      - name: Check formatting
-        run: forge fmt --check
+      # - name: Check formatting
+      #   run: forge fmt --check

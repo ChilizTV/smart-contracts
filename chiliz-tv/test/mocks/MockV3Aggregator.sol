@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import "../../src/interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "../../src/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title MockV3Aggregator
@@ -80,10 +80,14 @@ contract MockV3Aggregator is AggregatorV3Interface {
         )
     {
         return (
+            // casting to 'uint80' is safe because latestRound is internally controlled and never exceeds uint80
+            // forge-lint: disable-next-line(unsafe-typecast)
             uint80(latestRound),
             latestAnswer,
             getStartedAt[latestRound],
             latestTimestamp,
+            // casting to 'uint80' is safe because latestRound is internally controlled and never exceeds uint80
+            // forge-lint: disable-next-line(unsafe-typecast)
             uint80(latestRound)
         );
     }

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "forge-std/Script.sol";
+import {Script, console} from "forge-std/Script.sol";
 
 // Import streaming system contracts
-import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 
 /**
