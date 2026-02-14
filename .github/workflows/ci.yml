@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, beta_ready]
+  pull_request:
+    branches: [main, beta_ready]
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  build:
+    name: Build, Test & Format
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chiliz-tv
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Install dependencies
+        run: forge install
+
+      - name: Build contracts
+        run: forge build --sizes
+
+      - name: Run tests
+        run: forge test -vvv
+
+      - name: Check formatting
+        run: forge fmt --check
