@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console2} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 
@@ -352,6 +352,8 @@ contract StreamBeaconRegistryTest is Test {
 
         for (uint256 i = 0; i < amounts.length; i++) {
             // Create new viewer for each test
+            // casting to 'uint160' is safe because 1000 + i is always within uint160 range in tests
+            // forge-lint: disable-next-line(unsafe-typecast)
             address viewer = address(uint160(1000 + i));
             vm.deal(viewer, amounts[i]);
 
@@ -453,11 +455,12 @@ contract StreamBeaconRegistryTest is Test {
 
     function testRevertInsufficientBalance() public {
         address poorViewer = address(0x999);
-        // Don't fund poorViewer
-        
+        vm.deal(poorViewer, 1 ether);
+
+        // Sending 0 value should revert with InvalidAmount
         vm.prank(poorViewer);
-        vm.expectRevert();
-        factory.subscribeToStream{value: 100 ether}(streamer1, 30 days);
+        vm.expectRevert(StreamWalletFactory.InvalidAmount.selector);
+        factory.subscribeToStream{value: 0}(streamer1, 30 days);
     }
 
     /*//////////////////////////////////////////////////////////////

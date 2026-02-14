@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import "forge-std/Script.sol";
+import {Script, console} from "forge-std/Script.sol";
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 import {FootballMatch} from "../src/betting/FootballMatch.sol";
 

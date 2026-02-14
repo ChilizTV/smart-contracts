@@ -74,13 +74,21 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     //////////////////////////////////////////////////////////////*/
 
     modifier onlyFactory() {
-        if (msg.sender != factory) revert OnlyFactory();
+        _onlyFactory();
         _;
     }
 
     modifier onlyStreamer() {
-        if (msg.sender != streamer) revert OnlyStreamer();
+        _onlyStreamer();
         _;
+    }
+
+    function _onlyFactory() internal view {
+        if (msg.sender != factory) revert OnlyFactory();
+    }
+
+    function _onlyStreamer() internal view {
+        if (msg.sender != streamer) revert OnlyStreamer();
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor

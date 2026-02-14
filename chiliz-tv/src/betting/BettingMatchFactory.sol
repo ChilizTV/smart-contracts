@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import "./FootballMatch.sol";
-import "./BasketballMatch.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {FootballMatch} from "./FootballMatch.sol";
+import {BasketballMatch} from "./BasketballMatch.sol";
 
 /// @title BettingMatchFactory
 /// @notice Factory contract to deploy UUPS-upgradeable sport-specific match proxies with dynamic odds
@@ -19,16 +19,16 @@ contract BettingMatchFactory is Ownable {
     mapping(address => SportType) public matchSportType;
 
     /// @notice Immutable implementation contracts deployed once
-    address private immutable footballImplementation;
-    address private immutable basketballImplementation;
+    address private immutable FOOTBALL_IMPLEMENTATION;
+    address private immutable BASKETBALL_IMPLEMENTATION;
 
     /// @notice Emitted when a new match proxy is created
     event MatchCreated(address indexed proxy, SportType sportType, address indexed owner);
 
     /// @notice Deploy implementations and initialize factory
     constructor() Ownable(msg.sender) {
-        footballImplementation = address(new FootballMatch());
-        basketballImplementation = address(new BasketballMatch());
+        FOOTBALL_IMPLEMENTATION = address(new FootballMatch());
+        BASKETBALL_IMPLEMENTATION = address(new BasketballMatch());
     }
 
     /// @notice Deploy a new FootballMatch proxy and initialize it
@@ -41,7 +41,7 @@ contract BettingMatchFactory is Ownable {
             _matchName,
             _owner
         );
-        proxy = address(new ERC1967Proxy(footballImplementation, initData));
+        proxy = address(new ERC1967Proxy(FOOTBALL_IMPLEMENTATION, initData));
         allMatches.push(proxy);
         matchSportType[proxy] = SportType.FOOTBALL;
         emit MatchCreated(proxy, SportType.FOOTBALL, _owner);
@@ -57,7 +57,7 @@ contract BettingMatchFactory is Ownable {
             _matchName,
             _owner
         );
-        proxy = address(new ERC1967Proxy(basketballImplementation, initData));
+        proxy = address(new ERC1967Proxy(BASKETBALL_IMPLEMENTATION, initData));
         allMatches.push(proxy);
         matchSportType[proxy] = SportType.BASKETBALL;
         emit MatchCreated(proxy, SportType.BASKETBALL, _owner);

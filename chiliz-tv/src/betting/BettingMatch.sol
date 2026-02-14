@@ -187,16 +187,24 @@ abstract contract BettingMatch is
     // ══════════════════════════════════════════════════════════════════════════
     
     modifier validMarket(uint256 marketId) {
-        if (marketId >= marketCount) revert InvalidMarketId(marketId);
+        _validMarket(marketId);
         _;
     }
     
     modifier inState(uint256 marketId, MarketState required) {
+        _inState(marketId, required);
+        _;
+    }
+
+    function _validMarket(uint256 marketId) internal view {
+        if (marketId >= marketCount) revert InvalidMarketId(marketId);
+    }
+
+    function _inState(uint256 marketId, MarketState required) internal view {
         MarketState current = _marketCores[marketId].state;
         if (current != required) {
             revert InvalidMarketState(marketId, current, required);
         }
-        _;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -209,6 +217,7 @@ abstract contract BettingMatch is
      * @param _sportType Sport identifier (e.g., "FOOTBALL")
      * @param _owner Owner/admin address
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function __BettingMatchV2_init(
         string memory _matchName, 
         string memory _sportType, 

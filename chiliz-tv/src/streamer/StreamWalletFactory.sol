@@ -18,7 +18,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
                                  STATE
     //////////////////////////////////////////////////////////////*/
 
-    address private immutable streamWalletImplementation;
+    address private immutable STREAM_WALLET_IMPLEMENTATION;
     mapping(address => address) public streamerWallets; // streamer => wallet
     address public treasury;
     uint16 public defaultPlatformFeeBps; // e.g., 500 = 5%
@@ -76,7 +76,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         if (treasury_ == address(0)) revert InvalidAddress();
         if (defaultPlatformFeeBps_ > 10_000) revert InvalidFeeBps();
 
-        streamWalletImplementation = address(new StreamWallet());
+        STREAM_WALLET_IMPLEMENTATION = address(new StreamWallet());
         treasury = treasury_;
         defaultPlatformFeeBps = defaultPlatformFeeBps_;
     }
@@ -163,7 +163,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             defaultPlatformFeeBps
         );
         // Deploy ERC1967 UUPS proxy
-        wallet = address(new ERC1967Proxy(streamWalletImplementation, initData));
+        wallet = address(new ERC1967Proxy(STREAM_WALLET_IMPLEMENTATION, initData));
 
         emit StreamWalletCreated(streamer, wallet);
  
@@ -242,6 +242,6 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @return Current StreamWallet implementation
      */
     function implementation() external view returns (address) {
-        return streamWalletImplementation;
+        return STREAM_WALLET_IMPLEMENTATION;
     }
 }
