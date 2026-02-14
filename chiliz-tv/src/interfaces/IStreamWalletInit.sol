@@ -16,6 +16,9 @@ interface IStreamWalletInit {
     function initialize(
         address streamer_,
         address treasury_,
-        uint16 platformFeeBps_
+        uint16 platformFeeBps_,
+        address kayenRouter_,
+        address fanToken_,
+        address usdc_
     ) external;
 }

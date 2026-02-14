@@ -5,6 +5,8 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {IERC20} from "../interfaces/IERC20.sol";
+import {IKayenRouter} from "../interfaces/IKayenRouter.sol";
 
 /**
  * @title StreamWallet
@@ -21,6 +23,9 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     address public treasury;
     uint16 public platformFeeBps; // basis points (e.g., 500 = 5%)
     address public factory;
+    address public kayenRouter;
+    address public fanToken;
+    address public usdc;
 
     mapping(address => Subscription) public subscriptions;
     mapping(address => uint256) public lifetimeDonations;
@@ -105,11 +110,17 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @param streamer_ The streamer address (owner/beneficiary)
      * @param treasury_ The platform treasury address
      * @param platformFeeBps_ Platform fee in basis points
+     * @param kayenRouter_ The Kayen DEX router address
+     * @param fanToken_ The fan token (ERC20) address
+     * @param usdc_ The USDC token address
      */
     function initialize(
         address streamer_,
         address treasury_,
-        uint16 platformFeeBps_
+        uint16 platformFeeBps_,
+        address kayenRouter_,
+        address fanToken_,
+        address usdc_
     ) external initializer {
         __Ownable_init(streamer_);
         __UUPSUpgradeable_init();
@@ -119,6 +130,9 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         treasury = treasury_;
         platformFeeBps = platformFeeBps_;
         factory = msg.sender;
+        kayenRouter = kayenRouter_;
+        fanToken = fanToken_;
+        usdc = usdc_;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -139,13 +153,15 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         uint256 duration
     )
         external
-        payable
         onlyFactory
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
         if (amount == 0) revert InvalidAmount();
         if (duration == 0) revert InvalidDuration();
+
+        // Pull fan tokens from factory
+        require(IERC20(fanToken).transferFrom(msg.sender, address(this), amount), "Fan token transfer failed");
 
         // Calculate split
         platformFee = (amount * platformFeeBps) / 10_000;
@@ -167,16 +183,34 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         // Update metrics
         totalRevenue += amount;
 
-        // Transfer platform fee to treasury
+        // Swap all fan tokens to USDC via Kayen
+        // NOTE: amountOutMin is 0 for simplicity; slippage protection should be added in production
+        require(IERC20(fanToken).approve(kayenRouter, amount), "Router approval failed");
+
+        address[] memory path = new address[](2);
+        path[0] = fanToken;
+        path[1] = usdc;
+
+        // Swap platform fee portion to USDC and send to treasury
         if (platformFee > 0) {
-            (bool successTreasury, ) = treasury.call{value: platformFee}("");
-            require(successTreasury, "Treasury transfer failed");
+            IKayenRouter(kayenRouter).swapExactTokensForTokens(
+                platformFee,
+                0,
+                path,
+                treasury,
+                block.timestamp
+            );
             emit PlatformFeeCollected(platformFee, treasury);
         }
 
-        // Transfer streamer amount
-        (bool successStreamer, ) = streamer.call{value: streamerAmount}("");
-        require(successStreamer, "Streamer transfer failed");
+        // Swap streamer portion to USDC and send to streamer
+        IKayenRouter(kayenRouter).swapExactTokensForTokens(
+            streamerAmount,
+            0,
+            path,
+            streamer,
+            block.timestamp
+        );
 
         emit SubscriptionRecorded(subscriber, amount, duration, expiryTime);
     }
@@ -197,11 +231,13 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         string calldata message
     )
         external
-        payable
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
         if (amount == 0) revert InvalidAmount();
+
+        // Pull fan tokens from sender
+        require(IERC20(fanToken).transferFrom(msg.sender, address(this), amount), "Fan token transfer failed");
 
         // Calculate split
         platformFee = (amount * platformFeeBps) / 10_000;
@@ -211,16 +247,34 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         lifetimeDonations[msg.sender] += amount;
         totalRevenue += amount;
 
-        // Transfer platform fee to treasury
+        // Swap all fan tokens to USDC via Kayen
+        // NOTE: amountOutMin is 0 for simplicity; slippage protection should be added in production
+        require(IERC20(fanToken).approve(kayenRouter, amount), "Router approval failed");
+
+        address[] memory path = new address[](2);
+        path[0] = fanToken;
+        path[1] = usdc;
+
+        // Swap platform fee portion to USDC and send to treasury
         if (platformFee > 0) {
-            (bool successTreasury, ) = treasury.call{value: platformFee}("");
-            require(successTreasury, "Treasury transfer failed");
+            IKayenRouter(kayenRouter).swapExactTokensForTokens(
+                platformFee,
+                0,
+                path,
+                treasury,
+                block.timestamp
+            );
             emit PlatformFeeCollected(platformFee, treasury);
         }
 
-        // Transfer to streamer
-        (bool successStreamer, ) = streamer.call{value: streamerAmount}("");
-        require(successStreamer, "Streamer transfer failed");
+        // Swap streamer portion to USDC and send to streamer
+        IKayenRouter(kayenRouter).swapExactTokensForTokens(
+            streamerAmount,
+            0,
+            path,
+            streamer,
+            block.timestamp
+        );
 
         emit DonationReceived(
             msg.sender,
@@ -246,8 +300,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         if (amount > available) revert InsufficientBalance();
 
         totalWithdrawn += amount;
-        (bool success, ) = streamer.call{value: amount}("");
-        require(success, "Streamer transfer failed");
+        require(IERC20(usdc).transfer(streamer, amount), "USDC transfer failed");
 
         emit RevenueWithdrawn(streamer, amount);
     }
@@ -271,7 +324,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @return uint256 The available balance
      */
     function availableBalance() public view returns (uint256) {
-        return address(this).balance;
+        return IERC20(usdc).balanceOf(address(this));
     }
 
     /**
@@ -293,11 +346,6 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     function getDonationAmount(address donor) external view returns (uint256) {
         return lifetimeDonations[donor];
     }
-
-    /**
-     * @notice Receive function to accept native CHZ
-     */
-    receive() external payable {}
 
     /*//////////////////////////////////////////////////////////////
                               UUPS UPGRADE
