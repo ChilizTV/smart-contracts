@@ -70,7 +70,10 @@ contract DeployAll is Script {
         streamFactory = new StreamWalletFactory(
             deployer,
             treasury,
-            500  // 5% platform fee
+            500,  // 5% platform fee
+            address(0), // kayenRouter - set after deployment
+            address(0), // fanToken - set after deployment
+            address(0)  // usdc - set after deployment
         );
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("  (Implementation deployed internally)");
