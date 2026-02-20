@@ -59,42 +59,35 @@ contract BasketballMatch is BettingMatch {
     // MARKET CREATION
     // ══════════════════════════════════════════════════════════════════════════
     
-    function addMarket(bytes32 marketType, uint32 initialOdds) 
+    /**
+     * @notice Add a basketball market (base override, quarter defaults to 0)
+     * @param marketType Market type identifier
+     * @param initialOdds Initial odds (x10000)
+     * @param line Line value (e.g., 2155 = 215.5 points, 0 = no line)
+     */
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) 
         external 
         override 
         onlyRole(ADMIN_ROLE) 
     {
-        _validateOdds(initialOdds);
-        
-        uint8 maxSelections = _getMaxSelections(marketType);
-        
-        uint256 marketId = marketCount++;
-        
-        _marketCores[marketId] = MarketCore({
-            state: MarketState.Inactive,
-            result: 0,
-            createdAt: uint40(block.timestamp),
-            resolvedAt: 0,
-            totalPool: 0
-        });
-        
-        basketballMarkets[marketId] = BasketballMarket({
-            marketType: marketType,
-            line: 0,
-            quarter: 0,
-            maxSelections: maxSelections
-        });
-        
-        _getOrCreateOddsIndex(marketId, initialOdds);
-        _oddsRegistries[marketId].currentIndex = 1;
-        
-        emit MarketCreated(marketId, _marketTypeToString(marketType), initialOdds);
+        _addMarketInternal(marketType, initialOdds, line, 0);
     }
-    
-    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) 
+
+    /**
+     * @notice Add a basketball market with quarter specification
+     * @param marketType Market type identifier
+     * @param initialOdds Initial odds (x10000)
+     * @param line Line value
+     * @param quarter Quarter (1-4, 0 = full game)
+     */
+    function addMarketWithQuarter(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) 
         external 
         onlyRole(ADMIN_ROLE) 
     {
+        _addMarketInternal(marketType, initialOdds, line, quarter);
+    }
+
+    function _addMarketInternal(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) internal {
         _validateOdds(initialOdds);
         if (quarter > 4) revert InvalidQuarter(quarter);
         

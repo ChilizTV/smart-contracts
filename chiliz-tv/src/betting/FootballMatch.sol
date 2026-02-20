@@ -68,49 +68,11 @@ contract FootballMatch is BettingMatch {
      * @notice Add a new football betting market
      * @param marketType Market type identifier
      * @param initialOdds Initial odds (x10000)
-     */
-    function addMarket(bytes32 marketType, uint32 initialOdds) 
-        external 
-        override 
-        onlyRole(ADMIN_ROLE) 
-    {
-        _validateOdds(initialOdds);
-        
-        uint8 maxSelections = _getMaxSelections(marketType);
-        
-        uint256 marketId = marketCount++;
-        
-        // Initialize market core
-        _marketCores[marketId] = MarketCore({
-            state: MarketState.Inactive,
-            result: 0,
-            createdAt: uint40(block.timestamp),
-            resolvedAt: 0,
-            totalPool: 0
-        });
-        
-        // Initialize football-specific data
-        footballMarkets[marketId] = FootballMarket({
-            marketType: marketType,
-            line: 0,
-            maxSelections: maxSelections
-        });
-        
-        // Set initial odds
-        _getOrCreateOddsIndex(marketId, initialOdds);
-        _oddsRegistries[marketId].currentIndex = 1;
-        
-        emit MarketCreated(marketId, _marketTypeToString(marketType), initialOdds);
-    }
-    
-    /**
-     * @notice Add a market with a line (for O/U or spread)
-     * @param marketType Market type
-     * @param initialOdds Initial odds
-     * @param line Line value (e.g., 25 = 2.5 goals)
+     * @param line Line value (e.g., 25 = 2.5 goals, 0 = no line)
      */
     function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) 
         external 
+        override 
         onlyRole(ADMIN_ROLE) 
     {
         _validateOdds(initialOdds);

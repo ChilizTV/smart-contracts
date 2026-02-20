@@ -95,12 +95,11 @@ abstract contract BettingMatch is
      *      Slot 2: selection (64) + oddsIndex (16) + timestamp (40) + claimed (8) = 128 bits
      */
     struct Bet {
-        uint256 amount;       // Bet amount in CHZ (wei) or USDC (6 decimals)
+        uint256 amount;       // Bet amount in USDC (6 decimals)
         uint64  selection;    // Encoded user pick (outcome ID)
         uint16  oddsIndex;    // Index into market's oddsRegistry
         uint40  timestamp;    // Block timestamp when bet was placed
         bool    claimed;      // Whether payout/refund was claimed
-        bool    isUSDC;       // Whether bet was placed in USDC
     }
     
     /**
@@ -121,7 +120,7 @@ abstract contract BettingMatch is
         uint64      result;          // Encoded result (set on resolution)
         uint40      createdAt;
         uint40      resolvedAt;
-        uint256     totalPool;       // Total CHZ wagered
+        uint256     totalPool;       // Total USDC wagered
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -172,21 +171,10 @@ abstract contract BettingMatch is
         uint32 odds,
         uint16 oddsIndex
     );
-    event USDCBetPlaced(
-        uint256 indexed marketId,
-        address indexed user,
-        uint256 betIndex,
-        uint256 amount,
-        uint64 selection,
-        uint32 odds,
-        uint16 oddsIndex
-    );
     event MarketResolved(uint256 indexed marketId, uint64 result, uint40 resolvedAt);
     event MarketCancelled(uint256 indexed marketId, string reason);
     event Payout(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
-    event USDCPayout(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
     event Refund(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
-    event USDCRefund(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
     event USDCTokenSet(address indexed token);
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -201,8 +189,6 @@ abstract contract BettingMatch is
     error BetNotFound(uint256 marketId, address user, uint256 betIndex);
     error AlreadyClaimed(uint256 marketId, address user, uint256 betIndex);
     error BetLost(uint256 marketId, address user, uint256 betIndex);
-    error InsufficientContractBalance(uint256 required, uint256 available);
-    error TransferFailed(address to, uint256 amount);
     error MarketNotCancelled(uint256 marketId);
     error ContractNotPaused();
     error MaxOddsEntriesReached(uint256 marketId);
@@ -264,6 +250,7 @@ abstract contract BettingMatch is
         _grantRole(PAUSER_ROLE, _owner);
         _grantRole(TREASURY_ROLE, _owner);
         _grantRole(ODDS_SETTER_ROLE, _owner);
+        
         
         matchName = _matchName;
         sportType = _sportType;
@@ -441,52 +428,6 @@ abstract contract BettingMatch is
     // ══════════════════════════════════════════════════════════════════════════
     // BETTING CORE
     // ══════════════════════════════════════════════════════════════════════════
-    
-    /**
-     * @notice Place a bet on a market
-     * @param marketId Market identifier
-     * @param selection Encoded user pick (outcome ID)
-     * @dev
-     *   - Uses current market odds at time of bet
-     *   - Stores oddsIndex to save gas (not raw odds value)
-     *   - Supports multiple bets per user at different odds
-     */
-    function placeBet(uint256 marketId, uint64 selection) 
-        external 
-        payable 
-        validMarket(marketId)
-        inState(marketId, MarketState.Open)
-        whenNotPaused 
-    {
-        if (msg.value == 0) revert ZeroBetAmount();
-        
-        OddsRegistry storage registry = _oddsRegistries[marketId];
-        if (registry.currentIndex == 0) revert OddsNotSet(marketId);
-        
-        uint16 oddsIndex = registry.currentIndex;
-        uint32 odds = registry.values[oddsIndex - 1];
-        
-        // Validate selection via sport-specific hook
-        _validateSelection(marketId, selection);
-        
-        // Create bet
-        Bet memory newBet = Bet({
-            amount: msg.value,
-            selection: selection,
-            oddsIndex: oddsIndex,
-            timestamp: uint40(block.timestamp),
-            claimed: false,
-            isUSDC: false
-        });
-        
-        _userBets[marketId][msg.sender].push(newBet);
-        uint256 betIndex = _userBets[marketId][msg.sender].length - 1;
-        
-        // Update pool
-        _marketCores[marketId].totalPool += msg.value;
-        
-        emit BetPlaced(marketId, msg.sender, betIndex, msg.value, selection, odds, oddsIndex);
-    }
 
     /**
      * @notice Place a bet using USDC tokens
@@ -570,15 +511,14 @@ abstract contract BettingMatch is
             selection: selection,
             oddsIndex: registry.currentIndex,
             timestamp: uint40(block.timestamp),
-            claimed: false,
-            isUSDC: true
+            claimed: false
         }));
         
         _marketCores[marketId].totalPool += amount;
         totalUSDCPool += amount;
         totalUSDCLiabilities += potentialPayout;
         
-        emit USDCBetPlaced(
+        emit BetPlaced(
             marketId, user,
             _userBets[marketId][user].length - 1,
             amount, selection, odds, registry.currentIndex
@@ -645,29 +585,18 @@ abstract contract BettingMatch is
         // CEI: Effects before Interactions
         bet.claimed = true;
         
-        if (bet.isUSDC) {
-            // USDC payout
-            // Reduce liabilities
-            if (totalUSDCLiabilities >= payout) {
-                totalUSDCLiabilities -= payout;
-            } else {
-                totalUSDCLiabilities = 0;
-            }
-            uint256 usdcBalance = usdcToken.balanceOf(address(this));
-            if (usdcBalance < payout) {
-                revert InsufficientUSDCBalance(payout, usdcBalance);
-            }
-            SafeERC20.safeTransfer(usdcToken, msg.sender, payout);
-            emit USDCPayout(marketId, msg.sender, betIndex, payout);
+        // Reduce liabilities
+        if (totalUSDCLiabilities >= payout) {
+            totalUSDCLiabilities -= payout;
         } else {
-            // CHZ payout
-            if (address(this).balance < payout) {
-                revert InsufficientContractBalance(payout, address(this).balance);
-            }
-            (bool success, ) = payable(msg.sender).call{value: payout}("");
-            if (!success) revert TransferFailed(msg.sender, payout);
-            emit Payout(marketId, msg.sender, betIndex, payout);
+            totalUSDCLiabilities = 0;
         }
+        uint256 usdcBalance = usdcToken.balanceOf(address(this));
+        if (usdcBalance < payout) {
+            revert InsufficientUSDCBalance(payout, usdcBalance);
+        }
+        SafeERC20.safeTransfer(usdcToken, msg.sender, payout);
+        emit Payout(marketId, msg.sender, betIndex, payout);
     }
     
     /**
@@ -694,29 +623,20 @@ abstract contract BettingMatch is
         // CEI
         bet.claimed = true;
         
-        if (bet.isUSDC) {
-            // USDC refund - reduce liabilities by potential payout
-            uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-            uint256 potentialPayout = (refundAmount * betOdds) / ODDS_PRECISION;
-            if (totalUSDCLiabilities >= potentialPayout) {
-                totalUSDCLiabilities -= potentialPayout;
-            } else {
-                totalUSDCLiabilities = 0;
-            }
-            uint256 usdcBalance = usdcToken.balanceOf(address(this));
-            if (usdcBalance < refundAmount) {
-                revert InsufficientUSDCBalance(refundAmount, usdcBalance);
-            }
-            SafeERC20.safeTransfer(usdcToken, msg.sender, refundAmount);
-            emit USDCRefund(marketId, msg.sender, betIndex, refundAmount);
+        // Reduce liabilities by potential payout
+        uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+        uint256 potentialPayout = (refundAmount * betOdds) / ODDS_PRECISION;
+        if (totalUSDCLiabilities >= potentialPayout) {
+            totalUSDCLiabilities -= potentialPayout;
         } else {
-            if (address(this).balance < refundAmount) {
-                revert InsufficientContractBalance(refundAmount, address(this).balance);
-            }
-            (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
-            if (!success) revert TransferFailed(msg.sender, refundAmount);
-            emit Refund(marketId, msg.sender, betIndex, refundAmount);
+            totalUSDCLiabilities = 0;
         }
+        uint256 usdcBalance = usdcToken.balanceOf(address(this));
+        if (usdcBalance < refundAmount) {
+            revert InsufficientUSDCBalance(refundAmount, usdcBalance);
+        }
+        SafeERC20.safeTransfer(usdcToken, msg.sender, refundAmount);
+        emit Refund(marketId, msg.sender, betIndex, refundAmount);
     }
     
     /**
@@ -732,8 +652,7 @@ abstract contract BettingMatch is
         MarketCore storage core = _marketCores[marketId];
         Bet[] storage userBets = _userBets[marketId][msg.sender];
         
-        uint256 totalCHZPayout = 0;
-        uint256 totalUSDCPayout = 0;
+        uint256 totalPayout = 0;
         
         for (uint256 i = 0; i < userBets.length; i++) {
             Bet storage bet = userBets[i];
@@ -754,56 +673,37 @@ abstract contract BettingMatch is
             if (shouldPay) {
                 bet.claimed = true;
                 
-                if (bet.isUSDC) {
-                    // Reduce liabilities
-                    uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-                    uint256 potentialPayout = (bet.amount * betOdds) / ODDS_PRECISION;
-                    if (core.state == MarketState.Cancelled) {
-                        // For cancelled, liability was the potential payout
-                        if (totalUSDCLiabilities >= potentialPayout) {
-                            totalUSDCLiabilities -= potentialPayout;
-                        } else {
-                            totalUSDCLiabilities = 0;
-                        }
+                // Reduce liabilities
+                uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+                uint256 potentialPayout = (bet.amount * betOdds) / ODDS_PRECISION;
+                if (core.state == MarketState.Cancelled) {
+                    if (totalUSDCLiabilities >= potentialPayout) {
+                        totalUSDCLiabilities -= potentialPayout;
                     } else {
-                        // For resolved, amount IS the potential payout
-                        if (totalUSDCLiabilities >= amount) {
-                            totalUSDCLiabilities -= amount;
-                        } else {
-                            totalUSDCLiabilities = 0;
-                        }
-                    }
-                    totalUSDCPayout += amount;
-                    if (core.state == MarketState.Cancelled) {
-                        emit USDCRefund(marketId, msg.sender, i, amount);
-                    } else {
-                        emit USDCPayout(marketId, msg.sender, i, amount);
+                        totalUSDCLiabilities = 0;
                     }
                 } else {
-                    totalCHZPayout += amount;
-                    if (core.state == MarketState.Cancelled) {
-                        emit Refund(marketId, msg.sender, i, amount);
+                    if (totalUSDCLiabilities >= amount) {
+                        totalUSDCLiabilities -= amount;
                     } else {
-                        emit Payout(marketId, msg.sender, i, amount);
+                        totalUSDCLiabilities = 0;
                     }
+                }
+                totalPayout += amount;
+                if (core.state == MarketState.Cancelled) {
+                    emit Refund(marketId, msg.sender, i, amount);
+                } else {
+                    emit Payout(marketId, msg.sender, i, amount);
                 }
             }
         }
         
-        if (totalCHZPayout > 0) {
-            if (address(this).balance < totalCHZPayout) {
-                revert InsufficientContractBalance(totalCHZPayout, address(this).balance);
-            }
-            (bool success, ) = payable(msg.sender).call{value: totalCHZPayout}("");
-            if (!success) revert TransferFailed(msg.sender, totalCHZPayout);
-        }
-        
-        if (totalUSDCPayout > 0) {
+        if (totalPayout > 0) {
             uint256 usdcBalance = usdcToken.balanceOf(address(this));
-            if (usdcBalance < totalUSDCPayout) {
-                revert InsufficientUSDCBalance(totalUSDCPayout, usdcBalance);
+            if (usdcBalance < totalPayout) {
+                revert InsufficientUSDCBalance(totalPayout, usdcBalance);
             }
-            SafeERC20.safeTransfer(usdcToken, msg.sender, totalUSDCPayout);
+            SafeERC20.safeTransfer(usdcToken, msg.sender, totalPayout);
         }
     }
 
@@ -921,17 +821,15 @@ abstract contract BettingMatch is
         _unpause();
     }
     
-    function emergencyWithdraw(uint256 amount) external onlyRole(TREASURY_ROLE) {
+    function emergencyWithdrawUSDC(uint256 amount) external onlyRole(TREASURY_ROLE) {
         if (!paused()) revert ContractNotPaused();
-        if (amount > address(this).balance) {
-            revert InsufficientContractBalance(amount, address(this).balance);
+        if (address(usdcToken) == address(0)) revert USDCNotConfigured();
+        uint256 usdcBalance = usdcToken.balanceOf(address(this));
+        if (amount > usdcBalance) {
+            revert InsufficientUSDCBalance(amount, usdcBalance);
         }
-        
-        (bool success, ) = payable(msg.sender).call{value: amount}("");
-        if (!success) revert TransferFailed(msg.sender, amount);
+        SafeERC20.safeTransfer(usdcToken, msg.sender, amount);
     }
-    
-    receive() external payable {}
     
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
@@ -947,8 +845,11 @@ abstract contract BettingMatch is
     
     /**
      * @notice Create a new market (sport-specific)
+     * @param marketType Market type identifier
+     * @param initialOdds Initial odds (x10000)
+     * @param line Line value (e.g., 25 = 2.5 goals, 0 = no line)
      */
-    function addMarket(bytes32 marketType, uint32 initialOdds) external virtual;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) external virtual;
     
     /**
      * @notice Get market type information (sport-specific)

@@ -5,7 +5,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {IERC20} from "../interfaces/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IKayenRouter} from "../interfaces/IKayenRouter.sol";
 
 /**
@@ -171,15 +171,22 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         streamerAmount = amount - platformFee;
 
         // Update subscription
-        uint256 expiryTime = block.timestamp + duration;
         Subscription storage sub = subscriptions[subscriber];
+        uint256 expiryTime;
+        if (sub.active && sub.expiryTime > block.timestamp) {
+            // Extend from current expiry (don't lose remaining time)
+            expiryTime = sub.expiryTime + duration;
+        } else {
+            // New subscription or expired — start from now
+            expiryTime = block.timestamp + duration;
+        }
 
         if (!sub.active) {
             totalSubscribers++;
         }
 
-        sub.amount = amount;
-        sub.startTime = block.timestamp;
+        sub.amount += amount;
+        sub.startTime = sub.active ? sub.startTime : block.timestamp;
         sub.expiryTime = expiryTime;
         sub.active = true;
 
