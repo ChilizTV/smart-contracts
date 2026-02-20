@@ -3,14 +3,15 @@ pragma solidity ^0.8.22;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IKayenMasterRouterV2} from "../../src/interfaces/IKayenMasterRouterV2.sol";
+import {IKayenRouter} from "../../src/interfaces/IKayenRouter.sol";
 
 /**
  * @title MockKayenRouter
- * @notice Deterministic mock of KayenMasterRouterV2 for Foundry tests
- * @dev Simulates CHZ -> USDC swaps at a fixed rate (1 CHZ = 0.10 USDC)
+ * @notice Deterministic mock of KayenMasterRouterV2 + KayenRouter for Foundry tests
+ * @dev Simulates CHZ -> USDC and Token -> USDC swaps at a fixed rate (1 CHZ = 0.10 USDC)
  *      Rate is configurable via setRate()
  */
-contract MockKayenRouter is IKayenMasterRouterV2 {
+contract MockKayenRouter is IKayenMasterRouterV2, IKayenRouter {
     /// @notice Exchange rate: USDC per 1 CHZ (in USDC decimals, i.e., 6 decimals)
     /// @dev Default: 100_000 = 0.10 USDC per 1 CHZ (18 decimal CHZ -> 6 decimal USDC)
     uint256 public rate = 100_000; // 0.10 USDC per CHZ
@@ -100,6 +101,49 @@ contract MockKayenRouter is IKayenMasterRouterV2 {
         // Call mint on the mock USDC token
         (bool success,) = usdcToken.call(abi.encodeWithSignature("mint(address,uint256)", to, amount));
         require(success, "MockRouter: mint failed");
+    }
+
+    /**
+     * @notice Mock: Swap exact ERC20 tokens for USDC
+     * @dev Burns input tokens from this contract, mints USDC to `to` at the same rate
+     */
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external override returns (uint256[] memory amounts) {
+        require(!shouldFail, "MockRouter: swap failed");
+        require(block.timestamp <= deadline, "MockRouter: expired");
+        require(path.length >= 2, "MockRouter: invalid path");
+        require(amountIn > 0, "MockRouter: zero input");
+
+        // Pull input tokens from sender
+        require(IERC20(path[0]).transferFrom(msg.sender, address(this), amountIn), "MockRouter: transfer failed");
+
+        // Calculate USDC output (same rate as CHZ: amountIn * rate / 1e18)
+        uint256 usdcOut = (amountIn * rate) / 1e18;
+        require(usdcOut >= amountOutMin, "MockRouter: insufficient output");
+
+        // Mint USDC to recipient
+        _mintUSDC(to, usdcOut);
+
+        amounts = new uint256[](path.length);
+        amounts[0] = amountIn;
+        amounts[path.length - 1] = usdcOut;
+    }
+
+    /**
+     * @notice Mock: Get expected output amounts for a swap path
+     */
+    function getAmountsOut(
+        uint256 amountIn,
+        address[] calldata path
+    ) external view override returns (uint256[] memory amounts) {
+        amounts = new uint256[](path.length);
+        amounts[0] = amountIn;
+        amounts[path.length - 1] = (amountIn * rate) / 1e18;
     }
 
     receive() external payable {}

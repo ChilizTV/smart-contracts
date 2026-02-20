@@ -24,6 +24,7 @@ Chiliz-TV uses two different proxy patterns:
 | `DeployAll.s.sol` | Complete system | BettingMatchFactory + StreamWalletFactory |
 | `DeployBetting.s.sol` | Betting only | BettingMatchFactory (with FootballMatch & BasketballMatch implementations) |
 | `DeployStreaming.s.sol` | Streaming only | StreamWallet + StreamWalletFactory |
+| `DeploySwap.s.sol` | Swap routers | BettingSwapRouter + StreamSwapRouter (Kayen DEX integration) |
 | `SetupFootballMatch.s.sol` | Create & configure a match | Football match with markets, ready for betting |
 
 ## Environment Setup
@@ -47,9 +48,10 @@ FACTORY_ADDRESS=0x...       # BettingMatchFactory address (for SetupFootballMatc
 
 ```bash
 forge script script/DeployAll.s.sol \
-  --rpc-url https://base-sepolia.drpc.org \
+  --rpc-url https://spicy-rpc.chiliz.com \
   --broadcast \
   --private-key $PRIVATE_KEY \
+  --legacy --with-gas-price 2501 --chain-id 88882 \
   -vvvv
 ```
 
@@ -57,9 +59,10 @@ forge script script/DeployAll.s.sol \
 
 ```bash
 forge script script/DeployBetting.s.sol \
-  --rpc-url https://base-sepolia.drpc.org \
+  --rpc-url https://spicy-rpc.chiliz.com \
   --broadcast \
   --private-key $PRIVATE_KEY \
+  --legacy --with-gas-price 2501 --chain-id 88882 \
   -vvvv
 ```
 
@@ -67,9 +70,10 @@ forge script script/DeployBetting.s.sol \
 
 ```bash
 forge script script/DeployStreaming.s.sol \
-  --rpc-url https://base-sepolia.drpc.org \
+  --rpc-url https://spicy-rpc.chiliz.com \
   --broadcast \
   --private-key $PRIVATE_KEY \
+  --legacy --with-gas-price 2501 --chain-id 88882 \
   -vvvv
 ```
 
@@ -79,19 +83,78 @@ forge script script/DeployStreaming.s.sol \
 export FACTORY_ADDRESS=0x...   # Your deployed factory
 
 forge script script/SetupFootballMatch.s.sol \
-  --rpc-url https://base-sepolia.drpc.org \
+  --rpc-url https://spicy-rpc.chiliz.com \
   --broadcast \
   --private-key $PRIVATE_KEY \
+  --legacy --with-gas-price 2501 --chain-id 88882 \
   -vvvv
 ```
 
-## Network Configurations
+### Deploy Swap Routers (Kayen DEX)
 
-### Base Sepolia (Testnet)
+Deploys `BettingSwapRouter` and `StreamSwapRouter` for CHZ-to-USDC swap bets and streaming.
+
+**Prerequisites:**
+- Betting and/or Streaming system already deployed
+- Kayen DEX addresses (router, WCHZ, USDC) for the target network
+
 ```bash
-RPC_URL=https://base-sepolia.drpc.org
-# No --legacy flag needed (supports EIP-1559)
+# Set swap-specific env vars in .env:
+#   KAYEN_ROUTER=0x...       # Kayen MasterRouterV2
+#   WCHZ_ADDRESS=0x...       # Wrapped CHZ
+#   USDC_ADDRESS=0x...       # USDC token
+#   PLATFORM_FEE_BPS=500     # StreamSwapRouter fee (5%)
+
+# Via deploy.sh (recommended):
+./deploy.sh --network chilizTestnet --swap
+./deploy.sh --network chilizMainnet --swap
+
+# Or directly via forge:
+forge script script/DeploySwap.s.sol \
+  --rpc-url https://spicy-rpc.chiliz.com \
+  --broadcast \
+  --private-key $PRIVATE_KEY \
+  --legacy --with-gas-price 2501 \
+  --chain-id 88882 \
+  -vvvv
 ```
+
+**Post-deployment (required for BettingSwapRouter):**
+
+```bash
+# 1. Set USDC token on each BettingMatch proxy
+cast send $MATCH_ADDRESS \
+  "setUSDCToken(address)" \
+  $USDC_ADDRESS \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# 2. Grant SWAP_ROUTER_ROLE to BettingSwapRouter
+cast send $MATCH_ADDRESS \
+  "grantRole(bytes32,address)" \
+  $(cast keccak "SWAP_ROUTER_ROLE") \
+  $BETTING_SWAP_ROUTER \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# 3. Fund USDC treasury (for paying out USDC wins)
+cast send $USDC_ADDRESS \
+  "approve(address,uint256)" \
+  $MATCH_ADDRESS $AMOUNT \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+cast send $MATCH_ADDRESS \
+  "fundUSDCTreasury(uint256)" \
+  $AMOUNT \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# 4. Test a swap bet (send native CHZ, auto-swaps to USDC)
+cast send $BETTING_SWAP_ROUTER \
+  "placeBetWithCHZ(address,uint256,uint64,uint256,uint256)" \
+  $MATCH_ADDRESS 0 0 1 $(date -d "+1 hour" +%s) \
+  --value 10ether \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+```
+
+## Network Configurations
 
 ### Chiliz Testnet (Spicy)
 ```bash
@@ -125,9 +188,10 @@ cast send $FACTORY_ADDRESS \
 ```bash
 # Add WINNER market with 2.20x odds (22000 in x10000 precision)
 cast send $MATCH_ADDRESS \
-  "addMarket(bytes32,uint32)" \
+  "addMarketWithLine(bytes32,uint32,int16)" \
   $(cast keccak "WINNER") \
   22000 \
+  0 \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY
 ```
@@ -251,6 +315,7 @@ cast send $STREAM_FACTORY \
 | `RESOLVER_ROLE` | Resolve markets with results |
 | `PAUSER_ROLE` | Pause/unpause contract |
 | `TREASURY_ROLE` | Emergency fund withdrawal |
+| `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users (BettingSwapRouter) |
 
 ## Upgrading Contracts
 

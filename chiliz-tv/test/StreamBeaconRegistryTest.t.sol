@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 import {StreamWallet} from "../src/streamer/StreamWallet.sol";
-import {IERC20} from "../src/interfaces/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IKayenRouter} from "../src/interfaces/IKayenRouter.sol";
 
 /// @dev Simple ERC20 mock for fan token and USDC
@@ -49,8 +49,14 @@ contract MockERC20 is IERC20 {
     }
 }
 
-/// @dev Mock Kayen router that simulates 1:1 swaps for testing
-contract MockKayenRouter is IKayenRouter {
+/**
+ * @dev Mock Kayen router for token-to-token swaps (IKayenRouter interface)
+ * Note: This is different from test/mocks/MockKayenRouter.sol which implements
+ * IKayenMasterRouterV2 for native CHZ swaps. Both are needed:
+ * - IKayenRouter: Fan Token → USDC (used by StreamWallet)
+ * - IKayenMasterRouterV2: CHZ (native) → USDC (used by BettingSwapRouter, StreamSwapRouter)
+ */
+contract MockKayenRouterTokenSwap is IKayenRouter {
     function swapExactTokensForTokens(
         uint256 amountIn,
         uint256 /* amountOutMin */,
@@ -88,7 +94,7 @@ contract StreamBeaconRegistryTest is Test {
     StreamWalletFactory public factory;
     MockERC20 public fanToken;
     MockERC20 public usdcToken;
-    MockKayenRouter public router;
+    MockKayenRouterTokenSwap public router;
 
     address public admin = address(0x1);
     address public gnosisSafe = address(0x2);
@@ -118,7 +124,7 @@ contract StreamBeaconRegistryTest is Test {
         // Deploy mock tokens and router
         fanToken = new MockERC20("Fan Token", "FAN", 18);
         usdcToken = new MockERC20("USD Coin", "USDC", 6);
-        router = new MockKayenRouter();
+        router = new MockKayenRouterTokenSwap();
 
         // Deploy factory
         vm.prank(admin);

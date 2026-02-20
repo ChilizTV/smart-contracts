@@ -7,8 +7,15 @@ import {FootballMatch} from "../src/betting/FootballMatch.sol";
 import {BettingSwapRouter} from "../src/betting/BettingSwapRouter.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {MockKayenRouter} from "./mocks/MockKayenRouter.sol";
+
+/// @dev Simple mock fan token for ERC20 swap tests
+contract MockFanTokenSwap is ERC20 {
+    constructor() ERC20("Fan Token", "FAN") {}
+    function mint(address to, uint256 amount) external { _mint(to, amount); }
+}
 
 /**
  * @title SwapIntegrationTest
@@ -26,6 +33,7 @@ contract SwapIntegrationTest is Test {
     FootballMatch public footballMatch;
     MockUSDC public usdc;
     MockKayenRouter public mockRouter;
+    MockFanTokenSwap public fanToken;
     BettingSwapRouter public swapRouter;
 
     address public owner = address(0x1);
@@ -51,8 +59,9 @@ contract SwapIntegrationTest is Test {
         // Deploy mock USDC
         usdc = new MockUSDC();
 
-        // Deploy mock Kayen router
+        // Deploy mock Kayen router and fan token
         mockRouter = new MockKayenRouter(address(usdc));
+        fanToken = new MockFanTokenSwap();
 
         // Deploy betting implementation + proxy
         implementation = new FootballMatch();
@@ -74,6 +83,7 @@ contract SwapIntegrationTest is Test {
         // Deploy swap router
         swapRouter = new BettingSwapRouter(
             address(mockRouter),
+            address(mockRouter),
             address(usdc),
             WCHZ
         );
@@ -86,12 +96,15 @@ contract SwapIntegrationTest is Test {
         vm.deal(alice, 100 ether);
         vm.deal(bob, 100 ether);
         vm.deal(charlie, 100 ether);
-        vm.deal(address(footballMatch), 1000 ether);
 
         // Mint USDC to users for direct USDC betting
         usdc.mint(alice, 1000e6);
         usdc.mint(bob, 1000e6);
         usdc.mint(charlie, 1000e6);
+
+        // Mint fan tokens for ERC20 swap tests
+        fanToken.mint(alice, 1000 ether);
+        fanToken.mint(bob, 1000 ether);
 
         // Fund contract with USDC for payouts (treasury solvency)
         usdc.mint(address(footballMatch), 10000e6);
@@ -103,7 +116,7 @@ contract SwapIntegrationTest is Test {
 
     function test_PlaceBetUSDC() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
 
         vm.prank(owner);
         footballMatch.openMarket(0);
@@ -118,13 +131,12 @@ contract SwapIntegrationTest is Test {
         BettingMatch.Bet[] memory bets = footballMatch.getUserBets(0, alice);
         assertEq(bets.length, 1);
         assertEq(bets[0].amount, 100e6);
-        assertTrue(bets[0].isUSDC);
         assertEq(bets[0].selection, 0);
     }
 
     function test_ClaimUSDC() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
 
         vm.prank(owner);
         footballMatch.openMarket(0);
@@ -151,7 +163,7 @@ contract SwapIntegrationTest is Test {
 
     function test_RefundUSDCOnCancellation() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
 
         vm.prank(owner);
         footballMatch.openMarket(0);
@@ -178,7 +190,7 @@ contract SwapIntegrationTest is Test {
 
     function test_PlaceBetWithCHZSwap() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
 
         vm.prank(owner);
         footballMatch.openMarket(0);
@@ -197,13 +209,12 @@ contract SwapIntegrationTest is Test {
         // Verify bet was placed for alice
         BettingMatch.Bet[] memory bets = footballMatch.getUserBets(0, alice);
         assertEq(bets.length, 1);
-        assertTrue(bets[0].isUSDC);
         assertEq(bets[0].amount, 1e6, "Should be 1 USDC (10 CHZ * 0.10)");
     }
 
     function test_PlaceBetWithCHZSwapAndClaim() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
 
         vm.prank(owner);
         footballMatch.openMarket(0);
@@ -235,7 +246,7 @@ contract SwapIntegrationTest is Test {
 
     function test_RevertOnExpiredDeadline() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
 
@@ -251,7 +262,7 @@ contract SwapIntegrationTest is Test {
 
     function test_RevertOnInsufficientSlippage() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
 
@@ -268,7 +279,7 @@ contract SwapIntegrationTest is Test {
 
     function test_RevertOnSwapFailure() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
 
@@ -290,7 +301,7 @@ contract SwapIntegrationTest is Test {
 
     function test_SolvencyTracking() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
 
         vm.prank(owner);
         footballMatch.openMarket(0);
@@ -309,7 +320,7 @@ contract SwapIntegrationTest is Test {
 
     function test_SolvencyReducedOnClaim() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
 
@@ -347,7 +358,7 @@ contract SwapIntegrationTest is Test {
 
         vm.startPrank(owner);
         match2.setUSDCToken(address(usdc));
-        match2.addMarket(MARKET_WINNER, 30000); // 3.00x
+        match2.addMarketWithLine(MARKET_WINNER, 30000, 0); // 3.00x
         match2.openMarket(0);
         vm.stopPrank();
 
@@ -379,7 +390,7 @@ contract SwapIntegrationTest is Test {
 
         vm.startPrank(owner);
         match2.setUSDCToken(address(usdc));
-        match2.addMarket(MARKET_WINNER, 30000); // 3.00x
+        match2.addMarketWithLine(MARKET_WINNER, 30000, 0); // 3.00x
         match2.openMarket(0);
         vm.stopPrank();
 
@@ -402,74 +413,6 @@ contract SwapIntegrationTest is Test {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // MIXED CHZ + USDC TESTS
-    // ══════════════════════════════════════════════════════════════════════════
-
-    function test_MixedCHZAndUSDCBets() public {
-        vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
-
-        vm.prank(owner);
-        footballMatch.openMarket(0);
-
-        // Alice bets in CHZ
-        vm.prank(alice);
-        footballMatch.placeBet{value: 1 ether}(0, 0);
-
-        // Bob bets in USDC
-        vm.startPrank(bob);
-        usdc.approve(address(footballMatch), 100e6);
-        footballMatch.placeBetUSDC(0, 0, 100e6);
-        vm.stopPrank();
-
-        // Resolve
-        vm.prank(resolver);
-        footballMatch.resolveMarket(0, 0);
-
-        // Alice claims CHZ
-        uint256 aliceCHZBefore = alice.balance;
-        vm.prank(alice);
-        footballMatch.claim(0, 0);
-        assertEq(alice.balance - aliceCHZBefore, 2 ether, "Alice gets CHZ payout");
-
-        // Bob claims USDC
-        uint256 bobUSDCBefore = usdc.balanceOf(bob);
-        vm.prank(bob);
-        footballMatch.claim(0, 0);
-        assertEq(usdc.balanceOf(bob) - bobUSDCBefore, 200e6, "Bob gets USDC payout");
-    }
-
-    function test_ClaimAllWithMixedBets() public {
-        vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000); // 2.00x
-
-        vm.prank(owner);
-        footballMatch.openMarket(0);
-
-        // Alice places both CHZ and USDC bets
-        vm.prank(alice);
-        footballMatch.placeBet{value: 1 ether}(0, 0); // CHZ
-
-        vm.startPrank(alice);
-        usdc.approve(address(footballMatch), 50e6);
-        footballMatch.placeBetUSDC(0, 0, 50e6); // USDC
-        vm.stopPrank();
-
-        // Resolve
-        vm.prank(resolver);
-        footballMatch.resolveMarket(0, 0);
-
-        // Claim all
-        uint256 aliceCHZBefore = alice.balance;
-        uint256 aliceUSDCBefore = usdc.balanceOf(alice);
-        vm.prank(alice);
-        footballMatch.claimAll(0);
-
-        assertEq(alice.balance - aliceCHZBefore, 2 ether, "CHZ payout via claimAll");
-        assertEq(usdc.balanceOf(alice) - aliceUSDCBefore, 100e6, "USDC payout via claimAll");
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
     // USDC NOT CONFIGURED TESTS
     // ══════════════════════════════════════════════════════════════════════════
 
@@ -485,7 +428,7 @@ contract SwapIntegrationTest is Test {
         FootballMatch match2 = FootballMatch(payable(address(proxy2)));
 
         vm.startPrank(owner);
-        match2.addMarket(MARKET_WINNER, 20000);
+        match2.addMarketWithLine(MARKET_WINNER, 20000, 0);
         match2.openMarket(0);
         vm.stopPrank();
 
@@ -500,7 +443,7 @@ contract SwapIntegrationTest is Test {
 
     function test_CannotDoubleClaimUSDC() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
 
@@ -522,7 +465,7 @@ contract SwapIntegrationTest is Test {
 
     function test_LosingUSDCBetCannotClaim() public {
         vm.prank(owner);
-        footballMatch.addMarket(MARKET_WINNER, 20000);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
 
@@ -539,6 +482,152 @@ contract SwapIntegrationTest is Test {
             abi.encodeWithSelector(BettingMatch.BetLost.selector, 0, alice, 0)
         );
         footballMatch.claim(0, 0);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // DIRECT USDC VIA SWAP ROUTER (NO SWAP)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_PlaceBetWithUSDCViaRouter() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+
+        // Alice places bet via router's placeBetWithUSDC (no swap)
+        vm.startPrank(alice);
+        usdc.approve(address(swapRouter), 100e6);
+        swapRouter.placeBetWithUSDC(
+            address(footballMatch),
+            0,      // marketId
+            0,      // selection: Home
+            100e6   // amount
+        );
+        vm.stopPrank();
+
+        // Verify bet was placed for alice
+        BettingMatch.Bet[] memory bets = footballMatch.getUserBets(0, alice);
+        assertEq(bets.length, 1);
+        assertEq(bets[0].amount, 100e6, "Should be 100 USDC (direct, no swap)");
+    }
+
+    function test_PlaceBetWithUSDCViaRouterAndClaim() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+
+        // Alice bets 100 USDC at 2.00x -> payout 200 USDC
+        vm.startPrank(alice);
+        usdc.approve(address(swapRouter), 100e6);
+        swapRouter.placeBetWithUSDC(address(footballMatch), 0, 0, 100e6);
+        vm.stopPrank();
+
+        // Resolve
+        vm.prank(resolver);
+        footballMatch.resolveMarket(0, 0);
+
+        // Claim
+        uint256 aliceUSDCBefore = usdc.balanceOf(alice);
+        vm.prank(alice);
+        footballMatch.claim(0, 0);
+        assertEq(usdc.balanceOf(alice) - aliceUSDCBefore, 200e6, "Should claim 200 USDC payout");
+    }
+
+    function test_RevertPlaceBetWithUSDCZeroAmount() public {
+        vm.prank(alice);
+        vm.expectRevert(BettingSwapRouter.ZeroValue.selector);
+        swapRouter.placeBetWithUSDC(address(footballMatch), 0, 0, 0);
+    }
+
+    function test_RevertPlaceBetWithUSDCZeroAddress() public {
+        vm.startPrank(alice);
+        usdc.approve(address(swapRouter), 100e6);
+        vm.expectRevert(BettingSwapRouter.ZeroAddress.selector);
+        swapRouter.placeBetWithUSDC(address(0), 0, 0, 100e6);
+        vm.stopPrank();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ERC20 TOKEN SWAP VIA ROUTER
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_PlaceBetWithTokenSwap() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+
+        // Alice sends fan tokens, router swaps to USDC and places bet
+        // 10 FAN * 0.10 USDC/token = 1 USDC (mock rate)
+        vm.startPrank(alice);
+        fanToken.approve(address(swapRouter), 10 ether);
+        swapRouter.placeBetWithToken(
+            address(fanToken),
+            10 ether,
+            address(footballMatch),
+            0,      // marketId
+            0,      // selection: Home
+            0,      // amountOutMin
+            block.timestamp + 1 hours
+        );
+        vm.stopPrank();
+
+        // Verify bet was placed for alice
+        BettingMatch.Bet[] memory bets = footballMatch.getUserBets(0, alice);
+        assertEq(bets.length, 1);
+        assertEq(bets[0].amount, 1e6, "Should be 1 USDC (10 tokens * 0.10)");
+    }
+
+    function test_PlaceBetWithTokenSwapAndClaim() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+
+        // Alice bets 10 FAN tokens -> 1 USDC at 2.00x -> payout 2 USDC
+        vm.startPrank(alice);
+        fanToken.approve(address(swapRouter), 10 ether);
+        swapRouter.placeBetWithToken(
+            address(fanToken), 10 ether,
+            address(footballMatch), 0, 0, 0,
+            block.timestamp + 1 hours
+        );
+        vm.stopPrank();
+
+        // Resolve
+        vm.prank(resolver);
+        footballMatch.resolveMarket(0, 0);
+
+        // Claim
+        uint256 aliceUSDCBefore = usdc.balanceOf(alice);
+        vm.prank(alice);
+        footballMatch.claim(0, 0);
+        assertEq(usdc.balanceOf(alice) - aliceUSDCBefore, 2e6, "Should claim 2 USDC payout");
+    }
+
+    function test_RevertPlaceBetWithTokenIsUSDC() public {
+        vm.startPrank(alice);
+        usdc.approve(address(swapRouter), 100e6);
+        vm.expectRevert(BettingSwapRouter.TokenIsUSDC.selector);
+        swapRouter.placeBetWithToken(
+            address(usdc), 100e6,
+            address(footballMatch), 0, 0, 0,
+            block.timestamp + 1 hours
+        );
+        vm.stopPrank();
+    }
+
+    function test_RevertPlaceBetWithTokenExpiredDeadline() public {
+        vm.startPrank(alice);
+        fanToken.approve(address(swapRouter), 10 ether);
+        vm.expectRevert(BettingSwapRouter.DeadlinePassed.selector);
+        swapRouter.placeBetWithToken(
+            address(fanToken), 10 ether,
+            address(footballMatch), 0, 0, 0,
+            block.timestamp - 1
+        );
+        vm.stopPrank();
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -17,7 +17,7 @@ import {FootballMatch} from "../src/betting/FootballMatch.sol";
  *    export FACTORY_ADDRESS=0x...
  * 
  * 2. Run the script:
- *    forge script script/SetupFootballMatch.s.sol --rpc-url https://base-sepolia.drpc.org --broadcast -vvvv
+ *    forge script script/SetupFootballMatch.s.sol --rpc-url https://spicy-rpc.chiliz.com --broadcast --legacy --with-gas-price 2501 --chain-id 88882 -vvvv
  * 
  * 3. After execution, users can bet on the created match!
  * 
@@ -119,7 +119,7 @@ contract SetupFootballMatch is Script {
         
         // Market 0: Winner (1X2)
         console.log("Adding WINNER market (Home/Draw/Away)...");
-        match_.addMarket(MARKET_WINNER, ODDS_HOME_WIN);
+        match_.addMarketWithLine(MARKET_WINNER, ODDS_HOME_WIN, 0);
         console.log("  Market ID: 0");
         console.log("  Initial Odds: 2.20x (Home Win)");
         
@@ -132,7 +132,7 @@ contract SetupFootballMatch is Script {
         
         // Market 2: Both Teams To Score
         console.log("Adding BOTH_SCORE market (Yes/No)...");
-        match_.addMarket(MARKET_BOTH_SCORE, ODDS_BTTS_YES);
+        match_.addMarketWithLine(MARKET_BOTH_SCORE, ODDS_BTTS_YES, 0);
         console.log("  Market ID: 2");
         console.log("  Initial Odds: 1.70x (Yes)");
         
@@ -204,7 +204,7 @@ contract SetupFootballMatch is Script {
         console.log("    'placeBet(uint256,uint64)'");
         console.log("    0 0");
         console.log("    --value 0.01ether");
-        console.log("    --rpc-url https://base-sepolia.drpc.org");
+        console.log("    --rpc-url https://spicy-rpc.chiliz.com --legacy --with-gas-price 2501");
         console.log("    --private-key $PRIVATE_KEY");
         console.log("");
         console.log("Bet 0.05 ETH on Over 2.5 goals (Market 1, Selection 1):");
@@ -212,7 +212,7 @@ contract SetupFootballMatch is Script {
         console.log("    'placeBet(uint256,uint64)'");
         console.log("    1 1");
         console.log("    --value 0.05ether");
-        console.log("    --rpc-url https://base-sepolia.drpc.org");
+        console.log("    --rpc-url https://spicy-rpc.chiliz.com --legacy --with-gas-price 2501");
         console.log("    --private-key $PRIVATE_KEY");
         console.log("");
         console.log("=============================================");

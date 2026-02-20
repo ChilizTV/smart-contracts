@@ -14,5 +14,6 @@ solc_version = "0.8.24"
 # Etherscan API configuration for Chiliz chains
 [etherscan]
 chiliz_spicy = { key = "${ETHERSCAN_API_KEY}", chain = 88882, url = "https://api.routescan.io/v2/network/testnet/evm/88882/etherscan" }
+chiliz_mainnet = { key = "${ETHERSCAN_API_KEY}", chain = 88888, url = "https://api.routescan.io/v2/network/mainnet/evm/88888/etherscan" }
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

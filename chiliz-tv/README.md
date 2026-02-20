@@ -9,10 +9,11 @@
 
 ChilizTV provides a decentralized platform with two main systems:
 
-1. **Betting System** - UUPS-based match betting with multiple markets
-2. **Streaming System** - Beacon-based streamer wallets with subscriptions and donations
+1. **Betting System** — UUPS-based match betting with multiple markets, settled entirely in USDC
+2. **Streaming System** — Beacon-based streamer wallets with subscriptions and donations
+3. **Swap Routers** — Universal payment routers that accept CHZ, WCHZ, fan tokens, or any ERC20, swap to USDC via Kayen DEX, and forward to the target contract
 
-Both systems use native CHZ token for all transactions.
+All settlements happen in **USDC**. Users can pay with any token — the swap routers handle conversion automatically.
 
 ---
 
@@ -37,6 +38,10 @@ flowchart LR
         P3[Basketball Match 1]
     end
     
+    subgraph SwapRouter
+        BSR[BettingSwapRouter]
+    end
+    
     subgraph Users
         U[Bettors]
     end
@@ -49,9 +54,12 @@ flowchart LR
     P2 -.->|delegates to| FM
     P3 -.->|delegates to| BM
     
-    U -->|bets CHZ| P1
-    U -->|bets CHZ| P2
-    U -->|bets CHZ| P3
+    U -->|USDC direct| P1
+    U -->|CHZ / Fan Token| BSR
+    BSR -->|swap to USDC via Kayen| BSR
+    BSR -->|placeBetUSDCFor| P1
+    BSR -->|placeBetUSDCFor| P2
+    BSR -->|placeBetUSDCFor| P3
 ```
 
 **Components:**
@@ -72,14 +80,23 @@ flowchart LR
   - `createFootballMatch()` / `createBasketballMatch()`
   - Tracks all deployed matches by sport type
 
+- **BettingSwapRouter** (`src/betting/BettingSwapRouter.sol`): Universal swap-and-bet router
+  - Accepts native CHZ, WCHZ, fan tokens, any ERC20, or USDC directly
+  - Swaps non-USDC tokens to USDC via Kayen DEX, then places bet on BettingMatch
+  - `placeBetWithCHZ{value}()` — native CHZ → USDC → bet
+  - `placeBetWithToken()` — any ERC20 → USDC → bet
+  - `placeBetWithUSDC()` — USDC direct → bet (no swap)
+  - Requires `SWAP_ROUTER_ROLE` on each BettingMatch proxy
+
 **Betting Flow:**
 1. Factory creates sport-specific match proxy (football or basketball)
 2. Admin adds markets with bytes32 type + initial odds (x10000)
 3. Admin opens markets for betting
-4. Users place bets → odds locked at bet time
-5. Odds can change → new bets get new odds, old bets keep locked odds
-6. Admin resolves markets with result
-7. Winners claim payouts: `amount × lockedOdds / 10000`
+4. Users bet via **BettingSwapRouter** (CHZ/tokens) or **placeBetUSDC** (direct USDC)
+5. All bets settle in USDC — odds locked at bet time
+6. Odds can change → new bets get new odds, old bets keep locked odds
+7. Admin resolves markets with result
+8. Winners claim USDC payouts: `amount × lockedOdds / 10000`
 
 ---
 
@@ -94,6 +111,10 @@ flowchart LR
     
     subgraph Factory
         SWF[StreamWalletFactory]
+    end
+    
+    subgraph SwapRouter
+        SSR[StreamSwapRouter]
     end
     
     subgraph Implementation
@@ -122,13 +143,16 @@ flowchart LR
     W2 -.->|delegates via beacon to| SW
     W3 -.->|delegates via beacon to| SW
     
-    FANS -->|subscribe/donate CHZ| W1
-    FANS -->|subscribe/donate CHZ| W2
+    FANS -->|CHZ / Fan Token| SSR
+    SSR -->|swap to USDC via Kayen| SSR
+    SSR -->|USDC to streamer/treasury| W1
+    FANS -->|USDC direct via SSR| W2
+    FANS -->|Fan Token via Factory| W1
 ```
 
 **Components:**
 - **StreamWallet** (`src/streamer/StreamWallet.sol`): Beacon-upgradeable wallet for streamers
-  - Receives subscriptions and donations in CHZ
+  - Receives subscriptions and donations
   - Splits platform fee to treasury
   - Streamer can withdraw their balance anytime
   
@@ -142,11 +166,19 @@ flowchart LR
   - Handles subscriptions and donations on behalf of streamers
   - Enforces platform fee split
 
+- **StreamSwapRouter** (`src/streamer/StreamSwapRouter.sol`): Universal payment router for streaming
+  - Accepts native CHZ, WCHZ, fan tokens, any ERC20, or USDC directly
+  - Swaps non-USDC tokens to USDC via Kayen DEX, then sends to streamer/treasury
+  - `donateWithCHZ{value}()` / `subscribeWithCHZ{value}()` — native CHZ → USDC
+  - `donateWithToken()` / `subscribeWithToken()` — any ERC20 → USDC
+  - `donateWithUSDC()` / `subscribeWithUSDC()` — USDC direct (no swap)
+  - Platform fee split applied automatically
+
 **Streaming Flow:**
 1. Factory creates StreamWallet proxy for a streamer
-2. Users subscribe/donate with CHZ via factory
-3. Platform fee automatically sent to treasury
-4. Net amount recorded in streamer's wallet
+2. Users donate/subscribe via **StreamSwapRouter** (CHZ/tokens/USDC) or **Factory** (fan tokens)
+3. Non-USDC tokens swapped to USDC automatically via Kayen DEX
+4. Platform fee split to treasury, net amount to streamer
 5. Streamer withdraws accumulated balance
 
 ---
@@ -158,17 +190,27 @@ flowchart LR
 #### BettingMatch.sol (Abstract Base)
 ```solidity
 // UUPS upgradeable match with dynamic odds system
+// ALL BETS SETTLED IN USDC
 abstract contract BettingMatch {
     // Odds precision: x10000 (2.18x = 21800, min 1.0001x = 10001, max 100x = 1000000)
     uint32 public constant ODDS_PRECISION = 10000;
     
     enum MarketState { Inactive, Open, Suspended, Closed, Resolved, Cancelled }
     
-    // Core betting functions
-    function placeBet(uint256 marketId, uint64 selection) external payable;
+    // Core betting functions (USDC only)
+    function placeBetUSDC(uint256 marketId, uint64 selection, uint256 amount) external;
+    function placeBetUSDCFor(address user, uint256 marketId, uint64 selection, uint256 amount) external;
     function claim(uint256 marketId, uint256 betIndex) external;
     function claimRefund(uint256 marketId, uint256 betIndex) external;
     function claimAll(uint256 marketId) external;
+    
+    // USDC configuration (ADMIN_ROLE)
+    function setUSDCToken(address _usdcToken) external;
+    
+    // Treasury solvency (TREASURY_ROLE)
+    function fundUSDCTreasury(uint256 amount) external;
+    function emergencyWithdrawUSDC(uint256 amount) external;
+    function getUSDCSolvency() external view returns (uint256 balance, uint256 liabilities, uint256 pool);
     
     // Market management (ADMIN_ROLE)
     function openMarket(uint256 marketId) external;
@@ -183,7 +225,7 @@ abstract contract BettingMatch {
     function resolveMarket(uint256 marketId, uint64 result) external;
     
     // Abstract (implemented by sport-specific contracts)
-    function addMarket(bytes32 marketType, uint32 initialOdds) external virtual;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) external virtual;
 }
 ```
 
@@ -216,8 +258,8 @@ contract BasketballMatch is BettingMatch {
     bytes32 public constant MARKET_QUARTER_WINNER = keccak256("QUARTER_WINNER");
     
     function initialize(string memory _matchName, address _owner) external;
-    function addMarket(bytes32 marketType, uint32 initialOdds) external override;
-    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) external;
+    function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) external;
+    function addMarketWithQuarter(bytes32 marketType, uint32 initialOdds, int16 line, uint8 quarter) external;
 }
 ```
 
@@ -231,6 +273,30 @@ contract BettingMatchFactory {
     function createBasketballMatch(string calldata _matchName, address _owner) external returns (address proxy);
     function getAllMatches() external view returns (address[] memory);
     function getSportType(address matchAddress) external view returns (SportType);
+}
+```
+
+#### BettingSwapRouter.sol
+```solidity
+// Universal swap-and-bet router: any token → USDC → bet
+contract BettingSwapRouter {
+    // Native CHZ → USDC → bet
+    function placeBetWithCHZ(
+        address bettingMatch, uint256 marketId, uint64 selection,
+        uint256 amountOutMin, uint256 deadline
+    ) external payable;
+    
+    // USDC direct → bet (no swap)
+    function placeBetWithUSDC(
+        address bettingMatch, uint256 marketId, uint64 selection, uint256 amount
+    ) external;
+    
+    // Any ERC20 → USDC → bet
+    function placeBetWithToken(
+        address token, uint256 amount, address bettingMatch,
+        uint256 marketId, uint64 selection,
+        uint256 amountOutMin, uint256 deadline
+    ) external;
 }
 ```
 
@@ -256,6 +322,28 @@ contract StreamWalletFactory {
     function createStreamWallet(address _streamer) external returns (address);
     function subscribeToStream(address _streamer) external payable;
     function donateToStream(address _streamer) external payable;
+}
+```
+
+#### StreamSwapRouter.sol
+```solidity
+// Universal swap router for streaming: any token → USDC → streamer/treasury
+contract StreamSwapRouter {
+    // Native CHZ → USDC → donate/subscribe
+    function donateWithCHZ(address streamer, string calldata message, uint256 amountOutMin, uint256 deadline) external payable;
+    function subscribeWithCHZ(address streamer, uint256 duration, uint256 amountOutMin, uint256 deadline) external payable;
+    
+    // USDC direct (no swap)
+    function donateWithUSDC(address streamer, string calldata message, uint256 amount) external;
+    function subscribeWithUSDC(address streamer, uint256 duration, uint256 amount) external;
+    
+    // Any ERC20 → USDC → donate/subscribe
+    function donateWithToken(address token, uint256 amount, address streamer, string calldata message, uint256 amountOutMin, uint256 deadline) external;
+    function subscribeWithToken(address token, uint256 amount, address streamer, uint256 duration, uint256 amountOutMin, uint256 deadline) external;
+    
+    // Admin
+    function setTreasury(address _treasury) external;
+    function setPlatformFeeBps(uint16 _feeBps) external;
 }
 ```
 
@@ -338,11 +426,12 @@ cast send $BETTING_FACTORY \
 ### 5.2 Add Market with Odds (x10000 precision)
 
 ```bash
-# Add WINNER market (1X2) with initial odds 2.20x = 22000
+# Add WINNER market (1X2) with initial odds 2.20x = 22000, line = 0
 cast send $MATCH_ADDRESS \
-  "addMarket(bytes32,uint32)" \
+  "addMarketWithLine(bytes32,uint32,int16)" \
   $(cast keccak "WINNER") \
   22000 \
+  0 \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY
 ```
@@ -360,14 +449,35 @@ cast send $MATCH_ADDRESS \
 ### 5.4 Place a Bet
 
 ```bash
-# Bet 1 CHZ on Home Win (market 0, selection 0)
+# Option A: Bet 100 USDC directly on the match contract (market 0, selection 0 = Home)
+# Requires: USDC approve first
+cast send $USDC_ADDRESS "approve(address,uint256)" $MATCH_ADDRESS 100000000 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 cast send $MATCH_ADDRESS \
-  "placeBet(uint256,uint64)" \
-  0 \
-  0 \
-  --value 1ether \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+  "placeBetUSDC(uint256,uint64,uint256)" \
+  0 0 100000000 \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# Option B: Bet with native CHZ via swap router (auto-converts to USDC)
+cast send $SWAP_ROUTER \
+  "placeBetWithCHZ(address,uint256,uint64,uint256,uint256)" \
+  $MATCH_ADDRESS 0 0 0 $(date -d '+1 hour' +%s) \
+  --value 10ether \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# Option C: Bet with fan token via swap router (auto-converts to USDC)
+# Requires: token approve on swap router first
+cast send $FAN_TOKEN "approve(address,uint256)" $SWAP_ROUTER $AMOUNT --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+cast send $SWAP_ROUTER \
+  "placeBetWithToken(address,uint256,address,uint256,uint64,uint256,uint256)" \
+  $FAN_TOKEN $AMOUNT $MATCH_ADDRESS 0 0 0 $(date -d '+1 hour' +%s) \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# Option D: Bet with USDC via swap router (no swap, passes through)
+cast send $USDC_ADDRESS "approve(address,uint256)" $SWAP_ROUTER 100000000 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+cast send $SWAP_ROUTER \
+  "placeBetWithUSDC(address,uint256,uint64,uint256)" \
+  $MATCH_ADDRESS 0 0 100000000 \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 ### 5.5 Update Odds
@@ -436,7 +546,8 @@ cast send $STREAM_FACTORY \
 - **ODDS_SETTER_ROLE**: Update market odds in real-time
 - **RESOLVER_ROLE**: Set final results for markets
 - **PAUSER_ROLE**: Emergency pause/unpause
-- **TREASURY_ROLE**: Emergency fund withdrawal
+- **TREASURY_ROLE**: Fund USDC treasury, emergency USDC withdrawal
+- **SWAP_ROUTER_ROLE**: Allows BettingSwapRouter to call `placeBetUSDCFor`
 - **Factory Owner**: No upgrade capability (implementations are immutable)
 - **UUPS**: Each match can be upgraded individually by its DEFAULT_ADMIN
 
@@ -505,4 +616,4 @@ For technical questions or integration support, contact the ChilizTV development
 
 ---
 
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-02-20
