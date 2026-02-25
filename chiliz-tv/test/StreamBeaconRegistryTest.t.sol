@@ -54,7 +54,7 @@ contract MockERC20 is IERC20 {
  * Note: This is different from test/mocks/MockKayenRouter.sol which implements
  * IKayenMasterRouterV2 for native CHZ swaps. Both are needed:
  * - IKayenRouter: Fan Token → USDC (used by StreamWallet)
- * - IKayenMasterRouterV2: CHZ (native) → USDC (used by BettingSwapRouter, StreamSwapRouter)
+ * - IKayenMasterRouterV2: CHZ (native) → USDC (used by ChilizSwapRouter)
  */
 contract MockKayenRouterTokenSwap is IKayenRouter {
     function swapExactTokensForTokens(

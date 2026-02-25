@@ -24,7 +24,7 @@ Chiliz-TV uses two different proxy patterns:
 | `DeployAll.s.sol` | Complete system | BettingMatchFactory + StreamWalletFactory |
 | `DeployBetting.s.sol` | Betting only | BettingMatchFactory (with FootballMatch & BasketballMatch implementations) |
 | `DeployStreaming.s.sol` | Streaming only | StreamWallet + StreamWalletFactory |
-| `DeploySwap.s.sol` | Swap routers | BettingSwapRouter + StreamSwapRouter (Kayen DEX integration) |
+| `DeploySwap.s.sol` | Swap router | ChilizSwapRouter — unified swap router (Kayen DEX integration) |
 | `SetupFootballMatch.s.sol` | Create & configure a match | Football match with markets, ready for betting |
 
 ## Environment Setup
@@ -90,9 +90,9 @@ forge script script/SetupFootballMatch.s.sol \
   -vvvv
 ```
 
-### Deploy Swap Routers (Kayen DEX)
+### Deploy Swap Router (Kayen DEX)
 
-Deploys `BettingSwapRouter` and `StreamSwapRouter` for CHZ-to-USDC swap bets and streaming.
+Deploys `ChilizSwapRouter` — the unified swap router handling both betting and streaming swap flows.
 
 **Prerequisites:**
 - Betting and/or Streaming system already deployed
@@ -101,9 +101,10 @@ Deploys `BettingSwapRouter` and `StreamSwapRouter` for CHZ-to-USDC swap bets and
 ```bash
 # Set swap-specific env vars in .env:
 #   KAYEN_ROUTER=0x...       # Kayen MasterRouterV2
+#   TOKEN_ROUTER=0x...       # Kayen TokenRouterV2
 #   WCHZ_ADDRESS=0x...       # Wrapped CHZ
 #   USDC_ADDRESS=0x...       # USDC token
-#   PLATFORM_FEE_BPS=500     # StreamSwapRouter fee (5%)
+#   PLATFORM_FEE_BPS=500     # Platform fee (5%)
 
 # Via deploy.sh (recommended):
 ./deploy.sh --network chilizTestnet --swap
@@ -119,7 +120,7 @@ forge script script/DeploySwap.s.sol \
   -vvvv
 ```
 
-**Post-deployment (required for BettingSwapRouter):**
+**Post-deployment (required for ChilizSwapRouter):**
 
 ```bash
 # 1. Set USDC token on each BettingMatch proxy
@@ -128,11 +129,11 @@ cast send $MATCH_ADDRESS \
   $USDC_ADDRESS \
   --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
-# 2. Grant SWAP_ROUTER_ROLE to BettingSwapRouter
+# 2. Grant SWAP_ROUTER_ROLE to ChilizSwapRouter
 cast send $MATCH_ADDRESS \
   "grantRole(bytes32,address)" \
   $(cast keccak "SWAP_ROUTER_ROLE") \
-  $BETTING_SWAP_ROUTER \
+  $CHILIZ_SWAP_ROUTER \
   --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
 # 3. Fund USDC treasury (for paying out USDC wins)
@@ -147,7 +148,7 @@ cast send $MATCH_ADDRESS \
   --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
 # 4. Test a swap bet (send native CHZ, auto-swaps to USDC)
-cast send $BETTING_SWAP_ROUTER \
+cast send $CHILIZ_SWAP_ROUTER \
   "placeBetWithCHZ(address,uint256,uint64,uint256,uint256)" \
   $MATCH_ADDRESS 0 0 1 $(date -d "+1 hour" +%s) \
   --value 10ether \
@@ -315,7 +316,7 @@ cast send $STREAM_FACTORY \
 | `RESOLVER_ROLE` | Resolve markets with results |
 | `PAUSER_ROLE` | Pause/unpause contract |
 | `TREASURY_ROLE` | Emergency fund withdrawal |
-| `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users (BettingSwapRouter) |
+| `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users (ChilizSwapRouter) |
 
 ## Upgrading Contracts
 

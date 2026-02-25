@@ -2,7 +2,7 @@
 pragma solidity ^0.8.22;
 
 import {Test} from "forge-std/Test.sol";
-import {StreamSwapRouter} from "../src/streamer/StreamSwapRouter.sol";
+import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {MockKayenRouter} from "./mocks/MockKayenRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -16,13 +16,13 @@ contract MockFanToken is ERC20 {
 
 /**
  * @title StreamSwapRouterTest
- * @notice Tests for StreamSwapRouter (CHZ / Token / USDC donations & subscriptions)
+ * @notice Tests for ChilizSwapRouter streaming functions (CHZ / Token / USDC donations & subscriptions)
  */
 contract StreamSwapRouterTest is Test {
     MockUSDC public usdc;
     MockKayenRouter public mockRouter;
     MockFanToken public fanToken;
-    StreamSwapRouter public streamSwapRouter;
+    ChilizSwapRouter public streamSwapRouter;
 
     address public treasury = address(0x999);
     address public streamer1 = address(0x4);
@@ -37,7 +37,7 @@ contract StreamSwapRouterTest is Test {
         mockRouter = new MockKayenRouter(address(usdc));
         fanToken = new MockFanToken();
 
-        streamSwapRouter = new StreamSwapRouter(
+        streamSwapRouter = new ChilizSwapRouter(
             address(mockRouter), // masterRouter
             address(mockRouter), // tokenRouter (mock implements both)
             address(usdc),
@@ -190,7 +190,7 @@ contract StreamSwapRouterTest is Test {
 
     function test_RevertDonateZeroValue() public {
         vm.prank(viewer1);
-        vm.expectRevert(StreamSwapRouter.ZeroValue.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
         streamSwapRouter.donateWithCHZ{value: 0}(
             streamer1, "test", 0, block.timestamp + 1 hours
         );
@@ -198,7 +198,7 @@ contract StreamSwapRouterTest is Test {
 
     function test_RevertDonateZeroAddress() public {
         vm.prank(viewer1);
-        vm.expectRevert(StreamSwapRouter.ZeroAddress.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroAddress.selector);
         streamSwapRouter.donateWithCHZ{value: 1 ether}(
             address(0), "test", 0, block.timestamp + 1 hours
         );
@@ -206,7 +206,7 @@ contract StreamSwapRouterTest is Test {
 
     function test_RevertDonateExpiredDeadline() public {
         vm.prank(viewer1);
-        vm.expectRevert(StreamSwapRouter.DeadlinePassed.selector);
+        vm.expectRevert(ChilizSwapRouter.DeadlinePassed.selector);
         streamSwapRouter.donateWithCHZ{value: 1 ether}(
             streamer1, "test", 0, block.timestamp - 1
         );
@@ -214,7 +214,7 @@ contract StreamSwapRouterTest is Test {
 
     function test_RevertSubscribeZeroDuration() public {
         vm.prank(viewer1);
-        vm.expectRevert(StreamSwapRouter.ZeroValue.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
         streamSwapRouter.subscribeWithCHZ{value: 1 ether}(
             streamer1, 0, 0, block.timestamp + 1 hours
         );
@@ -241,20 +241,20 @@ contract StreamSwapRouterTest is Test {
     // USDC direct reverts
     function test_RevertDonateUSDCZeroAmount() public {
         vm.prank(viewer1);
-        vm.expectRevert(StreamSwapRouter.ZeroValue.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
         streamSwapRouter.donateWithUSDC(streamer1, "test", 0);
     }
 
     function test_RevertDonateUSDCZeroAddress() public {
         vm.prank(viewer1);
-        vm.expectRevert(StreamSwapRouter.ZeroAddress.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroAddress.selector);
         streamSwapRouter.donateWithUSDC(address(0), "test", 1e6);
     }
 
     function test_RevertSubscribeUSDCZeroDuration() public {
         vm.startPrank(viewer1);
         usdc.approve(address(streamSwapRouter), 1e6);
-        vm.expectRevert(StreamSwapRouter.ZeroValue.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
         streamSwapRouter.subscribeWithUSDC(streamer1, 0, 1e6);
         vm.stopPrank();
     }
@@ -263,7 +263,7 @@ contract StreamSwapRouterTest is Test {
     function test_RevertDonateTokenIsUSDC() public {
         vm.startPrank(viewer1);
         usdc.approve(address(streamSwapRouter), 1e6);
-        vm.expectRevert(StreamSwapRouter.TokenIsUSDC.selector);
+        vm.expectRevert(ChilizSwapRouter.TokenIsUSDC.selector);
         streamSwapRouter.donateWithToken(
             address(usdc), 1e6, streamer1, "test", 0, block.timestamp + 1 hours
         );
@@ -273,7 +273,7 @@ contract StreamSwapRouterTest is Test {
     function test_RevertSubscribeTokenIsUSDC() public {
         vm.startPrank(viewer1);
         usdc.approve(address(streamSwapRouter), 1e6);
-        vm.expectRevert(StreamSwapRouter.TokenIsUSDC.selector);
+        vm.expectRevert(ChilizSwapRouter.TokenIsUSDC.selector);
         streamSwapRouter.subscribeWithToken(
             address(usdc), 1e6, streamer1, 30 days, 0, block.timestamp + 1 hours
         );
@@ -296,12 +296,12 @@ contract StreamSwapRouterTest is Test {
     }
 
     function test_RevertSetTreasuryZero() public {
-        vm.expectRevert(StreamSwapRouter.ZeroAddress.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroAddress.selector);
         streamSwapRouter.setTreasury(address(0));
     }
 
     function test_RevertSetFeeTooHigh() public {
-        vm.expectRevert(StreamSwapRouter.InvalidFeeBps.selector);
+        vm.expectRevert(ChilizSwapRouter.InvalidFeeBps.selector);
         streamSwapRouter.setPlatformFeeBps(10001);
     }
 

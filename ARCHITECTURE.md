@@ -8,7 +8,6 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - **BettingMatchFactory**: Deploys sport-specific match proxies
 - **FootballMatch & BasketballMatch**: UUPS upgradeable implementations
 - **ERC1967Proxy**: Each match is an independent upgradeable proxy instance
-- **BettingSwapRouter**: Universal swap-and-bet router (CHZ / Fan Token / USDC → USDC → bet)
 - **USDC Settlement**: All bets placed and paid out in USDC (6 decimals)
 - **Dynamic Odds**: Real-time odds set by ODDS_SETTER_ROLE (x10000 precision)
 - **Role-Based Access Control**: ADMIN_ROLE, RESOLVER_ROLE, PAUSER_ROLE, TREASURY_ROLE, ODDS_SETTER_ROLE, SWAP_ROUTER_ROLE
@@ -17,15 +16,21 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - **StreamBeaconRegistry**: Manages UpgradeableBeacon for atomic upgrades
 - **StreamWalletFactory**: Deploys BeaconProxy instances for streamers
 - **StreamWallet**: Implementation contract with subscription & donation logic
-- **StreamSwapRouter**: Universal payment router (CHZ / Fan Token / USDC → USDC → streamer)
 - **USDC Settlement**: All donations and subscriptions settled in USDC
 - **Upgradeability**: All streamer wallets upgrade simultaneously via beacon
 
+### 3. Unified Swap Router
+- **ChilizSwapRouter** (`src/swap/ChilizSwapRouter.sol`): Single swap adapter for the entire platform
+- Handles **betting** (CHZ / Fan Token / USDC → USDC → BettingMatch) and **streaming** (CHZ / Fan Token / USDC → USDC → streamer/treasury) in one contract
+- Swaps via Kayen DEX (IKayenMasterRouterV2 for native CHZ, IKayenRouter for ERC20)
+- Ownable + ReentrancyGuard; platform fee + treasury config for streaming flows
+- Requires SWAP_ROUTER_ROLE on each BettingMatch proxy
+
 ### Deployment Scripts
-- `script/DeployAll.s.sol`: Complete system deployment (both betting + streaming)
+- `script/DeployAll.s.sol`: Complete system deployment (betting + streaming + swap router)
 - `script/DeployBetting.s.sol`: Betting system only
 - `script/DeployStreaming.s.sol`: Streaming system only
-- `script/DeploySwap.s.sol`: Both swap routers (BettingSwapRouter + StreamSwapRouter)
+- `script/DeploySwap.s.sol`: Unified ChilizSwapRouter (Kayen DEX integration)
 
 ---
 
@@ -290,7 +295,7 @@ sequenceDiagram
     rect rgb(255, 240, 220)
         Note over Admin,Treasury: PHASE 3: SUBSCRIPTIONS & DONATIONS
         
-        Note over Viewer: Viewer pays via StreamSwapRouter<br/>Any token → USDC → streamer wallet
+        Note over Viewer: Viewer pays via ChilizSwapRouter<br/>Any token → USDC → streamer wallet
         
         Viewer->>Wallet: subscribeWithUSDC(streamer, duration, 100e6)
         activate Wallet
@@ -312,7 +317,7 @@ sequenceDiagram
         
         Viewer->>Wallet: donateWithCHZ(streamer, message, minOut, deadline) {value: 50 CHZ}
         activate Wallet
-        Note right of Wallet: StreamSwapRouter swaps CHZ → USDC<br/>via Kayen DEX
+        Note right of Wallet: ChilizSwapRouter<br/>swaps CHZ → USDC<br/>via Kayen DEX
         Wallet->>Impl: delegatecall donate()
         activate Impl
         
@@ -377,7 +382,7 @@ sequenceDiagram
     rect rgb(240, 240, 240)
         Note over Admin,Treasury: FINAL STATE SUMMARY
         
-        Note over Wallet: Streamer Wallet State:<br/>✓ Total received: ~150 USDC (settled in USDC)<br/>✓ Platform fees: ~7.5 USDC to Treasury<br/>✓ Streamer earnings: ~142.5 USDC<br/>✓ Withdrawn: 100 USDC<br/>✓ Remaining balance: ~42.5 USDC<br/>✓ Active subscription: 1 viewer<br/><br/>Payment Paths Supported:<br/>✓ Native CHZ → USDC via Kayen DEX<br/>✓ Fan tokens (ERC20) → USDC via Kayen DEX<br/>✓ USDC direct (no swap)<br/><br/>Beacon Upgrade:<br/>✓ All wallets using V2 logic<br/>✓ Zero downtime upgrade
+        Note over Wallet: Streamer Wallet State:<br/>✓ Total received: ~150 USDC (settled in USDC)<br/>✓ Platform fees: ~7.5 USDC to Treasury<br/>✓ Streamer earnings: ~142.5 USDC<br/>✓ Withdrawn: 100 USDC<br/>✓ Remaining balance: ~42.5 USDC<br/>✓ Active subscription: 1 viewer<br/><br/>Payment Paths Supported:<br/>✓ Native CHZ → USDC via ChilizSwapRouter<br/>✓ Fan tokens (ERC20) → USDC via ChilizSwapRouter<br/>✓ USDC direct (no swap)<br/><br/>Beacon Upgrade:<br/>✓ All wallets using V2 logic<br/>✓ Zero downtime upgrade
     end
 ```
 
@@ -395,7 +400,7 @@ sequenceDiagram
 | `RESOLVER_ROLE` | Resolve markets with outcomes | Backend resolver service |
 | `PAUSER_ROLE` | Emergency pause in critical situations | Match owner, security team |
 | `TREASURY_ROLE` | Fund USDC treasury, emergency USDC withdraw | Treasury multisig |
-| `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users | BettingSwapRouter contract |
+| `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users | ChilizSwapRouter contract |
 
 ### Role Assignment Flow
 
@@ -500,11 +505,10 @@ forge script script/DeployStreaming.s.sol \
 | FootballMatch Implementation | TBD | Chiliz Spicy Testnet |
 | BasketballMatch Implementation | TBD | Chiliz Spicy Testnet |
 | BettingMatchFactory | TBD | Chiliz Spicy Testnet |
-| BettingSwapRouter | TBD | Chiliz Spicy Testnet |
+| ChilizSwapRouter | TBD | Chiliz Spicy Testnet |
 | StreamWallet Implementation | TBD | Chiliz Spicy Testnet |
 | StreamBeaconRegistry | TBD | Chiliz Spicy Testnet |
 | StreamWalletFactory | TBD | Chiliz Spicy Testnet |
-| StreamSwapRouter | TBD | Chiliz Spicy Testnet |
 | USDC Token | TBD | Chiliz Spicy Testnet |
 | Treasury Multisig | TBD | Chiliz Spicy Testnet |
 
@@ -518,13 +522,13 @@ src/
 │   ├── BettingMatch.sol           # Abstract base with UUPS + AccessControl + dynamic odds
 │   ├── FootballMatch.sol          # Football-specific implementation
 │   ├── BasketballMatch.sol        # Basketball-specific implementation
-│   ├── BettingMatchFactory.sol    # Factory for ERC1967Proxy deployment
-│   └── BettingSwapRouter.sol      # CHZ / Token / USDC → USDC bet router
+│   └── BettingMatchFactory.sol    # Factory for ERC1967Proxy deployment
+├── swap/
+│   └── ChilizSwapRouter.sol       # Unified CHZ / Token / USDC swap router (betting + streaming)
 ├── streamer/
 │   ├── StreamWallet.sol           # Subscription & donation logic (USDC)
 │   ├── StreamBeaconRegistry.sol   # Manages UpgradeableBeacon
-│   ├── StreamWalletFactory.sol    # Factory for BeaconProxy deployment
-│   └── StreamSwapRouter.sol       # CHZ / Token / USDC → USDC stream router
+│   └── StreamWalletFactory.sol    # Factory for BeaconProxy deployment
 ├── interfaces/
 │   ├── IKayenMasterRouterV2.sol   # Kayen DEX native CHZ swap interface
 │   ├── IKayenRouter.sol           # Kayen DEX ERC20-to-ERC20 swap interface
@@ -535,14 +539,14 @@ script/
 ├── DeployAll.s.sol                # Complete system deployment
 ├── DeployBetting.s.sol            # Betting system deployment
 ├── DeployStreaming.s.sol          # Streaming system deployment
-└── DeploySwap.s.sol               # Both swap routers deployment
+└── DeploySwap.s.sol               # ChilizSwapRouter deployment
 
 test/
 ├── BettingMatchTest.t.sol         # Core USDC betting + dynamic odds tests
 ├── BasketballMatchTest.t.sol      # Basketball lifecycle tests
 ├── StreamBeaconRegistryTest.t.sol  # Streaming system tests
-├── StreamSwapRouterTest.t.sol     # StreamSwapRouter all payment paths
-├── SwapIntegrationTest.t.sol      # BettingSwapRouter integration tests
+├── StreamSwapRouterTest.t.sol     # ChilizSwapRouter streaming payment paths
+├── SwapIntegrationTest.t.sol      # ChilizSwapRouter betting integration tests
 └── mocks/
     └── MockV3Aggregator.sol       # Mock price oracle for testing
 ```

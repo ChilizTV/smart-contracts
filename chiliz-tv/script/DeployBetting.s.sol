@@ -152,7 +152,7 @@ contract DeployBetting is Script {
         console.log("   - marketId: 0 (first market)");
         console.log("   - selection: 0 (Home/Over/Yes/etc.)");
         console.log("   - amount: 100 USDC (6 decimals)");
-        console.log("   - Or swap any token via BettingSwapRouter");
+        console.log("   - Or swap any token via ChilizSwapRouter");
         console.log("   - Odds locked at time of bet (x10000 precision)");
         console.log("3. Owner resolves: match.resolveMarket(0, 0)");
         console.log("   - marketId: 0");

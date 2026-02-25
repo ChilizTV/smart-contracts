@@ -4,7 +4,7 @@ pragma solidity ^0.8.22;
 import {Test, console} from "forge-std/Test.sol";
 import {BettingMatch} from "../src/betting/BettingMatch.sol";
 import {FootballMatch} from "../src/betting/FootballMatch.sol";
-import {BettingSwapRouter} from "../src/betting/BettingSwapRouter.sol";
+import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -23,7 +23,7 @@ contract MockFanTokenSwap is ERC20 {
  *
  * Test Coverage:
  * 1. USDC betting: place bet, claim, refund in USDC
- * 2. CHZ→USDC swap via BettingSwapRouter
+ * 2. CHZ→USDC swap via ChilizSwapRouter
  * 3. Slippage and deadline revert
  * 4. Treasury solvency checks
  * 5. Mixed CHZ + USDC bets and claims
@@ -34,7 +34,7 @@ contract SwapIntegrationTest is Test {
     MockUSDC public usdc;
     MockKayenRouter public mockRouter;
     MockFanTokenSwap public fanToken;
-    BettingSwapRouter public swapRouter;
+    ChilizSwapRouter public swapRouter;
 
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -80,12 +80,14 @@ contract SwapIntegrationTest is Test {
         footballMatch.setUSDCToken(address(usdc));
         vm.stopPrank();
 
-        // Deploy swap router
-        swapRouter = new BettingSwapRouter(
+        // Deploy swap router (unified: betting + streaming)
+        swapRouter = new ChilizSwapRouter(
             address(mockRouter),
             address(mockRouter),
             address(usdc),
-            WCHZ
+            WCHZ,
+            address(0x999),  // treasury
+            500              // 5% platform fee
         );
 
         // Grant SWAP_ROUTER_ROLE to swapRouter
@@ -252,7 +254,7 @@ contract SwapIntegrationTest is Test {
 
         // Set deadline in the past
         vm.prank(alice);
-        vm.expectRevert(BettingSwapRouter.DeadlinePassed.selector);
+        vm.expectRevert(ChilizSwapRouter.DeadlinePassed.selector);
         swapRouter.placeBetWithCHZ{value: 10 ether}(
             address(footballMatch),
             0, 0, 0,
@@ -536,14 +538,14 @@ contract SwapIntegrationTest is Test {
 
     function test_RevertPlaceBetWithUSDCZeroAmount() public {
         vm.prank(alice);
-        vm.expectRevert(BettingSwapRouter.ZeroValue.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
         swapRouter.placeBetWithUSDC(address(footballMatch), 0, 0, 0);
     }
 
     function test_RevertPlaceBetWithUSDCZeroAddress() public {
         vm.startPrank(alice);
         usdc.approve(address(swapRouter), 100e6);
-        vm.expectRevert(BettingSwapRouter.ZeroAddress.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroAddress.selector);
         swapRouter.placeBetWithUSDC(address(0), 0, 0, 100e6);
         vm.stopPrank();
     }
@@ -609,7 +611,7 @@ contract SwapIntegrationTest is Test {
     function test_RevertPlaceBetWithTokenIsUSDC() public {
         vm.startPrank(alice);
         usdc.approve(address(swapRouter), 100e6);
-        vm.expectRevert(BettingSwapRouter.TokenIsUSDC.selector);
+        vm.expectRevert(ChilizSwapRouter.TokenIsUSDC.selector);
         swapRouter.placeBetWithToken(
             address(usdc), 100e6,
             address(footballMatch), 0, 0, 0,
@@ -621,7 +623,7 @@ contract SwapIntegrationTest is Test {
     function test_RevertPlaceBetWithTokenExpiredDeadline() public {
         vm.startPrank(alice);
         fanToken.approve(address(swapRouter), 10 ether);
-        vm.expectRevert(BettingSwapRouter.DeadlinePassed.selector);
+        vm.expectRevert(ChilizSwapRouter.DeadlinePassed.selector);
         swapRouter.placeBetWithToken(
             address(fanToken), 10 ether,
             address(footballMatch), 0, 0, 0,
@@ -636,7 +638,7 @@ contract SwapIntegrationTest is Test {
 
     function test_RevertZeroValueSwap() public {
         vm.prank(alice);
-        vm.expectRevert(BettingSwapRouter.ZeroValue.selector);
+        vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
         swapRouter.placeBetWithCHZ{value: 0}(
             address(footballMatch),
             0, 0, 0,

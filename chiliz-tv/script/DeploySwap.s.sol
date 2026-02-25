@@ -2,60 +2,42 @@
 pragma solidity ^0.8.22;
 
 import {Script, console} from "forge-std/Script.sol";
-import {BettingSwapRouter} from "../src/betting/BettingSwapRouter.sol";
-import {StreamSwapRouter} from "../src/streamer/StreamSwapRouter.sol";
+import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 
 /**
  * @title DeploySwap
  * @author ChilizTV
- * @notice Deployment script for swap routers (BettingSwapRouter + StreamSwapRouter)
+ * @notice Deployment script for the unified ChilizSwapRouter
  *
- * @dev Deploys:
- *   - BettingSwapRouter: Swaps native CHZ → USDC via Kayen DEX and places USDC bets
- *   - StreamSwapRouter:  Swaps native CHZ → USDC via Kayen DEX for donations/subscriptions
+ * @dev Deploys a single swap router that handles both betting and streaming swaps.
  *
  * PREREQUISITES:
  * ==============
  * These contracts must be deployed first:
- *   - BettingMatchFactory + at least one match proxy (for BettingSwapRouter)
- *   - StreamWalletFactory (for StreamSwapRouter, optional)
+ *   - BettingMatchFactory + at least one match proxy (for betting flows)
+ *   - StreamWalletFactory (for streaming flows, optional)
  *
- * After deploying BettingSwapRouter, you MUST:
+ * After deploying ChilizSwapRouter, you MUST:
  *   1. Grant SWAP_ROUTER_ROLE on each BettingMatch proxy
  *   2. Configure USDC on each BettingMatch proxy via setUSDCToken()
  *
- * NETWORK ADDRESSES:
- * ==================
- * Chiliz Spicy Testnet (88882):
- *   - Kayen MasterRouterV2: set KAYEN_ROUTER in .env
- *   - WCHZ:                 set WCHZ_ADDRESS in .env
- *   - USDC:                 set USDC_ADDRESS in .env
+ * ENVIRONMENT VARIABLES (required):
+ * =================================
+ *   PRIVATE_KEY      - Deployer private key
+ *   KAYEN_ROUTER     - Kayen DEX MasterRouterV2 address
+ *   WCHZ_ADDRESS     - Wrapped CHZ (WCHZ) token address
+ *   USDC_ADDRESS     - USDC token address
+ *   SAFE_ADDRESS     - Treasury/Safe multisig
  *
- * Chiliz Mainnet (88888):
- *   - Kayen MasterRouterV2: set KAYEN_ROUTER in .env
- *   - WCHZ:                 set WCHZ_ADDRESS in .env
- *   - USDC:                 set USDC_ADDRESS in .env
+ * OPTIONAL:
+ *   PLATFORM_FEE_BPS - Platform fee in basis points (default: 500 = 5%)
  *
  * USAGE:
  * ======
- * Set environment variables:
- *   export PRIVATE_KEY=0x...
- *   export KAYEN_ROUTER=0x...       # Kayen MasterRouterV2 address
- *   export WCHZ_ADDRESS=0x...       # Wrapped CHZ address
- *   export USDC_ADDRESS=0x...       # USDC token address
- *   export SAFE_ADDRESS=0x...       # Treasury/Safe multisig
- *   export PLATFORM_FEE_BPS=500     # Platform fee (500 = 5%), for StreamSwapRouter
- *
- * Run:
  *   forge script script/DeploySwap.s.sol --rpc-url $RPC_URL --broadcast -vvvv
  */
 contract DeploySwap is Script {
-    // ============================================================================
-    // DEPLOYED CONTRACTS
-    // ============================================================================
-
-    BettingSwapRouter public bettingSwapRouter;
-    StreamSwapRouter public streamSwapRouter;
+    ChilizSwapRouter public swapRouter;
 
     address public deployer;
     address public kayenRouter;
@@ -64,10 +46,6 @@ contract DeploySwap is Script {
     address public treasury;
     uint16 public platformFeeBps;
 
-    // ============================================================================
-    // MAIN DEPLOYMENT
-    // ============================================================================
-
     function run() external {
         deployer = msg.sender;
 
@@ -75,10 +53,9 @@ contract DeploySwap is Script {
         kayenRouter = vm.envAddress("KAYEN_ROUTER");
         wchz = vm.envAddress("WCHZ_ADDRESS");
         usdcAddress = vm.envAddress("USDC_ADDRESS");
-
-        // ── Load optional env vars (with defaults) ──────────────────────────
         treasury = vm.envAddress("SAFE_ADDRESS");
 
+        // ── Load optional env vars (with defaults) ──────────────────────────
         try vm.envUint("PLATFORM_FEE_BPS") returns (uint256 fee) {
             platformFeeBps = uint16(fee);
         } catch {
@@ -94,41 +71,17 @@ contract DeploySwap is Script {
         vm.startBroadcast();
 
         _printHeader();
-        _deployBettingSwapRouter();
-        _deployStreamSwapRouter();
+        _deploySwapRouter();
         _printSummary();
 
         vm.stopBroadcast();
     }
 
-    // ============================================================================
-    // DEPLOYMENT STEPS
-    // ============================================================================
+    function _deploySwapRouter() internal {
+        console.log("Deploying ChilizSwapRouter (unified)");
+        console.log("------------------------------------");
 
-    function _deployBettingSwapRouter() internal {
-        console.log("Deploying BettingSwapRouter");
-        console.log("---------------------------");
-
-        bettingSwapRouter = new BettingSwapRouter(
-            kayenRouter,
-            kayenRouter,
-            usdcAddress,
-            wchz
-        );
-
-        console.log("BettingSwapRouter:", address(bettingSwapRouter));
-        console.log("  Kayen Master Router:", kayenRouter);
-        console.log("  Kayen Token Router:", kayenRouter);
-        console.log("  USDC:", usdcAddress);
-        console.log("  WCHZ:", wchz);
-        console.log("");
-    }
-
-    function _deployStreamSwapRouter() internal {
-        console.log("Deploying StreamSwapRouter");
-        console.log("--------------------------");
-
-        streamSwapRouter = new StreamSwapRouter(
+        swapRouter = new ChilizSwapRouter(
             kayenRouter,  // masterRouter (native CHZ swaps)
             kayenRouter,  // tokenRouter (ERC20-to-ERC20 swaps)
             usdcAddress,
@@ -137,7 +90,7 @@ contract DeploySwap is Script {
             platformFeeBps
         );
 
-        console.log("StreamSwapRouter:", address(streamSwapRouter));
+        console.log("ChilizSwapRouter:", address(swapRouter));
         console.log("  Kayen Master Router:", kayenRouter);
         console.log("  Kayen Token Router:", kayenRouter);
         console.log("  USDC:", usdcAddress);
@@ -147,13 +100,9 @@ contract DeploySwap is Script {
         console.log("");
     }
 
-    // ============================================================================
-    // HELPERS
-    // ============================================================================
-
     function _printHeader() internal view {
         console.log("=========================================");
-        console.log("CHILIZ-TV SWAP ROUTERS DEPLOYMENT");
+        console.log("CHILIZ-TV SWAP ROUTER DEPLOYMENT");
         console.log("=========================================");
         console.log("");
         console.log("Deployer:", deployer);
@@ -161,6 +110,7 @@ contract DeploySwap is Script {
         console.log("Kayen Router:", kayenRouter);
         console.log("WCHZ:", wchz);
         console.log("USDC:", usdcAddress);
+        console.log("Platform Fee:", platformFeeBps, "bps");
         console.log("");
         console.log("=========================================");
         console.log("");
@@ -171,26 +121,23 @@ contract DeploySwap is Script {
         console.log("DEPLOYMENT COMPLETE!");
         console.log("=========================================");
         console.log("");
-        console.log("DEPLOYED CONTRACTS:");
-        console.log("--------------------");
-        console.log("BettingSwapRouter:", address(bettingSwapRouter));
-        console.log("StreamSwapRouter:", address(streamSwapRouter));
+        console.log("DEPLOYED:");
+        console.log("  ChilizSwapRouter:", address(swapRouter));
         console.log("");
         console.log("=========================================");
         console.log("POST-DEPLOYMENT STEPS (REQUIRED):");
         console.log("=========================================");
         console.log("");
-        console.log("1. For EACH BettingMatch proxy that should accept CHZ swaps:");
+        console.log("1. For EACH BettingMatch proxy that should accept CHZ swap bets:");
         console.log("   a) Set USDC token:");
-        console.log("      cast send <MATCH_ADDRESS> 'setUSDCToken(address)' \\");
-        console.log("        ", usdcAddress);
+        console.log("      cast send <MATCH_ADDRESS> 'setUSDCToken(address)'", usdcAddress);
         console.log("");
-        console.log("   b) Grant SWAP_ROUTER_ROLE to BettingSwapRouter:");
-        console.log("      cast send <MATCH_ADDRESS> 'grantRole(bytes32,address)' \\");
-        console.log("        $(cast keccak 'SWAP_ROUTER_ROLE') \\");
-        console.log("        ", address(bettingSwapRouter));
+        console.log("   b) Grant SWAP_ROUTER_ROLE to ChilizSwapRouter:");
+        console.log("      cast send <MATCH_ADDRESS> 'grantRole(bytes32,address)'");
+        console.log("        $(cast keccak 'SWAP_ROUTER_ROLE')");
+        console.log("       ", address(swapRouter));
         console.log("");
-        console.log("2. StreamSwapRouter is ready to use immediately.");
+        console.log("2. ChilizSwapRouter streaming functions are ready to use immediately.");
         console.log("   Users call:");
         console.log("     donateWithCHZ{value: X}(streamer, message, minUSDCOut, deadline)");
         console.log("     donateWithToken(token, amount, streamer, message, minUSDCOut, deadline)");
@@ -199,24 +146,11 @@ contract DeploySwap is Script {
         console.log("     subscribeWithToken(token, amount, streamer, duration, minUSDCOut, deadline)");
         console.log("     subscribeWithUSDC(streamer, duration, amount)");
         console.log("");
-        console.log("3. BettingSwapRouter usage:");
-        console.log("   Users call:");
-        console.log("     placeBetWithCHZ{value: X}(matchAddr, marketId, selection, minUSDCOut, deadline)");
+        console.log("3. Betting functions:");
+        console.log("   placeBetWithCHZ{value: X}(matchAddr, marketId, selection, minUSDCOut, deadline)");
+        console.log("   placeBetWithToken(token, amount, matchAddr, marketId, selection, minUSDCOut, deadline)");
+        console.log("   placeBetWithUSDC(matchAddr, marketId, selection, amount)");
         console.log("");
         console.log("=========================================");
-        console.log("VERIFICATION COMMANDS:");
-        console.log("=========================================");
-        console.log("");
-        console.log("# Verify BettingSwapRouter");
-        console.log("cast call", address(bettingSwapRouter), "'router()'");
-        console.log("cast call", address(bettingSwapRouter), "'usdc()'");
-        console.log("cast call", address(bettingSwapRouter), "'wchz()'");
-        console.log("");
-        console.log("# Verify StreamSwapRouter");
-        console.log("cast call", address(streamSwapRouter), "'masterRouter()'");
-        console.log("cast call", address(streamSwapRouter), "'tokenRouter()'");
-        console.log("cast call", address(streamSwapRouter), "'treasury()'");
-        console.log("cast call", address(streamSwapRouter), "'platformFeeBps()'");
-        console.log("");
     }
 }

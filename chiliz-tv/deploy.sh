@@ -240,7 +240,7 @@ if [ "$DEPLOY_TYPE" = "swap" ]; then
     echo "  1) Set USDC token:"
     echo -e "     ${CYAN}cast send <MATCH> 'setUSDCToken(address)' $USDC_ADDRESS --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
-    echo "  2) Grant SWAP_ROUTER_ROLE to BettingSwapRouter:"
+    echo "  2) Grant SWAP_ROUTER_ROLE to ChilizSwapRouter:"
     echo -e "     ${CYAN}cast send <MATCH> 'grantRole(bytes32,address)' \$(cast keccak 'SWAP_ROUTER_ROLE') <SWAP_ROUTER> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
     echo "  3) Fund USDC treasury:"
