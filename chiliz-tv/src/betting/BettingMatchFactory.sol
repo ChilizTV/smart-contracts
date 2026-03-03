@@ -18,12 +18,17 @@ contract BettingMatchFactory is Ownable {
     /// @notice Mapping from match address to its sport type
     mapping(address => SportType) public matchSportType;
 
+    /// @notice Tracks whether an address was deployed by this factory
+    mapping(address => bool) public isMatch;
+
     /// @notice Immutable implementation contracts deployed once
     address private immutable FOOTBALL_IMPLEMENTATION;
     address private immutable BASKETBALL_IMPLEMENTATION;
 
     /// @notice Emitted when a new match proxy is created
     event MatchCreated(address indexed proxy, SportType sportType, address indexed owner);
+
+    error MatchNotFound(address matchAddress);
 
     /// @notice Deploy implementations and initialize factory
     constructor() Ownable(msg.sender) {
@@ -35,7 +40,7 @@ contract BettingMatchFactory is Ownable {
     /// @param _matchName The name of the match
     /// @param _owner The owner of the match contract
     /// @return proxy Address of the newly deployed proxy
-    function createFootballMatch(string calldata _matchName, address _owner) external returns (address proxy) {
+    function createFootballMatch(string calldata _matchName, address _owner) external onlyOwner returns (address proxy) {
         bytes memory initData = abi.encodeWithSelector(
             FootballMatch.initialize.selector,
             _matchName,
@@ -43,6 +48,7 @@ contract BettingMatchFactory is Ownable {
         );
         proxy = address(new ERC1967Proxy(FOOTBALL_IMPLEMENTATION, initData));
         allMatches.push(proxy);
+        isMatch[proxy] = true;
         matchSportType[proxy] = SportType.FOOTBALL;
         emit MatchCreated(proxy, SportType.FOOTBALL, _owner);
     }
@@ -51,7 +57,7 @@ contract BettingMatchFactory is Ownable {
     /// @param _matchName The name of the match
     /// @param _owner The owner of the match contract
     /// @return proxy Address of the newly deployed proxy
-    function createBasketballMatch(string calldata _matchName, address _owner) external returns (address proxy) {
+    function createBasketballMatch(string calldata _matchName, address _owner) external onlyOwner returns (address proxy) {
         bytes memory initData = abi.encodeWithSelector(
             BasketballMatch.initialize.selector,
             _matchName,
@@ -59,6 +65,7 @@ contract BettingMatchFactory is Ownable {
         );
         proxy = address(new ERC1967Proxy(BASKETBALL_IMPLEMENTATION, initData));
         allMatches.push(proxy);
+        isMatch[proxy] = true;
         matchSportType[proxy] = SportType.BASKETBALL;
         emit MatchCreated(proxy, SportType.BASKETBALL, _owner);
     }
@@ -73,6 +80,7 @@ contract BettingMatchFactory is Ownable {
     /// @param matchAddress The address of the match contract
     /// @return The sport type (FOOTBALL or BASKETBALL)
     function getSportType(address matchAddress) external view returns (SportType) {
+        if (!isMatch[matchAddress]) revert MatchNotFound(matchAddress);
         return matchSportType[matchAddress];
     }
 }

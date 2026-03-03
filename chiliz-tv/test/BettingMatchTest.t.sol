@@ -6,11 +6,11 @@ import {BettingMatch} from "../src/betting/BettingMatch.sol";
 import {FootballMatch} from "../src/betting/FootballMatch.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockUSDT} from "./mocks/MockUSDT.sol";
 
 /**
  * @title BettingMatchTest
- * @notice Comprehensive tests for USDC-only dynamic odds betting system
+ * @notice Comprehensive tests for USDT-only dynamic odds betting system
  * 
  * Test Coverage:
  * 1. Odds change between bets → each bet uses correct odds at payout
@@ -22,7 +22,7 @@ import {MockUSDC} from "./mocks/MockUSDC.sol";
 contract BettingMatchTest is Test {
     FootballMatch public implementation;
     FootballMatch public footballMatch;
-    MockUSDC public usdc;
+    MockUSDT public usdt;
     
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -43,8 +43,8 @@ contract BettingMatchTest is Test {
     bytes32 constant MARKET_GOALS_TOTAL = keccak256("GOALS_TOTAL");
     
     function setUp() public {
-        // Deploy mock USDC
-        usdc = new MockUSDC();
+        // Deploy mock USDT
+        usdt = new MockUSDT();
         
         // Deploy implementation
         implementation = new FootballMatch();
@@ -59,27 +59,27 @@ contract BettingMatchTest is Test {
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
         footballMatch = FootballMatch(payable(address(proxy)));
         
-        // Setup roles and USDC
+        // Setup roles and USDT
         vm.startPrank(owner);
         footballMatch.grantRole(ODDS_SETTER_ROLE, oddsSetter);
         footballMatch.grantRole(RESOLVER_ROLE, resolver);
-        footballMatch.setUSDCToken(address(usdc));
+        footballMatch.setUSDTToken(address(usdt));
         vm.stopPrank();
+
+        // Fund test accounts with USDT (100,000 USDT each)
+        usdt.mint(alice, 100_000e6);
+        usdt.mint(bob, 100_000e6);
+        usdt.mint(charlie, 100_000e6);
         
-        // Fund test accounts with USDC (100,000 USDC each)
-        usdc.mint(alice, 100_000e6);
-        usdc.mint(bob, 100_000e6);
-        usdc.mint(charlie, 100_000e6);
-        
-        // Fund contract for payouts (1,000,000 USDC treasury)
-        usdc.mint(address(footballMatch), 1_000_000e6);
+        // Fund contract for payouts (1,000,000 USDT treasury)
+        usdt.mint(address(footballMatch), 1_000_000e6);
     }
     
-    // Helper: approve and place USDC bet
+    // Helper: approve and place USDT bet
     function _placeBet(address user, uint256 marketId, uint64 selection, uint256 amount) internal {
         vm.startPrank(user);
-        usdc.approve(address(footballMatch), amount);
-        footballMatch.placeBetUSDC(marketId, selection, amount);
+        usdt.approve(address(footballMatch), amount);
+        footballMatch.placeBetUSDT(marketId, selection, amount);
         vm.stopPrank();
     }
     
@@ -96,44 +96,46 @@ contract BettingMatchTest is Test {
         vm.prank(owner);
         footballMatch.openMarket(0);
         
-        // Alice bets 100 USDC at 2.00x
+        // Alice bets 100 USDT at 2.00x
         _placeBet(alice, 0, 0, 100e6);
         
         // Odds change to 2.50x (25000)
         vm.prank(oddsSetter);
         footballMatch.setMarketOdds(0, 25000);
         
-        // Bob bets 100 USDC at 2.50x
+        // Bob bets 100 USDT at 2.50x
         _placeBet(bob, 0, 0, 100e6);
         
         // Odds change to 1.80x (18000)
         vm.prank(oddsSetter);
         footballMatch.setMarketOdds(0, 18000);
         
-        // Charlie bets 100 USDC at 1.80x
+        // Charlie bets 100 USDT at 1.80x
         _placeBet(charlie, 0, 0, 100e6);
         
-        // Resolve market - Home wins (selection 0)
+        // Close and resolve market - Home wins (selection 0)
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
         
         // Verify each user gets correct payout based on THEIR odds
-        uint256 aliceBalanceBefore = usdc.balanceOf(alice);
+        uint256 aliceBalanceBefore = usdt.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
-        uint256 alicePayout = usdc.balanceOf(alice) - aliceBalanceBefore;
+        uint256 alicePayout = usdt.balanceOf(alice) - aliceBalanceBefore;
         assertEq(alicePayout, 200e6, "Alice should get 2.00x payout");
         
-        uint256 bobBalanceBefore = usdc.balanceOf(bob);
+        uint256 bobBalanceBefore = usdt.balanceOf(bob);
         vm.prank(bob);
         footballMatch.claim(0, 0);
-        uint256 bobPayout = usdc.balanceOf(bob) - bobBalanceBefore;
+        uint256 bobPayout = usdt.balanceOf(bob) - bobBalanceBefore;
         assertEq(bobPayout, 250e6, "Bob should get 2.50x payout");
         
-        uint256 charlieBalanceBefore = usdc.balanceOf(charlie);
+        uint256 charlieBalanceBefore = usdt.balanceOf(charlie);
         vm.prank(charlie);
         footballMatch.claim(0, 0);
-        uint256 charliePayout = usdc.balanceOf(charlie) - charlieBalanceBefore;
+        uint256 charliePayout = usdt.balanceOf(charlie) - charlieBalanceBefore;
         assertEq(charliePayout, 180e6, "Charlie should get 1.80x payout");
     }
     
@@ -225,7 +227,7 @@ contract BettingMatchTest is Test {
         odds1 = uint32(bound(odds1, 10001, 100000));  // Max 10x
         odds2 = uint32(bound(odds2, 10001, 100000));  // Max 10x
         odds3 = uint32(bound(odds3, 10001, 100000));  // Max 10x
-        betAmount1 = uint96(bound(betAmount1, 1e6, 10_000e6));  // 1 - 10,000 USDC
+        betAmount1 = uint96(bound(betAmount1, 1e6, 10_000e6));  // 1 - 10,000 USDT
         betAmount2 = uint96(bound(betAmount2, 1e6, 10_000e6));
         
         vm.prank(owner);
@@ -248,7 +250,9 @@ contract BettingMatchTest is Test {
         vm.prank(oddsSetter);
         footballMatch.setMarketOdds(0, odds3);
         
-        // Resolve - Home wins
+        // Close and resolve - Home wins
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
         
@@ -257,20 +261,20 @@ contract BettingMatchTest is Test {
         uint256 expectedBobPayout = (uint256(betAmount2) * odds2) / ODDS_PRECISION;
         
         // Claim and verify
-        uint256 aliceBalanceBefore = usdc.balanceOf(alice);
+        uint256 aliceBalanceBefore = usdt.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
         assertEq(
-            usdc.balanceOf(alice) - aliceBalanceBefore, 
+            usdt.balanceOf(alice) - aliceBalanceBefore, 
             expectedAlicePayout, 
             "Alice payout incorrect"
         );
         
-        uint256 bobBalanceBefore = usdc.balanceOf(bob);
+        uint256 bobBalanceBefore = usdt.balanceOf(bob);
         vm.prank(bob);
         footballMatch.claim(0, 0);
         assertEq(
-            usdc.balanceOf(bob) - bobBalanceBefore, 
+            usdt.balanceOf(bob) - bobBalanceBefore, 
             expectedBobPayout, 
             "Bob payout incorrect"
         );
@@ -304,9 +308,9 @@ contract BettingMatchTest is Test {
         
         // Market is Inactive, cannot bet
         vm.startPrank(alice);
-        usdc.approve(address(footballMatch), 100e6);
+        usdt.approve(address(footballMatch), 100e6);
         vm.expectRevert();
-        footballMatch.placeBetUSDC(0, 0, 100e6);
+        footballMatch.placeBetUSDT(0, 0, 100e6);
         vm.stopPrank();
         
         // Open market
@@ -322,9 +326,9 @@ contract BettingMatchTest is Test {
         
         // Cannot bet on closed market
         vm.startPrank(bob);
-        usdc.approve(address(footballMatch), 100e6);
+        usdt.approve(address(footballMatch), 100e6);
         vm.expectRevert();
-        footballMatch.placeBetUSDC(0, 0, 100e6);
+        footballMatch.placeBetUSDT(0, 0, 100e6);
         vm.stopPrank();
     }
     
@@ -352,6 +356,8 @@ contract BettingMatchTest is Test {
         
         _placeBet(alice, 0, 0, 100e6);
         
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
         
@@ -375,7 +381,9 @@ contract BettingMatchTest is Test {
         // Alice bets on Home (0)
         _placeBet(alice, 0, 0, 100e6);
         
-        // Away wins (1)
+        // Close and resolve - Away wins (1)
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 1);
         
@@ -406,11 +414,11 @@ contract BettingMatchTest is Test {
         footballMatch.cancelMarket(0, "Match postponed");
         
         // Alice can claim refund
-        uint256 balanceBefore = usdc.balanceOf(alice);
+        uint256 balanceBefore = usdt.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claimRefund(0, 0);
         
-        assertEq(usdc.balanceOf(alice) - balanceBefore, 100e6, "Should refund full amount");
+        assertEq(usdt.balanceOf(alice) - balanceBefore, 100e6, "Should refund full amount");
     }
     
     // ══════════════════════════════════════════════════════════════════════════
@@ -424,35 +432,37 @@ contract BettingMatchTest is Test {
         vm.prank(owner);
         footballMatch.openMarket(0);
         
-        // Alice places first bet at 2.00x (100 USDC)
+        // Alice places first bet at 2.00x (100 USDT)
         _placeBet(alice, 0, 0, 100e6);
         
         // Odds change
         vm.prank(oddsSetter);
         footballMatch.setMarketOdds(0, 25000);
         
-        // Alice places second bet at 2.50x (200 USDC)
+        // Alice places second bet at 2.50x (200 USDT)
         _placeBet(alice, 0, 0, 200e6);
         
         // Verify Alice has 2 bets
         BettingMatch.Bet[] memory aliceBets = footballMatch.getUserBets(0, alice);
         assertEq(aliceBets.length, 2, "Alice should have 2 bets");
         
-        // Resolve
+        // Close and resolve
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
         
-        // Claim first bet: 100 USDC * 2.00x = 200 USDC
-        uint256 balance1 = usdc.balanceOf(alice);
+        // Claim first bet: 100 USDT * 2.00x = 200 USDT
+        uint256 balance1 = usdt.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
-        assertEq(usdc.balanceOf(alice) - balance1, 200e6, "First bet: 100 USDC * 2.00x");
+        assertEq(usdt.balanceOf(alice) - balance1, 200e6, "First bet: 100 USDT * 2.00x");
         
-        // Claim second bet: 200 USDC * 2.50x = 500 USDC
-        uint256 balance2 = usdc.balanceOf(alice);
+        // Claim second bet: 200 USDT * 2.50x = 500 USDT
+        uint256 balance2 = usdt.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 1);
-        assertEq(usdc.balanceOf(alice) - balance2, 500e6, "Second bet: 200 USDC * 2.50x");
+        assertEq(usdt.balanceOf(alice) - balance2, 500e6, "Second bet: 200 USDT * 2.50x");
     }
     
     // ══════════════════════════════════════════════════════════════════════════
@@ -466,7 +476,7 @@ contract BettingMatchTest is Test {
         vm.prank(owner);
         footballMatch.openMarket(0);
         
-        // Alice places multiple bets at different odds (100 USDC each)
+        // Alice places multiple bets at different odds (100 USDT each)
         _placeBet(alice, 0, 0, 100e6);
         
         vm.prank(oddsSetter);
@@ -479,18 +489,20 @@ contract BettingMatchTest is Test {
         
         _placeBet(alice, 0, 0, 100e6);
         
-        // Resolve
+        // Close and resolve
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
         
         // Claim all at once
-        uint256 balanceBefore = usdc.balanceOf(alice);
+        uint256 balanceBefore = usdt.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claimAll(0);
         
-        // Expected: 100*2.00 + 100*2.10 + 100*2.20 = 200 + 210 + 220 = 630 USDC
+        // Expected: 100*2.00 + 100*2.10 + 100*2.20 = 200 + 210 + 220 = 630 USDT
         uint256 expectedTotal = 200e6 + 210e6 + 220e6;
-        assertEq(usdc.balanceOf(alice) - balanceBefore, expectedTotal, "Should claim all winnings");
+        assertEq(usdt.balanceOf(alice) - balanceBefore, expectedTotal, "Should claim all winnings");
     }
     
     // ══════════════════════════════════════════════════════════════════════════
@@ -519,12 +531,12 @@ contract BettingMatchTest is Test {
 
 /**
  * @title BettingMatchGasTest
- * @notice Gas benchmarks for USDC betting operations
+ * @notice Gas benchmarks for USDT betting operations
  */
 contract BettingMatchGasTest is Test {
     FootballMatch public implementation;
     FootballMatch public footballMatch;
-    MockUSDC public usdc;
+    MockUSDT public usdt;
     
     address public owner = address(0x1);
     
@@ -533,7 +545,7 @@ contract BettingMatchGasTest is Test {
     bytes32 constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     
     function setUp() public {
-        usdc = new MockUSDC();
+        usdt = new MockUSDT();
         implementation = new FootballMatch();
         
         bytes memory initData = abi.encodeWithSelector(
@@ -545,13 +557,13 @@ contract BettingMatchGasTest is Test {
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
         footballMatch = FootballMatch(payable(address(proxy)));
         
-        // Configure USDC
+        // Configure USDT
         vm.prank(owner);
-        footballMatch.setUSDCToken(address(usdc));
+        footballMatch.setUSDTToken(address(usdt));
         
-        // Fund this test contract and the match with USDC
-        usdc.mint(address(this), 1_000_000e6);
-        usdc.mint(address(footballMatch), 10_000_000e6);
+        // Fund this test contract and the match with USDT
+        usdt.mint(address(this), 1_000_000e6);
+        usdt.mint(address(footballMatch), 10_000_000e6);
     }
     
     function test_GasBenchmark_PlaceBetNewOdds() public {
@@ -562,12 +574,12 @@ contract BettingMatchGasTest is Test {
         footballMatch.openMarket(0);
         
         // Approve and place first bet 
-        usdc.approve(address(footballMatch), 100e6);
+        usdt.approve(address(footballMatch), 100e6);
         uint256 gasBefore = gasleft();
-        footballMatch.placeBetUSDC(0, 0, 100e6);
+        footballMatch.placeBetUSDT(0, 0, 100e6);
         uint256 gasUsed = gasBefore - gasleft();
         
-        console.log("Gas for first USDC bet (new odds):", gasUsed);
+        console.log("Gas for first USDT bet (new odds):", gasUsed);
     }
     
     function test_GasBenchmark_PlaceBetExistingOdds() public {
@@ -578,15 +590,15 @@ contract BettingMatchGasTest is Test {
         footballMatch.openMarket(0);
         
         // First bet
-        usdc.approve(address(footballMatch), 200e6);
-        footballMatch.placeBetUSDC(0, 0, 100e6);
+        usdt.approve(address(footballMatch), 200e6);
+        footballMatch.placeBetUSDT(0, 0, 100e6);
         
         // Second bet reuses existing odds
         uint256 gasBefore = gasleft();
-        footballMatch.placeBetUSDC(0, 0, 100e6);
+        footballMatch.placeBetUSDT(0, 0, 100e6);
         uint256 gasUsed = gasBefore - gasleft();
         
-        console.log("Gas for subsequent USDC bet (existing odds):", gasUsed);
+        console.log("Gas for subsequent USDT bet (existing odds):", gasUsed);
     }
     
     function test_GasBenchmark_SetNewOdds() public {

@@ -19,14 +19,14 @@ import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
  *
  * After deploying ChilizSwapRouter, you MUST:
  *   1. Grant SWAP_ROUTER_ROLE on each BettingMatch proxy
- *   2. Configure USDC on each BettingMatch proxy via setUSDCToken()
+ *   2. Configure USDT on each BettingMatch proxy via setUSDTToken()
  *
  * ENVIRONMENT VARIABLES (required):
  * =================================
  *   PRIVATE_KEY      - Deployer private key
  *   KAYEN_ROUTER     - Kayen DEX MasterRouterV2 address
  *   WCHZ_ADDRESS     - Wrapped CHZ (WCHZ) token address
- *   USDC_ADDRESS     - USDC token address
+ *   USDT_ADDRESS     - USDT token address
  *   SAFE_ADDRESS     - Treasury/Safe multisig
  *
  * OPTIONAL:
@@ -42,7 +42,7 @@ contract DeploySwap is Script {
     address public deployer;
     address public kayenRouter;
     address public wchz;
-    address public usdcAddress;
+    address public usdtAddress;
     address public treasury;
     uint16 public platformFeeBps;
 
@@ -52,7 +52,7 @@ contract DeploySwap is Script {
         // ── Load required env vars ──────────────────────────────────────────
         kayenRouter = vm.envAddress("KAYEN_ROUTER");
         wchz = vm.envAddress("WCHZ_ADDRESS");
-        usdcAddress = vm.envAddress("USDC_ADDRESS");
+        usdtAddress = vm.envAddress("USDT_ADDRESS");
         treasury = vm.envAddress("SAFE_ADDRESS");
 
         // ── Load optional env vars (with defaults) ──────────────────────────
@@ -65,7 +65,7 @@ contract DeploySwap is Script {
         // ── Validation ──────────────────────────────────────────────────────
         require(kayenRouter != address(0), "KAYEN_ROUTER required");
         require(wchz != address(0), "WCHZ_ADDRESS required");
-        require(usdcAddress != address(0), "USDC_ADDRESS required");
+        require(usdtAddress != address(0), "USDT_ADDRESS required");
         require(treasury != address(0), "SAFE_ADDRESS required");
 
         vm.startBroadcast();
@@ -84,7 +84,7 @@ contract DeploySwap is Script {
         swapRouter = new ChilizSwapRouter(
             kayenRouter,  // masterRouter (native CHZ swaps)
             kayenRouter,  // tokenRouter (ERC20-to-ERC20 swaps)
-            usdcAddress,
+            usdtAddress,
             wchz,
             treasury,
             platformFeeBps
@@ -93,7 +93,7 @@ contract DeploySwap is Script {
         console.log("ChilizSwapRouter:", address(swapRouter));
         console.log("  Kayen Master Router:", kayenRouter);
         console.log("  Kayen Token Router:", kayenRouter);
-        console.log("  USDC:", usdcAddress);
+        console.log("  USDT:", usdtAddress);
         console.log("  WCHZ:", wchz);
         console.log("  Treasury:", treasury);
         console.log("  Platform Fee:", platformFeeBps, "bps");
@@ -109,7 +109,7 @@ contract DeploySwap is Script {
         console.log("Treasury:", treasury);
         console.log("Kayen Router:", kayenRouter);
         console.log("WCHZ:", wchz);
-        console.log("USDC:", usdcAddress);
+        console.log("USDT:", usdtAddress);
         console.log("Platform Fee:", platformFeeBps, "bps");
         console.log("");
         console.log("=========================================");
@@ -129,8 +129,8 @@ contract DeploySwap is Script {
         console.log("=========================================");
         console.log("");
         console.log("1. For EACH BettingMatch proxy that should accept CHZ swap bets:");
-        console.log("   a) Set USDC token:");
-        console.log("      cast send <MATCH_ADDRESS> 'setUSDCToken(address)'", usdcAddress);
+        console.log("   a) Set USDT token:");
+        console.log("      cast send <MATCH_ADDRESS> 'setUSDTToken(address)'", usdtAddress);
         console.log("");
         console.log("   b) Grant SWAP_ROUTER_ROLE to ChilizSwapRouter:");
         console.log("      cast send <MATCH_ADDRESS> 'grantRole(bytes32,address)'");
@@ -139,17 +139,17 @@ contract DeploySwap is Script {
         console.log("");
         console.log("2. ChilizSwapRouter streaming functions are ready to use immediately.");
         console.log("   Users call:");
-        console.log("     donateWithCHZ{value: X}(streamer, message, minUSDCOut, deadline)");
-        console.log("     donateWithToken(token, amount, streamer, message, minUSDCOut, deadline)");
-        console.log("     donateWithUSDC(streamer, message, amount)");
-        console.log("     subscribeWithCHZ{value: X}(streamer, duration, minUSDCOut, deadline)");
-        console.log("     subscribeWithToken(token, amount, streamer, duration, minUSDCOut, deadline)");
-        console.log("     subscribeWithUSDC(streamer, duration, amount)");
+        console.log("     donateWithCHZ{value: X}(streamer, message, minUSDTOut, deadline)");
+        console.log("     donateWithToken(token, amount, streamer, message, minUSDTOut, deadline)");
+        console.log("     donateWithUSDT(streamer, message, amount)");
+        console.log("     subscribeWithCHZ{value: X}(streamer, duration, minUSDTOut, deadline)");
+        console.log("     subscribeWithToken(token, amount, streamer, duration, minUSDTOut, deadline)");
+        console.log("     subscribeWithUSDT(streamer, duration, amount)");
         console.log("");
         console.log("3. Betting functions:");
-        console.log("   placeBetWithCHZ{value: X}(matchAddr, marketId, selection, minUSDCOut, deadline)");
-        console.log("   placeBetWithToken(token, amount, matchAddr, marketId, selection, minUSDCOut, deadline)");
-        console.log("   placeBetWithUSDC(matchAddr, marketId, selection, amount)");
+        console.log("   placeBetWithCHZ{value: X}(matchAddr, marketId, selection, minUSDTOut, deadline)");
+        console.log("   placeBetWithToken(token, amount, matchAddr, marketId, selection, minUSDTOut, deadline)");
+        console.log("   placeBetWithUSDT(matchAddr, marketId, selection, amount)");
         console.log("");
         console.log("=========================================");
     }

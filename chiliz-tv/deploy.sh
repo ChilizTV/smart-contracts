@@ -38,16 +38,18 @@ while [[ $# -gt 0 ]]; do
             DEPLOY_TYPE="stream"; shift ;;
         --swap)
             DEPLOY_TYPE="swap"; shift ;;
+        --payout)
+            DEPLOY_TYPE="payout"; shift ;;
         *)
             echo -e "${RED}Unknown argument: $1${NC}"
-            echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap>"
+            echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--payout>"
             exit 1 ;;
     esac
 done
 
 if [ -z "$NETWORK" ] || [ -z "$DEPLOY_TYPE" ]; then
     echo -e "${RED}Missing required arguments.${NC}"
-    echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap>"
+    echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--payout>"
     exit 1
 fi
 
@@ -90,14 +92,15 @@ EXPLORER_URL=$(jq -r '.explorerUrl' "$CONFIG_FILE")
 VERIFIER_URL=$(jq -r '.verifierUrl' "$CONFIG_FILE")
 CFG_KAYEN_ROUTER=$(jq -r '.kayenMasterRouter // empty' "$CONFIG_FILE")
 CFG_WCHZ=$(jq -r '.wchz // empty' "$CONFIG_FILE")
-CFG_USDC=$(jq -r '.usdc // empty' "$CONFIG_FILE")
+CFG_USDT=$(jq -r '.usdt // empty' "$CONFIG_FILE")
 FORGE_FLAGS=$(jq -r '.forgeFlags // empty' "$CONFIG_FILE")
 
 # ── Deploy type → script mapping ─────────────────────────────────────────────
 REQUIRES_KAYEN=false
 case "$DEPLOY_TYPE" in
     all)
-        SCRIPT="script/DeployAll.s.sol" ;;
+        SCRIPT="script/DeployAll.s.sol"
+        REQUIRES_KAYEN=true ;;
     match)
         SCRIPT="script/DeployBetting.s.sol" ;;
     stream)
@@ -105,6 +108,8 @@ case "$DEPLOY_TYPE" in
     swap)
         SCRIPT="script/DeploySwap.s.sol"
         REQUIRES_KAYEN=true ;;
+    payout)
+        SCRIPT="script/DeployPayout.s.sol" ;;
 esac
 
 # ── Swap-specific: resolve addresses (env overrides config) ──────────────────
@@ -114,12 +119,12 @@ if [ "$REQUIRES_KAYEN" = true ]; then
     # Env vars override config file
     KAYEN_ROUTER="${KAYEN_ROUTER:-$CFG_KAYEN_ROUTER}"
     WCHZ_ADDRESS="${WCHZ_ADDRESS:-$CFG_WCHZ}"
-    USDC_ADDRESS="${USDC_ADDRESS:-$CFG_USDC}"
+    USDT_ADDRESS="${USDT_ADDRESS:-$CFG_USDT}"
 
     MISSING=""
     [ -z "$KAYEN_ROUTER" ] && MISSING="${MISSING}\n  - KAYEN_ROUTER (set in .env or config/${NETWORK}.json)"
     [ -z "$WCHZ_ADDRESS" ] && MISSING="${MISSING}\n  - WCHZ_ADDRESS (set in .env or config/${NETWORK}.json)"
-    [ -z "$USDC_ADDRESS" ] && MISSING="${MISSING}\n  - USDC_ADDRESS (set in .env or config/${NETWORK}.json)"
+    [ -z "$USDT_ADDRESS" ] && MISSING="${MISSING}\n  - USDT_ADDRESS (set in .env or config/${NETWORK}.json)"
 
     if [ -n "$MISSING" ]; then
         echo -e "${RED}Missing required swap addresses:${MISSING}${NC}"
@@ -127,11 +132,11 @@ if [ "$REQUIRES_KAYEN" = true ]; then
     fi
 
     # Export for forge script
-    export KAYEN_ROUTER WCHZ_ADDRESS USDC_ADDRESS
+    export KAYEN_ROUTER WCHZ_ADDRESS USDT_ADDRESS
 
     echo -e "  KAYEN_ROUTER: ${YELLOW}$KAYEN_ROUTER${NC}"
     echo -e "  WCHZ_ADDRESS: ${YELLOW}$WCHZ_ADDRESS${NC}"
-    echo -e "  USDC_ADDRESS: ${YELLOW}$USDC_ADDRESS${NC}"
+    echo -e "  USDT_ADDRESS: ${YELLOW}$USDT_ADDRESS${NC}"
     echo ""
 fi
 
@@ -237,15 +242,15 @@ if [ "$DEPLOY_TYPE" = "swap" ]; then
     echo ""
     echo "For EACH BettingMatch proxy that should accept CHZ swap bets:"
     echo ""
-    echo "  1) Set USDC token:"
-    echo -e "     ${CYAN}cast send <MATCH> 'setUSDCToken(address)' $USDC_ADDRESS --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
+    echo "  1) Set USDT token:"
+    echo -e "     ${CYAN}cast send <MATCH> 'setUSDTToken(address)' $USDT_ADDRESS --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
     echo "  2) Grant SWAP_ROUTER_ROLE to ChilizSwapRouter:"
     echo -e "     ${CYAN}cast send <MATCH> 'grantRole(bytes32,address)' \$(cast keccak 'SWAP_ROUTER_ROLE') <SWAP_ROUTER> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
-    echo "  3) Fund USDC treasury:"
-    echo -e "     ${CYAN}cast send $USDC_ADDRESS 'approve(address,uint256)' <MATCH> <AMOUNT> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
-    echo -e "     ${CYAN}cast send <MATCH> 'fundUSDCTreasury(uint256)' <AMOUNT> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
+    echo "  3) Fund USDT treasury:"
+    echo -e "     ${CYAN}cast send $USDT_ADDRESS 'approve(address,uint256)' <MATCH> <AMOUNT> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
+    echo -e "     ${CYAN}cast send <MATCH> 'fundUSDTTreasury(uint256)' <AMOUNT> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
     echo "  4) Test swap bet:"
     echo -e "     ${CYAN}cast send <SWAP_ROUTER> 'placeBetWithCHZ(address,uint256,uint64,uint256,uint256)' <MATCH> 0 0 1 \$(date +%s --date '+1 hour') --value 10ether --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"

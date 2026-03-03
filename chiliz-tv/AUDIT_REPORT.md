@@ -1,8 +1,8 @@
 # Betting System Audit Report
 
-**Date**: February 15, 2026  
+**Date**: June 17, 2026  
 **Auditor**: Senior Web3 Auditor / Staff Solidity Engineer  
-**Scope**: Espartrack betting flow, Kayen/FanX swap integration, USDC support, fan tokens
+**Scope**: Espartrack betting flow, Kayen/FanX swap integration, USDT support, fan tokens
 
 ---
 
@@ -10,11 +10,12 @@
 
 The codebase is **well-structured and functional**. All core payment paths are implemented and tested. The system supports:
 - ✅ Direct CHZ betting
-- ✅ Direct USDC betting
-- ✅ CHZ→USDC swap betting via ChilizSwapRouter
-- ✅ Fan token→USDC swap betting via ChilizSwapRouter
+- ✅ Direct USDT betting
+- ✅ CHZ→USDT swap betting via ChilizSwapRouter
+- ✅ Fan token→USDT swap betting via ChilizSwapRouter
 - ✅ Fan token donations/subscriptions via StreamWallet
-- ✅ CHZ→USDC streaming donations via ChilizSwapRouter
+- ✅ CHZ→USDT streaming donations via ChilizSwapRouter
+- ✅ PayoutEscrow for Safe-funded shortfall payouts
 
 **No critical security vulnerabilities found.** Minor improvements recommended for documentation and future extensibility.
 
@@ -30,17 +31,19 @@ The codebase is **well-structured and functional**. All core payment paths are i
 | **Betting** | FootballMatch | [src/betting/FootballMatch.sol](src/betting/FootballMatch.sol) | Football markets (WINNER, GOALS_TOTAL, etc.) |
 | **Betting** | BasketballMatch | [src/betting/BasketballMatch.sol](src/betting/BasketballMatch.sol) | Basketball markets (spreads, quarters) |
 | **Betting** | BettingMatchFactory | [src/betting/BettingMatchFactory.sol](src/betting/BettingMatchFactory.sol) | Factory for UUPS proxies |
-| **Swap** | ChilizSwapRouter | [src/swap/ChilizSwapRouter.sol](src/swap/ChilizSwapRouter.sol) | Unified swap router: CHZ/Token/USDC → USDC for betting + streaming |
+| **Betting** | PayoutEscrow | [src/betting/PayoutEscrow.sol](src/betting/PayoutEscrow.sol) | Shared USDT escrow for shortfall payouts |
+| **Swap** | ChilizSwapRouter | [src/swap/ChilizSwapRouter.sol](src/swap/ChilizSwapRouter.sol) | Unified swap router: CHZ/Token/USDT → USDT for betting + streaming |
 | **Streaming** | StreamWallet | [src/streamer/StreamWallet.sol](src/streamer/StreamWallet.sol) | Per-streamer revenue wallet |
 | **Streaming** | StreamWalletFactory | [src/streamer/StreamWalletFactory.sol](src/streamer/StreamWalletFactory.sol) | Wallet deployment + entry points |
 | **Interface** | IKayenMasterRouterV2 | [src/interfaces/IKayenMasterRouterV2.sol](src/interfaces/IKayenMasterRouterV2.sol) | Kayen native CHZ swaps |
 | **Interface** | IKayenRouter | [src/interfaces/IKayenRouter.sol](src/interfaces/IKayenRouter.sol) | Kayen token-to-token swaps |
+| **Interface** | IPayoutEscrow | [src/interfaces/IPayoutEscrow.sol](src/interfaces/IPayoutEscrow.sol) | PayoutEscrow disbursement interface |
 
 ### 1.2 Role Hierarchy
 
 ```
 DEFAULT_ADMIN_ROLE (owner)
-├── ADMIN_ROLE         → Market management, USDC config, pause/unpause
+├── ADMIN_ROLE         → Market management, USDT config, pause/unpause
 ├── RESOLVER_ROLE      → Set match results
 ├── ODDS_SETTER_ROLE   → Update market odds
 ├── TREASURY_ROLE      → Fund treasury, emergency withdraw
@@ -70,29 +73,29 @@ Admin/Factory → createFootballMatch(name, owner)
 ```
 User → FootballMatch.placeBet{value: X}(marketId, selection)
   ├→ Validate: market open, odds set, not paused
-  ├→ Create Bet{amount, selection, oddsIndex, isUSDC=false}
+  ├→ Create Bet{amount, selection, oddsIndex, isUSDT=false}
   ├→ totalPool += msg.value
   └→ Emit BetPlaced
 ```
 
-#### B) Direct USDC Bet
+#### B) Direct USDT Bet
 ```
-User → usdc.approve(match, amount)
-User → FootballMatch.placeBetUSDC(marketId, selection, amount)
-  ├→ Validate: USDC configured, solvency check
+User → usdt.approve(match, amount)
+User → FootballMatch.placeBetUSDT(marketId, selection, amount)
+  ├→ Validate: USDT configured, solvency check
   ├→ safeTransferFrom(user, contract, amount)
-  ├→ Create Bet{..., isUSDC=true}
-  ├→ totalUSDCLiabilities += potentialPayout
-  └→ Emit USDCBetPlaced
+  ├→ Create Bet{..., isUSDT=true}
+  ├→ totalUSDTLiabilities += potentialPayout
+  └→ Emit BetPlaced
 ```
 
-#### C) CHZ→USDC Swap Bet
+#### C) CHZ→USDT Swap Bet
 ```
 User → ChilizSwapRouter.placeBetWithCHZ{value: X}(match, ...)
   ├→ Validate: value > 0, deadline OK
-  ├→ Kayen.swapExactETHForTokens([WCHZ, USDC])
-  ├→ usdc.safeTransfer(match, received)
-  ├→ match.placeBetUSDCFor(user, ...) [requires SWAP_ROUTER_ROLE]
+  ├→ Kayen.swapExactETHForTokens([WCHZ, USDT])
+  ├→ usdt.safeTransfer(match, received)
+  ├→ match.placeBetUSDTFor(user, ...) [requires SWAP_ROUTER_ROLE]
   └→ Emit BetPlacedViaCHZ
 ```
 
@@ -109,9 +112,9 @@ User → claim(marketId, betIndex)
   ├→ Validate: state=Resolved, selection==result, !claimed
   ├→ payout = amount * betOdds / PRECISION
   ├→ bet.claimed = true (CEI pattern)
-  ├→ if isUSDC: usdc.transfer
+  ├→ if isUSDT: usdt.transfer
      else: CHZ transfer via call
-  └→ Emit Payout/USDCPayout
+  └→ Emit Payout
 ```
 
 ---
@@ -131,15 +134,15 @@ flowchart TB
         M2[Add Market]
         M3[Open Market]
         M4[Place Bet CHZ]
-        M5[Place Bet USDC]
+        M5[Place Bet USDT]
         M6[Resolve Market]
         M7[Claim / Refund]
     end
     
     subgraph SwapRouter["ChilizSwapRouter (unified)"]
         S1[placeBetWithCHZ]
-        S2[Swap CHZ→USDC]
-        S3[placeBetUSDCFor]
+        S2[Swap CHZ→USDT]
+        S3[placeBetUSDTFor]
         S4[donateWithCHZ]
         S5[subscribeWithCHZ]
     end
@@ -154,14 +157,14 @@ flowchart TB
     Admin -->|openMarket| M3
     
     User -->|placeBet + CHZ| M4
-    User -->|placeBetUSDC + approve| M5
+    User -->|placeBetUSDT + approve| M5
     User -->|placeBetWithCHZ + CHZ| S1
     User -->|donateWithCHZ + CHZ| S4
     User -->|subscribeWithCHZ + CHZ| S5
     S1 --> K1
     S4 --> K1
     S5 --> K1
-    K1 -->|USDC| S2
+    K1 -->|USDT| S2
     S2 --> S3
     S3 --> M5
     
@@ -177,14 +180,14 @@ sequenceDiagram
     participant SwapRouter as ChilizSwapRouter
     participant Kayen as Kayen DEX
     participant Match as FootballMatch
-    participant USDC
+    participant USDT
     
-    User->>+SwapRouter: placeBetWithCHZ{10 CHZ}(match, 0, 0, 0.9 USDC, deadline)
-    SwapRouter->>+Kayen: swapExactETHForTokens{10 CHZ}([WCHZ, USDC])
-    Kayen-->>-SwapRouter: [10 CHZ, 1 USDC]
-    SwapRouter->>USDC: transfer(match, 1 USDC)
-    SwapRouter->>+Match: placeBetUSDCFor(user, 0, 0, 1 USDC)
-    Match->>Match: create Bet{amount=1, selection=0, isUSDC=true}
+    User->>+SwapRouter: placeBetWithCHZ{10 CHZ}(match, 0, 0, 0.9 USDT, deadline)
+    SwapRouter->>+Kayen: swapExactETHForTokens{10 CHZ}([WCHZ, USDT])
+    Kayen-->>-SwapRouter: [10 CHZ, 1 USDT]
+    SwapRouter->>USDT: transfer(match, 1 USDT)
+    SwapRouter->>+Match: placeBetUSDTFor(user, 0, 0, 1 USDT)
+    Match->>Match: create Bet{amount=1, selection=0, isUSDT=true}
     Match-->>-SwapRouter: success
     SwapRouter-->>-User: BetPlacedViaCHZ event
     
@@ -195,9 +198,9 @@ sequenceDiagram
     
     User->>+Match: claim(0, 0)
     Match->>Match: verify selection == result
-    Match->>Match: payout = 1 USDC * 2.0x = 2 USDC
-    Match->>USDC: transfer(user, 2 USDC)
-    Match-->>-User: USDCPayout event
+    Match->>Match: payout = 1 USDT * 2.0x = 2 USDT
+    Match->>USDT: transfer(user, 2 USDT)
+    Match-->>-User: Payout event
 ```
 
 ### 3.3 Failure Path - Slippage Exceeded
@@ -208,9 +211,9 @@ sequenceDiagram
     participant SwapRouter as ChilizSwapRouter
     participant Kayen as Kayen DEX
     
-    User->>+SwapRouter: placeBetWithCHZ{1 CHZ}(match, 0, 0, 2 USDC min, deadline)
-    Note right of User: minOut=2 USDC but 1 CHZ swaps to ~0.1 USDC
-    SwapRouter->>+Kayen: swapExactETHForTokens{1 CHZ}(minOut=2 USDC)
+    User->>+SwapRouter: placeBetWithCHZ{1 CHZ}(match, 0, 0, 2 USDT min, deadline)
+    Note right of User: minOut=2 USDT but 1 CHZ swaps to ~0.1 USDT
+    SwapRouter->>+Kayen: swapExactETHForTokens{1 CHZ}(minOut=2 USDT)
     Kayen--xSwapRouter: REVERT insufficient output
     SwapRouter--x-User: Transaction reverts
     Note over User: CHZ returned to user
@@ -222,12 +225,12 @@ sequenceDiagram
 
 | # | Requirement | Status | Implementation | Notes |
 |---|-------------|--------|----------------|-------|
-| 1 | USDC direct betting | ✅ IMPLEMENTED | `BettingMatch.placeBetUSDC` | User approves, contract pulls |
-| 2 | CHZ swap → USDC → bet | ✅ IMPLEMENTED | `ChilizSwapRouter.placeBetWithCHZ` | Single tx |
-| 3 | Fan token → donation | ✅ IMPLEMENTED | `StreamWallet.donate` | Swaps to USDC |
-| 4 | CHZ → USDC → donation | ✅ IMPLEMENTED | `ChilizSwapRouter.donateWithCHZ` | Direct to streamer |
+| 1 | USDT direct betting | ✅ IMPLEMENTED | `BettingMatch.placeBetUSDT` | User approves, contract pulls |
+| 2 | CHZ swap → USDT → bet | ✅ IMPLEMENTED | `ChilizSwapRouter.placeBetWithCHZ` | Single tx |
+| 3 | Fan token → donation | ✅ IMPLEMENTED | `StreamWallet.donate` | Swaps to USDT |
+| 4 | CHZ → USDT → donation | ✅ IMPLEMENTED | `ChilizSwapRouter.donateWithCHZ` | Direct to streamer |
 | 5 | Pull payment claims | ✅ IMPLEMENTED | `BettingMatch.claim`, `claimAll` | Reentrancy protected |
-| 6 | Treasury solvency | ✅ IMPLEMENTED | `totalUSDCLiabilities` tracking | Checked on bet placement |
+| 6 | Treasury solvency | ✅ IMPLEMENTED | `totalUSDTLiabilities` tracking + PayoutEscrow | Checked on bet placement; escrow fallback for shortfalls |
 | 7 | Fan token → bet | ✅ IMPLEMENTED | `ChilizSwapRouter.placeBetWithToken` | Via unified swap router |
 
 ---
@@ -239,7 +242,7 @@ sequenceDiagram
 | Limitation | Severity | Notes |
 |------------|----------|-------|
 | No fan token → bet path | ~~Medium~~ | **Resolved** — ChilizSwapRouter.placeBetWithToken supports any ERC20 |
-| Single swap path | Low | WCHZ→USDC only; no multi-hop |
+| Single swap path | Low | WCHZ→USDT only; no multi-hop |
 | No bet modification | Medium | Cannot cancel/change placed bets |
 | No odds slippage protection | Medium | Users may get different odds than expected |
 
@@ -327,9 +330,9 @@ forge coverage
 |-----------|---------------|
 | `BettingMatchTest.t.sol` | Odds changes, bet placement, claims, security |
 | `BasketballMatchTest.t.sol` | Basketball lifecycle tests |
-| `SwapIntegrationTest.t.sol` | USDC betting, CHZ swap, solvency, mixed bets (via ChilizSwapRouter) |
+| `SwapIntegrationTest.t.sol` | USDT betting, CHZ swap, solvency, mixed bets (via ChilizSwapRouter) |
 | `StreamBeaconRegistryTest.t.sol` | StreamWallet subscriptions, donations |
-| `StreamSwapRouterTest.t.sol` | CHZ/Token/USDC streaming donations & subscriptions (via ChilizSwapRouter) |
+| `StreamSwapRouterTest.t.sol` | CHZ/Token/USDT streaming donations & subscriptions (via ChilizSwapRouter) |
 
 ---
 
@@ -344,7 +347,7 @@ forge coverage
 
 1. ~~**Add fan token → bet path**~~ → **Done**: `ChilizSwapRouter.placeBetWithToken` supports any ERC20
 2. **Add odds slippage protection** - `maxOddsAccepted` parameter
-3. **Consider Permit2** for gasless USDC approvals
+3. **Consider Permit2** for gasless USDT approvals
 
 ### 8.3 Long-term (Future Consideration)
 
@@ -367,4 +370,4 @@ The betting system codebase is **production-ready** with:
 
 ---
 
-*Report generated: February 15, 2026*
+*Report generated: June 17, 2026*

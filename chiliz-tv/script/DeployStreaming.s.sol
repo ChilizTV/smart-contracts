@@ -94,7 +94,7 @@ contract DeployStreaming is Script {
             500,  // 5% platform fee
             address(0), // kayenRouter - set after deployment
             address(0), // fanToken - set after deployment
-            address(0)  // usdc - set after deployment
+            address(0)  // usdt - set after deployment
         );
         console.log("StreamWalletFactory:", address(factory));
         console.log("  Owner:", deployer);

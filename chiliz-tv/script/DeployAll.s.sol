@@ -12,6 +12,9 @@ import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 // Unified swap router
 import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 
+// Payout escrow (treasury-backed payout fallback)
+import {PayoutEscrow} from "../src/betting/PayoutEscrow.sol";
+
 /**
  * @title DeployAll
  * @author ChilizTV
@@ -31,7 +34,7 @@ import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
  *   SAFE_ADDRESS     - Safe multisig address (treasury)
  *   KAYEN_ROUTER     - Kayen DEX MasterRouterV2 address
  *   WCHZ_ADDRESS     - Wrapped CHZ (WCHZ) token address
- *   USDC_ADDRESS     - USDC token address
+ *   USDT_ADDRESS     - USDT token address
  *
  * OPTIONAL:
  *   FAN_TOKEN        - Fan token address for StreamWalletFactory (default: address(0))
@@ -46,12 +49,13 @@ contract DeployAll is Script {
     BettingMatchFactory public bettingFactory;
     StreamWalletFactory public streamFactory;
     ChilizSwapRouter public swapRouter;
+    PayoutEscrow public payoutEscrow;
 
     address public deployer;
     address public treasury;
     address public kayenRouter;
     address public wchz;
-    address public usdcAddress;
+    address public usdtAddress;
     address public fanToken;
     uint16 public platformFeeBps;
 
@@ -65,6 +69,7 @@ contract DeployAll is Script {
         _deployBettingSystem();
         _deployStreamingSystem();
         _deploySwapRouter();
+        _deployPayoutEscrow();
         _transferOwnership();
         _printSummary();
         _printPostDeploymentSteps();
@@ -76,12 +81,12 @@ contract DeployAll is Script {
         treasury = vm.envAddress("SAFE_ADDRESS");
         kayenRouter = vm.envAddress("KAYEN_ROUTER");
         wchz = vm.envAddress("WCHZ_ADDRESS");
-        usdcAddress = vm.envAddress("USDC_ADDRESS");
+        usdtAddress = vm.envAddress("USDT_ADDRESS");
 
         require(treasury != address(0), "SAFE_ADDRESS required");
         require(kayenRouter != address(0), "KAYEN_ROUTER required");
         require(wchz != address(0), "WCHZ_ADDRESS required");
-        require(usdcAddress != address(0), "USDC_ADDRESS required");
+        require(usdtAddress != address(0), "USDT_ADDRESS required");
 
         try vm.envAddress("FAN_TOKEN") returns (address addr) {
             fanToken = addr;
@@ -109,7 +114,7 @@ contract DeployAll is Script {
         console.log("[2/3] STREAM WALLET FACTORY");
         console.log("===========================");
         streamFactory = new StreamWalletFactory(
-            deployer, treasury, platformFeeBps, kayenRouter, fanToken, usdcAddress
+            deployer, treasury, platformFeeBps, kayenRouter, fanToken, usdtAddress
         );
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("  Treasury:", treasury);
@@ -118,16 +123,26 @@ contract DeployAll is Script {
     }
 
     function _deploySwapRouter() internal {
-        console.log("[3/3] CHILIZ SWAP ROUTER (unified)");
+        console.log("[3/4] CHILIZ SWAP ROUTER (unified)");
         console.log("===================================");
         swapRouter = new ChilizSwapRouter(
-            kayenRouter, kayenRouter, usdcAddress, wchz, treasury, platformFeeBps
+            kayenRouter, kayenRouter, usdtAddress, wchz, treasury, platformFeeBps
         );
         console.log("ChilizSwapRouter:", address(swapRouter));
-        console.log("  USDC:", usdcAddress);
+        console.log("  USDT:", usdtAddress);
         console.log("  WCHZ:", wchz);
         console.log("  Treasury:", treasury);
         console.log("  Platform Fee:", platformFeeBps, "bps");
+        console.log("");
+    }
+
+    function _deployPayoutEscrow() internal {
+        console.log("[4/4] PAYOUT ESCROW");
+        console.log("====================");
+        payoutEscrow = new PayoutEscrow(usdtAddress, treasury);
+        console.log("PayoutEscrow:", address(payoutEscrow));
+        console.log("  USDT:", usdtAddress);
+        console.log("  Owner (Safe):", treasury);
         console.log("");
     }
 
@@ -151,7 +166,7 @@ contract DeployAll is Script {
         console.log("Treasury/Safe:", treasury);
         console.log("Kayen Router:", kayenRouter);
         console.log("WCHZ:", wchz);
-        console.log("USDC:", usdcAddress);
+        console.log("USDT:", usdtAddress);
         console.log("Platform Fee:", platformFeeBps, "bps");
         console.log("=========================================");
         console.log("");
@@ -165,6 +180,7 @@ contract DeployAll is Script {
         console.log("BettingMatchFactory:", address(bettingFactory));
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("ChilizSwapRouter:   ", address(swapRouter));
+        console.log("PayoutEscrow:       ", address(payoutEscrow));
         console.log("=========================================");
         console.log("");
     }
@@ -173,9 +189,16 @@ contract DeployAll is Script {
         console.log("POST-DEPLOYMENT STEPS:");
         console.log("======================");
         console.log("1. For each BettingMatch proxy:");
-        console.log("   a) cast send <MATCH> 'setUSDCToken(address)'", usdcAddress);
+        console.log("   a) cast send <MATCH> 'setUSDTToken(address)'", usdtAddress);
         console.log("   b) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'SWAP_ROUTER_ROLE')", address(swapRouter));
-        console.log("2. Set fan token if needed:");
+        console.log("   c) cast send <MATCH> 'setPayoutEscrow(address)'", address(payoutEscrow));
+        console.log("2. Authorize each match in the escrow (from Safe):");
+        console.log("   cast send", address(payoutEscrow), "'authorizeMatch(address)' <MATCH>");
+        console.log("3. Fund escrow with USDT (from Safe):");
+        console.log("   Step A: cast send <USDT> 'approve(address,uint256)' <ESCROW> <AMOUNT>");
+        console.log("   Escrow address:", address(payoutEscrow));
+        console.log("   Step B: cast send", address(payoutEscrow), "'fund(uint256)' <AMOUNT>");
+        console.log("4. Set fan token if needed:");
         console.log("   cast send", address(streamFactory), "'setFanToken(address)' <FAN_TOKEN>");
         console.log("=========================================");
     }

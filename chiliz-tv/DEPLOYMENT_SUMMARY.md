@@ -26,6 +26,11 @@ This PR adds comprehensive deployment scripts for all Chiliz-TV smart contracts 
    - BettingMatchFactory
    - Multi-sport support
 
+4. **script/DeployPayout.s.sol**
+   - PayoutEscrow deployment
+   - Configures USDT token and owner
+   - Can also be deployed via `deploy.sh --payout`
+
 ### Documentation (643 lines)
 
 4. **script/README.md** (357 lines)
@@ -294,7 +299,7 @@ This PR provides a complete, production-ready deployment infrastructure for Chil
 - ✅ Safe multisig integration
 - ✅ Environment setup guide
 - ✅ Deployment checklist
-- ✅ 115/115 tests passing
+- ✅ 119/119 tests passing
 - ✅ Individual upgrade control
 - ✅ Emergency procedures
 - ✅ Production-ready

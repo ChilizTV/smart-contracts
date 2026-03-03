@@ -25,7 +25,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     uint16 public defaultPlatformFeeBps; // e.g., 500 = 5%
     address public kayenRouter;
     address public fanToken;
-    address public usdc;
+    address public usdt;
+    address public swapRouter;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -57,7 +58,9 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
 
     event FanTokenUpdated(address indexed oldToken, address indexed newToken);
 
-    event UsdcUpdated(address indexed oldUsdc, address indexed newUsdc);
+    event UsdtUpdated(address indexed oldUsdt, address indexed newUsdt);
+
+    event SwapRouterUpdated(address indexed oldRouter, address indexed newRouter);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -68,6 +71,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     error InvalidAddress();
     error InvalidFeeBps();
     error WalletAlreadyExists();
+    error Unauthorized();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -79,7 +83,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @param defaultPlatformFeeBps_ Default platform fee in basis points
      * @param kayenRouter_ The Kayen DEX router address
      * @param fanToken_ The fan token (ERC20) address
-     * @param usdc_ The USDC token address
+     * @param usdt_ The USDT token address
      */
     constructor(
         address initialOwner,
@@ -87,7 +91,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         uint16 defaultPlatformFeeBps_,
         address kayenRouter_,
         address fanToken_,
-        address usdc_
+        address usdt_
     ) Ownable(initialOwner) {
         if (treasury_ == address(0)) revert InvalidAddress();
         if (defaultPlatformFeeBps_ > 10_000) revert InvalidFeeBps();
@@ -97,7 +101,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         defaultPlatformFeeBps = defaultPlatformFeeBps_;
         kayenRouter = kayenRouter_;
         fanToken = fanToken_;
-        usdc = usdc_;
+        usdt = usdt_;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -133,7 +137,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         // Approve StreamWallet to pull fan tokens
         require(IERC20(fanToken).approve(wallet, amount), "Approval failed");
 
-        // Record subscription (wallet pulls fan tokens and swaps to USDC)
+        // Record subscription (wallet pulls fan tokens and swaps to USDT)
         StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0);
 
         emit SubscriptionProcessed(streamer, msg.sender, amount);
@@ -171,8 +175,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         // Approve StreamWallet to pull fan tokens
         require(IERC20(fanToken).approve(wallet, amount), "Approval failed");
 
-        // Process donation through wallet (wallet pulls fan tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).donate(amount, message, 0);
+        // Process donation through wallet (wallet pulls fan tokens and swaps to USDT)
+        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, 0);
 
         emit DonationProcessed(streamer, msg.sender, amount, message);
     }
@@ -196,13 +200,35 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             defaultPlatformFeeBps,
             kayenRouter,
             fanToken,
-            usdc
+            usdt
         );
         // Deploy ERC1967 UUPS proxy
         wallet = address(new ERC1967Proxy(STREAM_WALLET_IMPLEMENTATION, initData));
 
+        // Set swap router on the new wallet if configured
+        if (swapRouter != address(0)) {
+            StreamWallet(payable(wallet)).setSwapRouter(swapRouter);
+        }
+
         emit StreamWalletCreated(streamer, wallet);
  
+    }
+
+    /**
+     * @notice Get or create a StreamWallet for a streamer
+     * @dev Used by ChilizSwapRouter to ensure a wallet exists before recording
+     * @param streamer The streamer address
+     * @return wallet The StreamWallet proxy address
+     */
+    function getOrCreateWallet(address streamer) external returns (address wallet) {
+        if (msg.sender != owner() && msg.sender != swapRouter) revert Unauthorized();
+        if (streamer == address(0)) revert InvalidAddress();
+
+        wallet = streamerWallets[streamer];
+        if (wallet == address(0)) {
+            wallet = _deployStreamWallet(streamer);
+            streamerWallets[streamer] = wallet;
+        }
     }
 
     /**
@@ -282,16 +308,29 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     }
 
     /**
-     * @notice Update the USDC token address
-     * @param newUsdc The new USDC address
+     * @notice Update the USDT token address
+     * @param newUsdt The new USDT address
      */
-    function setUsdc(address newUsdc) external onlyOwner {
-        if (newUsdc == address(0)) revert InvalidAddress();
+    function setUsdt(address newUsdt) external onlyOwner {
+        if (newUsdt == address(0)) revert InvalidAddress();
 
-        address oldUsdc = usdc;
-        usdc = newUsdc;
+        address oldUsdt = usdt;
+        usdt = newUsdt;
 
-        emit UsdcUpdated(oldUsdc, newUsdc);
+        emit UsdtUpdated(oldUsdt, newUsdt);
+    }
+
+    /**
+     * @notice Update the authorized swap router address
+     * @param _swapRouter The ChilizSwapRouter address
+     */
+    function setSwapRouter(address _swapRouter) external onlyOwner {
+        if (_swapRouter == address(0)) revert InvalidAddress();
+
+        address oldRouter = swapRouter;
+        swapRouter = _swapRouter;
+
+        emit SwapRouterUpdated(oldRouter, _swapRouter);
     }
 
     /**

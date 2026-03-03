@@ -1,0 +1,11 @@
+{
+  "chainId": 88888,
+  "rpcUrl": "https://rpc.chiliz.com",
+  "explorerUrl": "https://chiliscan.com",
+  "verifierUrl": "https://api.routescan.io/v2/network/mainnet/evm/88888/etherscan/api",
+  "kayenMasterRouter": "0x0000000000000000000000000000000000000000",
+  "wchz": "0x0000000000000000000000000000000000000000",
+  "usdt": "0x0000000000000000000000000000000000000000",
+  "safeAddress": "0x0000000000000000000000000000000000000000",
+  "forgeFlags": "--legacy --with-gas-price 100000000000"
+}

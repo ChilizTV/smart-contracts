@@ -7,7 +7,7 @@ import {StreamWallet} from "../src/streamer/StreamWallet.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IKayenRouter} from "../src/interfaces/IKayenRouter.sol";
 
-/// @dev Simple ERC20 mock for fan token and USDC
+/// @dev Simple ERC20 mock for fan token and USDT
 contract MockERC20 is IERC20 {
     string public name;
     string public symbol;
@@ -53,8 +53,8 @@ contract MockERC20 is IERC20 {
  * @dev Mock Kayen router for token-to-token swaps (IKayenRouter interface)
  * Note: This is different from test/mocks/MockKayenRouter.sol which implements
  * IKayenMasterRouterV2 for native CHZ swaps. Both are needed:
- * - IKayenRouter: Fan Token → USDC (used by StreamWallet)
- * - IKayenMasterRouterV2: CHZ (native) → USDC (used by ChilizSwapRouter)
+ * - IKayenRouter: Fan Token → USDT (used by StreamWallet)
+ * - IKayenMasterRouterV2: CHZ (native) → USDT (used by ChilizSwapRouter)
  */
 contract MockKayenRouterTokenSwap is IKayenRouter {
     function swapExactTokensForTokens(
@@ -93,7 +93,7 @@ contract MockKayenRouterTokenSwap is IKayenRouter {
 contract StreamBeaconRegistryTest is Test {
     StreamWalletFactory public factory;
     MockERC20 public fanToken;
-    MockERC20 public usdcToken;
+    MockERC20 public usdtToken;
     MockKayenRouterTokenSwap public router;
 
     address public admin = address(0x1);
@@ -123,7 +123,7 @@ contract StreamBeaconRegistryTest is Test {
     function setUp() public {
         // Deploy mock tokens and router
         fanToken = new MockERC20("Fan Token", "FAN", 18);
-        usdcToken = new MockERC20("USD Coin", "USDC", 6);
+        usdtToken = new MockERC20("Tether USD", "USDT", 6);
         router = new MockKayenRouterTokenSwap();
 
         // Deploy factory
@@ -134,7 +134,7 @@ contract StreamBeaconRegistryTest is Test {
             PLATFORM_FEE_BPS,
             address(router),
             address(fanToken),
-            address(usdcToken)
+            address(usdtToken)
         );
 
         // Mint fan tokens to viewers and streamers
@@ -161,7 +161,7 @@ contract StreamBeaconRegistryTest is Test {
         assertTrue(factory.implementation() != address(0));
         assertEq(factory.kayenRouter(), address(router));
         assertEq(factory.fanToken(), address(fanToken));
-        assertEq(factory.usdc(), address(usdcToken));
+        assertEq(factory.usdt(), address(usdtToken));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -183,16 +183,16 @@ contract StreamBeaconRegistryTest is Test {
         assertTrue(factory.hasWallet(streamer1));
         assertEq(factory.getWallet(streamer1), wallet);
 
-        // Check balances (USDC after swap, 1:1 mock)
+        // Check balances (USDT after swap, 1:1 mock)
         StreamWallet streamWallet = StreamWallet(payable(wallet));
         uint256 expectedFee = (subscriptionAmount * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamerAmount = subscriptionAmount - expectedFee;
 
-        // Treasury should have received USDC platform fee
-        assertEq(usdcToken.balanceOf(treasury), expectedFee);
+        // Treasury should have received USDT platform fee
+        assertEq(usdtToken.balanceOf(treasury), expectedFee);
 
-        // Streamer should have received USDC payment
-        assertEq(usdcToken.balanceOf(streamer1), expectedStreamerAmount);
+        // Streamer should have received USDT payment
+        assertEq(usdtToken.balanceOf(streamer1), expectedStreamerAmount);
 
         // Verify subscription data
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -231,9 +231,9 @@ contract StreamBeaconRegistryTest is Test {
         // Total revenue should be sum
         assertEq(streamWallet.totalRevenue(), amount1 + amount2);
 
-        // Check total USDC fees to treasury
+        // Check total USDT fees to treasury
         uint256 totalFees = ((amount1 + amount2) * PLATFORM_FEE_BPS) / 10_000;
-        assertEq(usdcToken.balanceOf(treasury), totalFees);
+        assertEq(usdtToken.balanceOf(treasury), totalFees);
     }
 
     function testSubscriptionToMultipleStreamers() public {
@@ -255,10 +255,10 @@ contract StreamBeaconRegistryTest is Test {
         assertTrue(factory.hasWallet(streamer1));
         assertTrue(factory.hasWallet(streamer2));
 
-        // Both streamers should have received USDC payments
+        // Both streamers should have received USDT payments
         uint256 expectedStreamerAmount = amount - ((amount * PLATFORM_FEE_BPS) / 10_000);
-        assertEq(usdcToken.balanceOf(streamer1), expectedStreamerAmount);
-        assertEq(usdcToken.balanceOf(streamer2), expectedStreamerAmount);
+        assertEq(usdtToken.balanceOf(streamer1), expectedStreamerAmount);
+        assertEq(usdtToken.balanceOf(streamer2), expectedStreamerAmount);
     }
 
     function testSubscriptionExpiry() public {
@@ -317,8 +317,8 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(viewer1);
         address wallet = factory.subscribeToStream(streamer1, 30 days, subscriptionAmount);
 
-        uint256 streamerUsdcBefore = usdcToken.balanceOf(streamer1);
-        uint256 treasuryUsdcBefore = usdcToken.balanceOf(treasury);
+        uint256 streamerUsdcBefore = usdtToken.balanceOf(streamer1);
+        uint256 treasuryUsdcBefore = usdtToken.balanceOf(treasury);
 
         StreamWallet streamWallet = StreamWallet(payable(wallet));
 
@@ -333,16 +333,16 @@ contract StreamBeaconRegistryTest is Test {
         // Check donation recorded
         assertEq(streamWallet.getDonationAmount(viewer2), donationAmount);
 
-        // Check USDC balances
+        // Check USDT balances
         uint256 expectedFee = (donationAmount * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamerAmount = donationAmount - expectedFee;
 
         assertEq(
-            usdcToken.balanceOf(treasury),
+            usdtToken.balanceOf(treasury),
             treasuryUsdcBefore + expectedFee
         );
         assertEq(
-            usdcToken.balanceOf(streamer1),
+            usdtToken.balanceOf(streamer1),
             streamerUsdcBefore + expectedStreamerAmount
         );
     }
@@ -406,21 +406,21 @@ contract StreamBeaconRegistryTest is Test {
 
         StreamWallet streamWallet = StreamWallet(payable(wallet));
 
-        // Check available balance (should be 0 as USDC was sent directly to streamer/treasury)
+        // Check available balance (should be 0 as USDT was sent directly to streamer/treasury)
         assertEq(streamWallet.availableBalance(), 0);
 
-        // Mint USDC directly to wallet to test withdrawal
-        usdcToken.mint(wallet, 10 ether);
+        // Mint USDT directly to wallet to test withdrawal
+        usdtToken.mint(wallet, 10 ether);
 
         uint256 balance = streamWallet.availableBalance();
         assertEq(balance, 10 ether);
 
-        uint256 streamerUsdcBefore = usdcToken.balanceOf(streamer1);
+        uint256 streamerUsdcBefore = usdtToken.balanceOf(streamer1);
 
         vm.prank(streamer1);
         streamWallet.withdrawRevenue(balance);
 
-        assertEq(usdcToken.balanceOf(streamer1), streamerUsdcBefore + balance);
+        assertEq(usdtToken.balanceOf(streamer1), streamerUsdcBefore + balance);
         assertEq(streamWallet.availableBalance(), 0);
     }
 
@@ -431,8 +431,8 @@ contract StreamBeaconRegistryTest is Test {
 
         StreamWallet streamWallet = StreamWallet(payable(wallet));
 
-        // Fund wallet with USDC
-        usdcToken.mint(wallet, 1 ether);
+        // Fund wallet with USDT
+        usdtToken.mint(wallet, 1 ether);
 
         // Try to withdraw as non-streamer
         vm.prank(viewer1);
@@ -474,12 +474,12 @@ contract StreamBeaconRegistryTest is Test {
             totalStreamerPayments += expectedStreamerAmount;
         }
 
-        // Verify total USDC fees collected by treasury
-        assertEq(usdcToken.balanceOf(treasury), totalFees);
+        // Verify total USDT fees collected by treasury
+        assertEq(usdtToken.balanceOf(treasury), totalFees);
 
-        // Verify total USDC streamer payments
+        // Verify total USDT streamer payments
         assertEq(
-            usdcToken.balanceOf(streamer1),
+            usdtToken.balanceOf(streamer1),
             totalStreamerPayments
         );
     }
@@ -493,7 +493,7 @@ contract StreamBeaconRegistryTest is Test {
             0, // 0% fee
             address(router),
             address(fanToken),
-            address(usdcToken)
+            address(usdtToken)
         );
 
         uint256 amount = 100 ether;
@@ -502,16 +502,16 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(viewer1);
         fanToken.approve(address(zeroFeeFactory), amount);
 
-        uint256 treasuryBefore = usdcToken.balanceOf(treasury);
+        uint256 treasuryBefore = usdtToken.balanceOf(treasury);
 
         vm.prank(viewer1);
         zeroFeeFactory.subscribeToStream(streamer2, 30 days, amount);
 
-        // Streamer should receive full USDC amount
-        assertEq(usdcToken.balanceOf(streamer2), amount);
+        // Streamer should receive full USDT amount
+        assertEq(usdtToken.balanceOf(streamer2), amount);
 
         // Treasury should receive nothing
-        assertEq(usdcToken.balanceOf(treasury), treasuryBefore);
+        assertEq(usdtToken.balanceOf(treasury), treasuryBefore);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -609,9 +609,9 @@ contract StreamBeaconRegistryTest is Test {
         assertEq(streamWallet.totalSubscribers(), 2);
         assertEq(streamWallet.getDonationAmount(viewer1), donationAmount);
 
-        // Verify USDC balances
-        assertEq(usdcToken.balanceOf(treasury), totalFees);
-        assertEq(usdcToken.balanceOf(streamer1), totalStreamerPayment);
+        // Verify USDT balances
+        assertEq(usdtToken.balanceOf(treasury), totalFees);
+        assertEq(usdtToken.balanceOf(streamer1), totalStreamerPayment);
 
         // Verify subscriptions
         assertTrue(streamWallet.isSubscribed(viewer1));
@@ -661,8 +661,8 @@ contract StreamBeaconRegistryTest is Test {
         // Calculate expected fee
         uint256 expectedFee = (subscriptionAmount * PLATFORM_FEE_BPS) / 10_000;
 
-        // Check new treasury received the USDC fee
-        assertEq(usdcToken.balanceOf(newTreasury), expectedFee, "New treasury should have received fee");
+        // Check new treasury received the USDT fee
+        assertEq(usdtToken.balanceOf(newTreasury), expectedFee, "New treasury should have received fee");
     }
 
     function testUpdatePlatformFee() public {
@@ -709,12 +709,12 @@ contract StreamBeaconRegistryTest is Test {
     }
 
     function testSetUsdc() public {
-        address newUsdc = address(0xFED);
+        address newUsdt = address(0xFED);
 
         vm.prank(admin);
-        factory.setUsdc(newUsdc);
+        factory.setUsdt(newUsdt);
 
-        assertEq(factory.usdc(), newUsdc);
+        assertEq(factory.usdt(), newUsdt);
     }
 
     function testRevertSetKayenRouterNonOwner() public {

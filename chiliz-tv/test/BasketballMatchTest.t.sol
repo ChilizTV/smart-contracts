@@ -5,7 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {BettingMatch} from "../src/betting/BettingMatch.sol";
 import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockUSDT} from "./mocks/MockUSDT.sol";
 
 /**
  * @title BasketballMatchTest
@@ -14,7 +14,7 @@ import {MockUSDC} from "./mocks/MockUSDC.sol";
 contract BasketballMatchTest is Test {
     BasketballMatch public implementation;
     BasketballMatch public match_;
-    MockUSDC public usdc;
+    MockUSDT public usdt;
 
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -34,7 +34,7 @@ contract BasketballMatchTest is Test {
     bytes32 constant MARKET_HIGHEST_QUARTER = keccak256("HIGHEST_QUARTER");
 
     function setUp() public {
-        usdc = new MockUSDC();
+        usdt = new MockUSDT();
         implementation = new BasketballMatch();
 
         bytes memory initData = abi.encodeWithSelector(
@@ -48,22 +48,22 @@ contract BasketballMatchTest is Test {
         vm.startPrank(owner);
         match_.grantRole(ODDS_SETTER_ROLE, oddsSetter);
         match_.grantRole(RESOLVER_ROLE, resolver);
-        match_.setUSDCToken(address(usdc));
+        match_.setUSDTToken(address(usdt));
         vm.stopPrank();
 
-        // Fund users with USDC
-        usdc.mint(alice, 100_000e6);
-        usdc.mint(bob, 100_000e6);
+        // Fund users with USDT
+        usdt.mint(alice, 100_000e6);
+        usdt.mint(bob, 100_000e6);
 
         // Fund contract for payouts
-        usdc.mint(address(match_), 500_000e6);
+        usdt.mint(address(match_), 500_000e6);
     }
 
-    // Helper: approve and place USDC bet
+    // Helper: approve and place USDT bet
     function _placeBet(address user, uint256 marketId, uint64 selection, uint256 amount) internal {
         vm.startPrank(user);
-        usdc.approve(address(match_), amount);
-        match_.placeBetUSDC(marketId, selection, amount);
+        usdt.approve(address(match_), amount);
+        match_.placeBetUSDT(marketId, selection, amount);
         vm.stopPrank();
     }
 
@@ -80,10 +80,10 @@ contract BasketballMatchTest is Test {
         vm.prank(owner);
         match_.openMarket(0);
 
-        // 3. Alice bets 1000 USDC on Home (selection 0)
+        // 3. Alice bets 1000 USDT on Home (selection 0)
         _placeBet(alice, 0, 0, 1000e6);
 
-        // 4. Bob bets 500 USDC on Away (selection 1)
+        // 4. Bob bets 500 USDT on Away (selection 1)
         _placeBet(bob, 0, 1, 500e6);
 
         // 5. Close market
@@ -94,11 +94,11 @@ contract BasketballMatchTest is Test {
         vm.prank(resolver);
         match_.resolveMarket(0, 0);
 
-        // 7. Alice claims — should receive 1000 * 20000 / 10000 = 2000 USDC
-        uint256 balBefore = usdc.balanceOf(alice);
+        // 7. Alice claims — should receive 1000 * 20000 / 10000 = 2000 USDT
+        uint256 balBefore = usdt.balanceOf(alice);
         vm.prank(alice);
         match_.claim(0, 0);
-        assertEq(usdc.balanceOf(alice) - balBefore, 2000e6);
+        assertEq(usdt.balanceOf(alice) - balBefore, 2000e6);
 
         // 8. Bob tries to claim — should revert (lost)
         vm.prank(bob);
@@ -159,9 +159,9 @@ contract BasketballMatchTest is Test {
         match_.openMarket(0);
 
         vm.startPrank(alice);
-        usdc.approve(address(match_), 100e6);
+        usdt.approve(address(match_), 100e6);
         vm.expectRevert();
-        match_.placeBetUSDC(0, 2, 100e6);
+        match_.placeBetUSDT(0, 2, 100e6);
         vm.stopPrank();
     }
 
@@ -178,9 +178,9 @@ contract BasketballMatchTest is Test {
 
         // Invalid: selection 4
         vm.startPrank(bob);
-        usdc.approve(address(match_), 100e6);
+        usdt.approve(address(match_), 100e6);
         vm.expectRevert();
-        match_.placeBetUSDC(0, 4, 100e6);
+        match_.placeBetUSDT(0, 4, 100e6);
         vm.stopPrank();
     }
 
@@ -198,10 +198,10 @@ contract BasketballMatchTest is Test {
         match_.cancelMarket(0, "game postponed");
 
         // Refund
-        uint256 balBefore = usdc.balanceOf(alice);
+        uint256 balBefore = usdt.balanceOf(alice);
         vm.prank(alice);
         match_.claimRefund(0, 0);
-        assertEq(usdc.balanceOf(alice) - balBefore, 1000e6);
+        assertEq(usdt.balanceOf(alice) - balBefore, 1000e6);
     }
 
     function test_OddsUpdate_LocksAtBetTime() public {
@@ -228,15 +228,15 @@ contract BasketballMatchTest is Test {
         vm.prank(resolver);
         match_.resolveMarket(0, 0);
 
-        // Alice gets 2000 USDC (1000 * 2.0x), Bob gets 3000 USDC (1000 * 3.0x)
-        uint256 aliceBal = usdc.balanceOf(alice);
+        // Alice gets 2000 USDT (1000 * 2.0x), Bob gets 3000 USDT (1000 * 3.0x)
+        uint256 aliceBal = usdt.balanceOf(alice);
         vm.prank(alice);
         match_.claim(0, 0);
-        assertEq(usdc.balanceOf(alice) - aliceBal, 2000e6);
+        assertEq(usdt.balanceOf(alice) - aliceBal, 2000e6);
 
-        uint256 bobBal = usdc.balanceOf(bob);
+        uint256 bobBal = usdt.balanceOf(bob);
         vm.prank(bob);
         match_.claim(0, 0);
-        assertEq(usdc.balanceOf(bob) - bobBal, 3000e6);
+        assertEq(usdt.balanceOf(bob) - bobBal, 3000e6);
     }
 }

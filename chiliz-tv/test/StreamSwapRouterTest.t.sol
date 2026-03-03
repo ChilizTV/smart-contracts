@@ -3,7 +3,7 @@ pragma solidity ^0.8.22;
 
 import {Test} from "forge-std/Test.sol";
 import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
-import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {MockKayenRouter} from "./mocks/MockKayenRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -16,10 +16,10 @@ contract MockFanToken is ERC20 {
 
 /**
  * @title StreamSwapRouterTest
- * @notice Tests for ChilizSwapRouter streaming functions (CHZ / Token / USDC donations & subscriptions)
+ * @notice Tests for ChilizSwapRouter streaming functions (CHZ / Token / USDT donations & subscriptions)
  */
 contract StreamSwapRouterTest is Test {
-    MockUSDC public usdc;
+    MockUSDT public usdt;
     MockKayenRouter public mockRouter;
     MockFanToken public fanToken;
     ChilizSwapRouter public streamSwapRouter;
@@ -33,14 +33,14 @@ contract StreamSwapRouterTest is Test {
     uint16 public constant PLATFORM_FEE_BPS = 500; // 5%
 
     function setUp() public {
-        usdc = new MockUSDC();
-        mockRouter = new MockKayenRouter(address(usdc));
+        usdt = new MockUSDT();
+        mockRouter = new MockKayenRouter(address(usdt));
         fanToken = new MockFanToken();
 
         streamSwapRouter = new ChilizSwapRouter(
             address(mockRouter), // masterRouter
             address(mockRouter), // tokenRouter (mock implements both)
-            address(usdc),
+            address(usdt),
             WCHZ,
             treasury,
             PLATFORM_FEE_BPS
@@ -49,11 +49,11 @@ contract StreamSwapRouterTest is Test {
         vm.deal(viewer1, 100 ether);
         vm.deal(viewer2, 100 ether);
 
-        // Mint fan tokens and USDC for direct-payment tests
+        // Mint fan tokens and USDT for direct-payment tests
         fanToken.mint(viewer1, 1000 ether);
         fanToken.mint(viewer2, 1000 ether);
-        usdc.mint(viewer1, 100_000e6);
-        usdc.mint(viewer2, 100_000e6);
+        usdt.mint(viewer1, 100_000e6);
+        usdt.mint(viewer2, 100_000e6);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -61,7 +61,7 @@ contract StreamSwapRouterTest is Test {
     // ══════════════════════════════════════════════════════════════════════════
 
     function test_DonateWithCHZ() public {
-        // 10 CHZ * 0.10 = 1 USDC, 5% fee = 0.05 USDC to treasury, 0.95 USDC to streamer
+        // 10 CHZ * 0.10 = 1 USDT, 5% fee = 0.05 USDT to treasury, 0.95 USDT to streamer
         vm.prank(viewer1);
         streamSwapRouter.donateWithCHZ{value: 10 ether}(
             streamer1,
@@ -70,12 +70,12 @@ contract StreamSwapRouterTest is Test {
             block.timestamp + 1 hours
         );
 
-        uint256 expectedTotal = 1e6; // 1 USDC
+        uint256 expectedTotal = 1e6; // 1 USDT
         uint256 expectedFee = (expectedTotal * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamer = expectedTotal - expectedFee;
 
-        assertEq(usdc.balanceOf(treasury), expectedFee, "Treasury should receive fee");
-        assertEq(usdc.balanceOf(streamer1), expectedStreamer, "Streamer should receive donation");
+        assertEq(usdt.balanceOf(treasury), expectedFee, "Treasury should receive fee");
+        assertEq(usdt.balanceOf(streamer1), expectedStreamer, "Streamer should receive donation");
     }
 
     function test_SubscribeWithCHZ() public {
@@ -93,43 +93,43 @@ contract StreamSwapRouterTest is Test {
         uint256 expectedFee = (expectedTotal * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamer = expectedTotal - expectedFee;
 
-        assertEq(usdc.balanceOf(treasury), expectedFee);
-        assertEq(usdc.balanceOf(streamer1), expectedStreamer);
+        assertEq(usdt.balanceOf(treasury), expectedFee);
+        assertEq(usdt.balanceOf(streamer1), expectedStreamer);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // USDC DIRECT DONATION / SUBSCRIPTION TESTS (NO SWAP)
+    // USDT DIRECT DONATION / SUBSCRIPTION TESTS (NO SWAP)
     // ══════════════════════════════════════════════════════════════════════════
 
-    function test_DonateWithUSDC() public {
-        uint256 amount = 100e6; // 100 USDC
+    function test_DonateWithUSDT() public {
+        uint256 amount = 100e6; // 100 USDT
 
         vm.startPrank(viewer1);
-        usdc.approve(address(streamSwapRouter), amount);
-        streamSwapRouter.donateWithUSDC(streamer1, "USDC donation!", amount);
+        usdt.approve(address(streamSwapRouter), amount);
+        streamSwapRouter.donateWithUSDT(streamer1, "USDT donation!", amount);
         vm.stopPrank();
 
         uint256 expectedFee = (amount * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamer = amount - expectedFee;
 
-        assertEq(usdc.balanceOf(treasury), expectedFee, "Treasury should receive fee");
-        assertEq(usdc.balanceOf(streamer1), expectedStreamer, "Streamer should receive donation");
+        assertEq(usdt.balanceOf(treasury), expectedFee, "Treasury should receive fee");
+        assertEq(usdt.balanceOf(streamer1), expectedStreamer, "Streamer should receive donation");
     }
 
-    function test_SubscribeWithUSDC() public {
-        uint256 amount = 50e6; // 50 USDC
+    function test_SubscribeWithUSDT() public {
+        uint256 amount = 50e6; // 50 USDT
         uint256 duration = 30 days;
 
         vm.startPrank(viewer1);
-        usdc.approve(address(streamSwapRouter), amount);
-        streamSwapRouter.subscribeWithUSDC(streamer1, duration, amount);
+        usdt.approve(address(streamSwapRouter), amount);
+        streamSwapRouter.subscribeWithUSDT(streamer1, duration, amount);
         vm.stopPrank();
 
         uint256 expectedFee = (amount * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamer = amount - expectedFee;
 
-        assertEq(usdc.balanceOf(treasury), expectedFee);
-        assertEq(usdc.balanceOf(streamer1), expectedStreamer);
+        assertEq(usdt.balanceOf(treasury), expectedFee);
+        assertEq(usdt.balanceOf(streamer1), expectedStreamer);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -138,7 +138,7 @@ contract StreamSwapRouterTest is Test {
 
     function test_DonateWithToken() public {
         uint256 tokenAmount = 10 ether; // 10 FAN tokens
-        // 10 tokens * 0.10 = 1 USDC (mock rate)
+        // 10 tokens * 0.10 = 1 USDT (mock rate)
 
         vm.startPrank(viewer1);
         fanToken.approve(address(streamSwapRouter), tokenAmount);
@@ -156,8 +156,8 @@ contract StreamSwapRouterTest is Test {
         uint256 expectedFee = (expectedTotal * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamer = expectedTotal - expectedFee;
 
-        assertEq(usdc.balanceOf(treasury), expectedFee, "Treasury should receive fee");
-        assertEq(usdc.balanceOf(streamer1), expectedStreamer, "Streamer should receive donation");
+        assertEq(usdt.balanceOf(treasury), expectedFee, "Treasury should receive fee");
+        assertEq(usdt.balanceOf(streamer1), expectedStreamer, "Streamer should receive donation");
     }
 
     function test_SubscribeWithToken() public {
@@ -180,8 +180,8 @@ contract StreamSwapRouterTest is Test {
         uint256 expectedFee = (expectedTotal * PLATFORM_FEE_BPS) / 10_000;
         uint256 expectedStreamer = expectedTotal - expectedFee;
 
-        assertEq(usdc.balanceOf(treasury), expectedFee);
-        assertEq(usdc.balanceOf(streamer1), expectedStreamer);
+        assertEq(usdt.balanceOf(treasury), expectedFee);
+        assertEq(usdt.balanceOf(streamer1), expectedStreamer);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -238,44 +238,44 @@ contract StreamSwapRouterTest is Test {
         );
     }
 
-    // USDC direct reverts
-    function test_RevertDonateUSDCZeroAmount() public {
+    // USDT direct reverts
+    function test_RevertDonateUSDTZeroAmount() public {
         vm.prank(viewer1);
         vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
-        streamSwapRouter.donateWithUSDC(streamer1, "test", 0);
+        streamSwapRouter.donateWithUSDT(streamer1, "test", 0);
     }
 
-    function test_RevertDonateUSDCZeroAddress() public {
+    function test_RevertDonateUSDTZeroAddress() public {
         vm.prank(viewer1);
         vm.expectRevert(ChilizSwapRouter.ZeroAddress.selector);
-        streamSwapRouter.donateWithUSDC(address(0), "test", 1e6);
+        streamSwapRouter.donateWithUSDT(address(0), "test", 1e6);
     }
 
-    function test_RevertSubscribeUSDCZeroDuration() public {
+    function test_RevertSubscribeUSDTZeroDuration() public {
         vm.startPrank(viewer1);
-        usdc.approve(address(streamSwapRouter), 1e6);
+        usdt.approve(address(streamSwapRouter), 1e6);
         vm.expectRevert(ChilizSwapRouter.ZeroValue.selector);
-        streamSwapRouter.subscribeWithUSDC(streamer1, 0, 1e6);
+        streamSwapRouter.subscribeWithUSDT(streamer1, 0, 1e6);
         vm.stopPrank();
     }
 
     // Token reverts
-    function test_RevertDonateTokenIsUSDC() public {
+    function test_RevertDonateTokenIsUSDT() public {
         vm.startPrank(viewer1);
-        usdc.approve(address(streamSwapRouter), 1e6);
-        vm.expectRevert(ChilizSwapRouter.TokenIsUSDC.selector);
+        usdt.approve(address(streamSwapRouter), 1e6);
+        vm.expectRevert(ChilizSwapRouter.TokenIsUSDT.selector);
         streamSwapRouter.donateWithToken(
-            address(usdc), 1e6, streamer1, "test", 0, block.timestamp + 1 hours
+            address(usdt), 1e6, streamer1, "test", 0, block.timestamp + 1 hours
         );
         vm.stopPrank();
     }
 
-    function test_RevertSubscribeTokenIsUSDC() public {
+    function test_RevertSubscribeTokenIsUSDT() public {
         vm.startPrank(viewer1);
-        usdc.approve(address(streamSwapRouter), 1e6);
-        vm.expectRevert(ChilizSwapRouter.TokenIsUSDC.selector);
+        usdt.approve(address(streamSwapRouter), 1e6);
+        vm.expectRevert(ChilizSwapRouter.TokenIsUSDT.selector);
         streamSwapRouter.subscribeWithToken(
-            address(usdc), 1e6, streamer1, 30 days, 0, block.timestamp + 1 hours
+            address(usdt), 1e6, streamer1, 30 days, 0, block.timestamp + 1 hours
         );
         vm.stopPrank();
     }

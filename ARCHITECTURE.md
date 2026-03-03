@@ -8,7 +8,7 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - **BettingMatchFactory**: Deploys sport-specific match proxies
 - **FootballMatch & BasketballMatch**: UUPS upgradeable implementations
 - **ERC1967Proxy**: Each match is an independent upgradeable proxy instance
-- **USDC Settlement**: All bets placed and paid out in USDC (6 decimals)
+- **USDT Settlement**: All bets placed and paid out in USDT (6 decimals)
 - **Dynamic Odds**: Real-time odds set by ODDS_SETTER_ROLE (x10000 precision)
 - **Role-Based Access Control**: ADMIN_ROLE, RESOLVER_ROLE, PAUSER_ROLE, TREASURY_ROLE, ODDS_SETTER_ROLE, SWAP_ROUTER_ROLE
 
@@ -16,21 +16,28 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - **StreamBeaconRegistry**: Manages UpgradeableBeacon for atomic upgrades
 - **StreamWalletFactory**: Deploys BeaconProxy instances for streamers
 - **StreamWallet**: Implementation contract with subscription & donation logic
-- **USDC Settlement**: All donations and subscriptions settled in USDC
+- **USDT Settlement**: All donations and subscriptions settled in USDT
 - **Upgradeability**: All streamer wallets upgrade simultaneously via beacon
 
 ### 3. Unified Swap Router
 - **ChilizSwapRouter** (`src/swap/ChilizSwapRouter.sol`): Single swap adapter for the entire platform
-- Handles **betting** (CHZ / Fan Token / USDC → USDC → BettingMatch) and **streaming** (CHZ / Fan Token / USDC → USDC → streamer/treasury) in one contract
+- Handles **betting** (CHZ / Fan Token / USDT → USDT → BettingMatch) and **streaming** (CHZ / Fan Token / USDT → USDT → streamer/treasury) in one contract
 - Swaps via Kayen DEX (IKayenMasterRouterV2 for native CHZ, IKayenRouter for ERC20)
 - Ownable + ReentrancyGuard; platform fee + treasury config for streaming flows
 - Requires SWAP_ROUTER_ROLE on each BettingMatch proxy
+
+### 4. Payout Escrow System
+- **PayoutEscrow**: Shared USDT escrow contract funded by Gnosis Safe treasury
+- Whitelisted BettingMatch proxies call `disburseTo()` for shortfall payouts
+- Owner-controlled whitelist (`authorizeMatch` / `revokeMatch`)
+- Pausable + ReentrancyGuard + SafeERC20
 
 ### Deployment Scripts
 - `script/DeployAll.s.sol`: Complete system deployment (betting + streaming + swap router)
 - `script/DeployBetting.s.sol`: Betting system only
 - `script/DeployStreaming.s.sol`: Streaming system only
 - `script/DeploySwap.s.sol`: Unified ChilizSwapRouter (Kayen DEX integration)
+- `script/DeployPayout.s.sol`: PayoutEscrow deployment + configuration
 
 ---
 
@@ -112,29 +119,29 @@ sequenceDiagram
         Proxy-->>Admin: Market created ✓
         deactivate Proxy
         
-        Note over Admin: Fund USDC treasury for payouts
-        Admin->>Proxy: fundUSDCTreasury(10000e6)
+        Note over Admin: Fund USDT treasury for payouts
+        Admin->>Proxy: fundUSDTTreasury(10000e6)
         activate Proxy
-        Proxy->>FImpl: delegatecall fundUSDCTreasury()
+        Proxy->>FImpl: delegatecall fundUSDTTreasury()
         activate FImpl
-        Note right of FImpl: Requires TREASURY_ROLE<br/>USDC transferred to contract
-        FImpl-->>Proxy: emit TreasuryFunded(10000e6)
+        Note right of FImpl: Requires TREASURY_ROLE<br/>USDT transferred to contract
+        FImpl-->>Proxy: emit USDTTreasuryFunded(10000e6)
         deactivate FImpl
         deactivate Proxy
         
-        User1->>Proxy: placeBetUSDC(marketId=0, selection=0, 500e6)
+        User1->>Proxy: placeBetUSDT(marketId=0, selection=0, 500e6)
         activate Proxy
-        Proxy->>FImpl: delegatecall placeBetUSDC()
+        Proxy->>FImpl: delegatecall placeBetUSDT()
         activate FImpl
-        Note right of FImpl: USDC transferred from user<br/>Store bet: Bet(500e6, selection=0, odds=22000)<br/>Liability tracked by solvency system
+        Note right of FImpl: USDT transferred from user<br/>Store bet: Bet(500e6, selection=0, odds=22000)<br/>Liability tracked by solvency system
         FImpl-->>Proxy: emit BetPlaced(0, user1, 500e6, 0, 22000)
         deactivate FImpl
         Proxy-->>User1: Bet recorded ✓
         deactivate Proxy
         
-        User2->>Proxy: placeBetUSDC(marketId=0, selection=1, 300e6)
+        User2->>Proxy: placeBetUSDT(marketId=0, selection=1, 300e6)
         activate Proxy
-        Proxy->>FImpl: delegatecall placeBetUSDC()
+        Proxy->>FImpl: delegatecall placeBetUSDT()
         activate FImpl
         Note right of FImpl: Bet locked at current odds
         FImpl-->>Proxy: emit BetPlaced(0, user2, 300e6, 1, 22000)
@@ -147,9 +154,9 @@ sequenceDiagram
         Note right of Proxy: Requires ODDS_SETTER_ROLE<br/>New odds: 1.80x
         deactivate Proxy
         
-        User3->>Proxy: placeBetUSDC(marketId=0, selection=2, 200e6)
+        User3->>Proxy: placeBetUSDT(marketId=0, selection=2, 200e6)
         activate Proxy
-        Proxy->>FImpl: delegatecall placeBetUSDC()
+        Proxy->>FImpl: delegatecall placeBetUSDT()
         activate FImpl
         Note right of FImpl: Bet locked at NEW odds (18000)
         FImpl-->>Proxy: emit BetPlaced(0, user3, 200e6, 2, 18000)
@@ -178,21 +185,21 @@ sequenceDiagram
     rect rgb(240, 240, 255)
         Note over Admin,Treasury: PHASE 5: PAYOUT CLAIMS
         
-        Note over User1: User1 bet 500 USDC on outcome 0 at 2.20x (winner)
+        Note over User1: User1 bet 500 USDT on outcome 0 at 2.20x (winner)
         
         User1->>Proxy: claim(marketId=0, betIndex=0)
         activate Proxy
         Proxy->>FImpl: delegatecall claim()
         activate FImpl
         
-        Note right of FImpl: Dynamic odds payout:<br/>stake = 500 USDC<br/>lockedOdds = 2.20x (22000)<br/>payout = 500 × 22000 / 10000<br/>= 1100 USDC
+        Note right of FImpl: Dynamic odds payout:<br/>stake = 500 USDT<br/>lockedOdds = 2.20x (22000)<br/>payout = 500 × 22000 / 10000<br/>= 1100 USDT
         
         Note right of FImpl: Update state (CEI pattern):<br/>bets[user1][0].claimed = true
         
         FImpl-->>Proxy: emit BetClaimed(0, user1, 1100e6)
         deactivate FImpl
         
-        Proxy->>User1: Transfer USDC payout (1100 USDC)
+        Proxy->>User1: Transfer USDT payout (1100 USDT)
         activate User1
         User1-->>Proxy: Payout received ✓
         deactivate User1
@@ -206,7 +213,7 @@ sequenceDiagram
     rect rgb(240, 240, 240)
         Note over Admin,Treasury: FINAL STATE SUMMARY
         
-        Note over Proxy: Match Proxy State:<br/>✓ Market 0 resolved (outcome = 0)<br/>✓ Total bets: 1000 USDC<br/>✓ Winners: User1 (1100 USDC payout at 2.20x)<br/>✓ Losers: User2 (-300), User3 (-200)<br/>✓ Treasury funded for solvency<br/><br/>Dynamic Odds Model:<br/>User1: 120% gain (1100/500 - 1)<br/>Odds locked at time of bet
+        Note over Proxy: Match Proxy State:<br/>✓ Market 0 resolved (outcome = 0)<br/>✓ Total bets: 1000 USDT<br/>✓ Winners: User1 (1100 USDT payout at 2.20x)<br/>✓ Losers: User2 (-300), User3 (-200)<br/>✓ Treasury funded for solvency<br/><br/>Dynamic Odds Model:<br/>User1: 120% gain (1100/500 - 1)<br/>Odds locked at time of bet
     end
 ```
 
@@ -295,21 +302,21 @@ sequenceDiagram
     rect rgb(255, 240, 220)
         Note over Admin,Treasury: PHASE 3: SUBSCRIPTIONS & DONATIONS
         
-        Note over Viewer: Viewer pays via ChilizSwapRouter<br/>Any token → USDC → streamer wallet
+        Note over Viewer: Viewer pays via ChilizSwapRouter<br/>Any token → USDT → streamer wallet
         
-        Viewer->>Wallet: subscribeWithUSDC(streamer, duration, 100e6)
+        Viewer->>Wallet: subscribeWithUSDT(streamer, duration, 100e6)
         activate Wallet
         Wallet->>Impl: delegatecall subscribe()
         activate Impl
         
-        Note right of Impl: Calculate USDC split:<br/>platformFee = 100 × 5% = 5 USDC<br/>streamerAmount = 95 USDC<br/><br/>Update subscription:<br/>subscriptions[viewer] = block.timestamp + 30 days
+        Note right of Impl: Calculate USDT split:<br/>platformFee = 100 × 5% = 5 USDT<br/>streamerAmount = 95 USDT<br/><br/>Update subscription:<br/>subscriptions[viewer] = block.timestamp + 30 days
         
-        Impl->>Treasury: transfer(5 USDC)
+        Impl->>Treasury: transfer(5 USDT)
         activate Treasury
         Treasury-->>Impl: Fee received ✓
         deactivate Treasury
         
-        Note right of Impl: streamerBalance += 95 USDC
+        Note right of Impl: streamerBalance += 95 USDT
         Impl-->>Wallet: emit Subscribed(viewer, duration, 100e6)
         deactivate Impl
         Wallet-->>Viewer: Subscription active ✓
@@ -317,18 +324,18 @@ sequenceDiagram
         
         Viewer->>Wallet: donateWithCHZ(streamer, message, minOut, deadline) {value: 50 CHZ}
         activate Wallet
-        Note right of Wallet: ChilizSwapRouter<br/>swaps CHZ → USDC<br/>via Kayen DEX
+        Note right of Wallet: ChilizSwapRouter<br/>swaps CHZ → USDT<br/>via Kayen DEX
         Wallet->>Impl: delegatecall donate()
         activate Impl
         
-        Note right of Impl: Calculate USDC split:<br/>platformFee = swapped × 5%<br/>streamerAmount = swapped × 95%
+        Note right of Impl: Calculate USDT split:<br/>platformFee = swapped × 5%<br/>streamerAmount = swapped × 95%
         
-        Impl->>Treasury: transfer(fee USDC)
+        Impl->>Treasury: transfer(fee USDT)
         activate Treasury
         Treasury-->>Impl: Fee received ✓
         deactivate Treasury
         
-        Note right of Impl: streamerBalance += streamerAmount USDC
+        Note right of Impl: streamerBalance += streamerAmount USDT
         Impl-->>Wallet: emit Donated(viewer, amount)
         deactivate Impl
         Wallet-->>Viewer: Donation recorded ✓
@@ -343,11 +350,11 @@ sequenceDiagram
         Wallet->>Impl: delegatecall withdraw()
         activate Impl
         
-        Note right of Impl: Check USDC balance:<br/>streamerBalance = 142.5 USDC<br/>requested = 100 USDC<br/>✓ sufficient balance
+        Note right of Impl: Check USDT balance:<br/>streamerBalance = 142.5 USDT<br/>requested = 100 USDT<br/>✓ sufficient balance
         
-        Note right of Impl: Update state:<br/>streamerBalance -= 100 USDC<br/>new balance = 42.5 USDC
+        Note right of Impl: Update state:<br/>streamerBalance -= 100 USDT<br/>new balance = 42.5 USDT
         
-        Impl->>Streamer: transfer(100 USDC)
+        Impl->>Streamer: transfer(100 USDT)
         activate Streamer
         Streamer-->>Impl: Withdrawal received ✓
         deactivate Streamer
@@ -382,7 +389,7 @@ sequenceDiagram
     rect rgb(240, 240, 240)
         Note over Admin,Treasury: FINAL STATE SUMMARY
         
-        Note over Wallet: Streamer Wallet State:<br/>✓ Total received: ~150 USDC (settled in USDC)<br/>✓ Platform fees: ~7.5 USDC to Treasury<br/>✓ Streamer earnings: ~142.5 USDC<br/>✓ Withdrawn: 100 USDC<br/>✓ Remaining balance: ~42.5 USDC<br/>✓ Active subscription: 1 viewer<br/><br/>Payment Paths Supported:<br/>✓ Native CHZ → USDC via ChilizSwapRouter<br/>✓ Fan tokens (ERC20) → USDC via ChilizSwapRouter<br/>✓ USDC direct (no swap)<br/><br/>Beacon Upgrade:<br/>✓ All wallets using V2 logic<br/>✓ Zero downtime upgrade
+        Note over Wallet: Streamer Wallet State:<br/>✓ Total received: ~150 USDT (settled in USDT)<br/>✓ Platform fees: ~7.5 USDT to Treasury<br/>✓ Streamer earnings: ~142.5 USDT<br/>✓ Withdrawn: 100 USDT<br/>✓ Remaining balance: ~42.5 USDT<br/>✓ Active subscription: 1 viewer<br/><br/>Payment Paths Supported:<br/>✓ Native CHZ → USDT via ChilizSwapRouter<br/>✓ Fan tokens (ERC20) → USDT via ChilizSwapRouter<br/>✓ USDT direct (no swap)<br/><br/>Beacon Upgrade:<br/>✓ All wallets using V2 logic<br/>✓ Zero downtime upgrade
     end
 ```
 
@@ -399,8 +406,8 @@ sequenceDiagram
 | `ODDS_SETTER_ROLE` | Update market odds in real-time | Backend odds service |
 | `RESOLVER_ROLE` | Resolve markets with outcomes | Backend resolver service |
 | `PAUSER_ROLE` | Emergency pause in critical situations | Match owner, security team |
-| `TREASURY_ROLE` | Fund USDC treasury, emergency USDC withdraw | Treasury multisig |
-| `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users | ChilizSwapRouter contract |
+| `TREASURY_ROLE` | Fund USDT treasury, emergency USDT withdraw | Treasury multisig |
+| `SWAP_ROUTER_ROLE` | Call `placeBetUSDTFor()` on behalf of users | ChilizSwapRouter contract |
 
 ### Role Assignment Flow
 
@@ -416,7 +423,7 @@ graph TD
     G --> I[Can update odds]
     D --> J[Can resolve outcomes]
     E --> K[Can pause contract]
-    F --> L[Can fund/withdraw USDC treasury]
+    F --> L[Can fund/withdraw USDT treasury]
     B --> M[Can upgrade via UUPS]
     B --> N[Can grant SWAP_ROUTER_ROLE to router]
 ```
@@ -509,7 +516,8 @@ forge script script/DeployStreaming.s.sol \
 | StreamWallet Implementation | TBD | Chiliz Spicy Testnet |
 | StreamBeaconRegistry | TBD | Chiliz Spicy Testnet |
 | StreamWalletFactory | TBD | Chiliz Spicy Testnet |
-| USDC Token | TBD | Chiliz Spicy Testnet |
+| USDT Token | TBD | Chiliz Spicy Testnet |
+| PayoutEscrow | TBD | Chiliz Spicy Testnet |
 | Treasury Multisig | TBD | Chiliz Spicy Testnet |
 
 ---
@@ -522,33 +530,37 @@ src/
 │   ├── BettingMatch.sol           # Abstract base with UUPS + AccessControl + dynamic odds
 │   ├── FootballMatch.sol          # Football-specific implementation
 │   ├── BasketballMatch.sol        # Basketball-specific implementation
-│   └── BettingMatchFactory.sol    # Factory for ERC1967Proxy deployment
+│   ├── BettingMatchFactory.sol    # Factory for ERC1967Proxy deployment
+│   └── PayoutEscrow.sol           # Shared USDT escrow funded by Gnosis Safe treasury
 ├── swap/
-│   └── ChilizSwapRouter.sol       # Unified CHZ / Token / USDC swap router (betting + streaming)
+│   └── ChilizSwapRouter.sol       # Unified CHZ / Token / USDT swap router (betting + streaming)
 ├── streamer/
-│   ├── StreamWallet.sol           # Subscription & donation logic (USDC)
+│   ├── StreamWallet.sol           # Subscription & donation logic (USDT)
 │   ├── StreamBeaconRegistry.sol   # Manages UpgradeableBeacon
 │   └── StreamWalletFactory.sol    # Factory for BeaconProxy deployment
 ├── interfaces/
 │   ├── IKayenMasterRouterV2.sol   # Kayen DEX native CHZ swap interface
 │   ├── IKayenRouter.sol           # Kayen DEX ERC20-to-ERC20 swap interface
+│   ├── IPayoutEscrow.sol          # PayoutEscrow disbursement interface
 │   └── IStreamWalletInit.sol      # StreamWallet initialization interface
 
 
 script/
 ├── DeployAll.s.sol                # Complete system deployment
 ├── DeployBetting.s.sol            # Betting system deployment
+├── DeployPayout.s.sol             # PayoutEscrow deployment
 ├── DeployStreaming.s.sol          # Streaming system deployment
 └── DeploySwap.s.sol               # ChilizSwapRouter deployment
 
 test/
-├── BettingMatchTest.t.sol         # Core USDC betting + dynamic odds tests
+├── BettingMatchTest.t.sol         # Core USDT betting + dynamic odds tests
 ├── BasketballMatchTest.t.sol      # Basketball lifecycle tests
+├── PayoutEscrowTest.t.sol         # PayoutEscrow funding, disbursement, whitelist
 ├── StreamBeaconRegistryTest.t.sol  # Streaming system tests
 ├── StreamSwapRouterTest.t.sol     # ChilizSwapRouter streaming payment paths
 ├── SwapIntegrationTest.t.sol      # ChilizSwapRouter betting integration tests
 └── mocks/
-    └── MockV3Aggregator.sol       # Mock price oracle for testing
+    └── MockUSDT.sol               # Mock USDT token for testing
 ```
 
 ---
@@ -589,30 +601,16 @@ registry.upgradeBeacon(address(newImpl));
 
 ## Dead Code Identified
 
-### ⚠️ Unused Contract
-- **`src/SportBeaconRegistry.sol`**
-  - **Status**: Not imported or used anywhere in deployment scripts or production contracts
-  - **Reason**: Replaced by `StreamBeaconRegistry` for streaming system
-  - **Action Required**: Should be deleted to avoid confusion during audits
-  - **Risk**: Low (not deployed, not referenced)
-
-### Verification Commands
-```bash
-# Search for SportBeaconRegistry usage
-grep -r "SportBeaconRegistry" script/
-grep -r "import.*SportBeaconRegistry" src/
-
-# Expected: No results (confirms it's dead code)
-```
+No dead code identified. All contracts, functions, and interfaces are actively used in deployment scripts and/or test suites. Five write-only accounting variables (`totalUSDTPool`, `totalUSDTLiabilities`, `_marketLiabilities`, `_selectionLiabilities`, `totalBetsPlaced`) serve off-chain monitoring via events and are not dead code.
 
 ---
 
 ## Testing Status
 
 ### Test Suite Overview
-- **Total Tests**: 123 (after removing 3 problematic role tests)
+- **Total Tests**: 119
 - **Core Security Tests**: 24/24 passing
-- **Role-Based Access Tests**: 21/21 passing (5 refactored, 3 removed)
+- **Role-Based Access Tests**: 21/21 passing
 - **Betting Logic Tests**: 48/48 passing
 - **Streaming Tests**: 30/30 passing
 
@@ -633,6 +631,6 @@ forge coverage
 
 ---
 
-**Last Updated**: 2026-02-20  
-**Version**: 3.0 (USDC-only settlement + Swap Routers + Dynamic Odds)  
+**Last Updated**: 2026-06-17  
+**Version**: 4.0 (USDT-only settlement + Swap Routers + Dynamic Odds + PayoutEscrow)  
 **Author**: ChilizTV Development Team
