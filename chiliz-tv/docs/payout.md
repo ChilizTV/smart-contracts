@@ -2,7 +2,7 @@
 
 ## Overview
 
-The ChilizTV betting system uses a **Pull-Claims with Pre-funded PayoutEscrow** architecture. Users claim their winnings on-chain from the BettingMatch contract. When that contract does not hold enough USDT to cover the payout, it automatically pulls the deficit from a shared `PayoutEscrow` contract funded by the Gnosis Safe treasury.
+The ChilizTV betting system uses a **Pull-Claims with Pre-funded PayoutEscrow** architecture. Users claim their winnings on-chain from the BettingMatch contract. When that contract does not hold enough USDC to cover the payout, it automatically pulls the deficit from a shared `PayoutEscrow` contract funded by the Gnosis Safe treasury.
 
 ## Contracts
 
@@ -10,7 +10,7 @@ The ChilizTV betting system uses a **Pull-Claims with Pre-funded PayoutEscrow** 
 |----------|------|----------|
 | `BettingMatch` (abstract) | Core betting logic, payout disbursement | Per-match UUPS proxy |
 | `FootballMatch` / `BasketballMatch` | Sport-specific markets | Concrete implementations |
-| `PayoutEscrow` | Shared USDT reserve funded by Safe | Once per network |
+| `PayoutEscrow` | Shared USDC reserve funded by Safe | Once per network |
 | `BettingMatchFactory` | Deploys match proxies | Once per network |
 
 ## Roles
@@ -34,27 +34,27 @@ sequenceDiagram
     participant User as Winner
 
     Note over Safe,User: Phase 1: Escrow is pre-funded
-    Safe->>Safe: USDT.approve(Escrow, amount)
+    Safe->>Safe: USDC.approve(Escrow, amount)
     Safe->>Escrow: fund(amount)
-    Escrow-->>Escrow: Holds USDT reserve
+    Escrow-->>Escrow: Holds USDC reserve
     
     Note over Safe,User: Phase 2: Betting lifecycle
-    User->>Match: placeBetUSDT(marketId, selection, amount)
-    Match-->>Match: USDT transferred from user to contract
+    User->>Match: placeBetUSDC(marketId, selection, amount)
+    Match-->>Match: USDC transferred from user to contract
     Note over Match: Admin/Oracle resolves the market
     Match->>Match: resolveMarket(marketId, result)
 
     Note over Safe,User: Phase 3: User claims
     User->>Match: claim(marketId, betIndex)
-    Match->>Match: Calculate payout = bet × odds
-    Match->>Match: Check contract USDT balance
+    Match->>Match: Calculate payout = bet Ã— odds
+    Match->>Match: Check contract USDC balance
     
-    alt Contract has enough USDT
-        Match->>User: USDT.safeTransfer(user, payout)
+    alt Contract has enough USDC
+        Match->>User: USDC.safeTransfer(user, payout)
     else Contract underfunded
         Match->>Escrow: disburseTo(matchAddr, deficit)
-        Escrow->>Match: USDT.safeTransfer(match, deficit)
-        Match->>User: USDT.safeTransfer(user, payout)
+        Escrow->>Match: USDC.safeTransfer(match, deficit)
+        Match->>User: USDC.safeTransfer(user, payout)
     end
 ```
 
@@ -87,11 +87,11 @@ sequenceDiagram
     Match->>Match: Loop: accumulate totalPayout
     Match->>Match: Check contractBalance vs totalPayout
     alt Enough in contract
-        Match->>User: USDT.safeTransfer(user, totalPayout)
+        Match->>User: USDC.safeTransfer(user, totalPayout)
     else Deficit
         Match->>Escrow: disburseTo(match, deficit)
-        Escrow->>Match: USDT transfer
-        Match->>User: USDT.safeTransfer(user, totalPayout)
+        Escrow->>Match: USDC transfer
+        Match->>User: USDC.safeTransfer(user, totalPayout)
     end
 ```
 
@@ -99,9 +99,9 @@ sequenceDiagram
 
 1. **Double-claim prevention**: Each bet has a `claimed` boolean. Once set to `true`, any further claim attempt reverts with `AlreadyClaimed`.
 
-2. **Solvency at bet time**: When a new bet is placed, the contract verifies `totalUSDTLiabilities + potentialPayout <= usdtToken.balanceOf(contract)`. This uses only the contract's own balance (escrow is not counted), keeping the check conservative.
+2. **Solvency at bet time**: When a new bet is placed, the contract verifies `totalUSDCLiabilities + potentialPayout <= usdcToken.balanceOf(contract)`. This uses only the contract's own balance (escrow is not counted), keeping the check conservative.
 
-3. **Liability accounting**: `totalUSDTLiabilities` is decremented on every successful claim/refund by the exact payout amount. This tracks the contract's outstanding obligations.
+3. **Liability accounting**: `totalUSDCLiabilities` is decremented on every successful claim/refund by the exact payout amount. This tracks the contract's outstanding obligations.
 
 4. **Escrow whitelist**: Only BettingMatch contracts authorized by the Safe owner can call `PayoutEscrow.disburseTo()`. Unauthorized callers revert with `UnauthorizedMatch`.
 
@@ -111,13 +111,13 @@ sequenceDiagram
 
 | Query | How |
 |-------|-----|
-| Match funding deficit | `match.getFundingDeficit()` → USDT needed beyond contract balance |
-| Escrow available balance | `escrow.availableBalance()` → USDT ready for payouts |
-| Total liabilities per match | `match.totalUSDTLiabilities()` |
+| Match funding deficit | `match.getFundingDeficit()` â†’ USDC needed beyond contract balance |
+| Escrow available balance | `escrow.availableBalance()` â†’ USDC ready for payouts |
+| Total liabilities per match | `match.totalUSDCLiabilities()` |
 | Total disbursed from escrow | `escrow.totalDisbursed()` |
 | Per-match escrow usage | `escrow.disbursedPerMatch(matchAddr)` |
 
-**Operational rule**: `escrow.availableBalance() >= Σ match.getFundingDeficit()` across all active matches.
+**Operational rule**: `escrow.availableBalance() >= Î£ match.getFundingDeficit()` across all active matches.
 
 ## Security Properties
 
@@ -130,7 +130,7 @@ sequenceDiagram
 
 | Action | Who | How |
 |--------|-----|-----|
-| Fund escrow | Safe signers | `USDT.approve(escrow, amount)` → `escrow.fund(amount)` |
+| Fund escrow | Safe signers | `USDC.approve(escrow, amount)` â†’ `escrow.fund(amount)` |
 | Authorize match | Safe (escrow owner) | `escrow.authorizeMatch(matchProxy)` |
 | Revoke match | Safe (escrow owner) | `escrow.revokeMatch(matchProxy)` |
 | Withdraw from escrow | Safe (escrow owner) | `escrow.withdraw(amount)` |

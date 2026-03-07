@@ -4,26 +4,26 @@
 
 Each network has **one Gnosis Safe** that serves as the treasury. The Safe:
 - Owns the `PayoutEscrow` contract
-- Funds it with USDT to back betting payouts
+- Funds it with USDC to back betting payouts
 - Controls authorization of BettingMatch proxies
 - Can pause/unpause the escrow in emergencies
 
 ```
-┌─────────────────┐
-│  Gnosis Safe     │
-│  (Treasury)      │
-│                  │
-│  Owns:           │
-│  - PayoutEscrow  │
-│  - BettingMatchFactory (optional) │
-│  - ChilizSwapRouter (optional)    │
-└────────┬────────┘
-         │ fund() / authorizeMatch() / pause()
-         ▼
-┌─────────────────┐
-│  PayoutEscrow    │◄────── BettingMatch proxies call disburseTo()
-│  (USDT Reserve)  │
-└─────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  Gnosis Safe     â”‚
+â”‚  (Treasury)      â”‚
+â”‚                  â”‚
+â”‚  Owns:           â”‚
+â”‚  - PayoutEscrow  â”‚
+â”‚  - BettingMatchFactory (optional) â”‚
+â”‚  - ChilizSwapRouter (optional)    â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+         â”‚ fund() / authorizeMatch() / pause()
+         â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  PayoutEscrow    â”‚â—„â”€â”€â”€â”€â”€â”€ BettingMatch proxies call disburseTo()
+â”‚  (USDC Reserve)  â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ## Initial Setup (After Deployment)
@@ -51,15 +51,15 @@ Param:    <PayoutEscrow address>
 
 The Safe executes two transactions (can be batched):
 
-**Transaction 1 — Approve USDT:**
+**Transaction 1 â€” Approve USDC:**
 ```
-Target:   <USDT token address>
+Target:   <USDC token address>
 Function: approve(address spender, uint256 amount)
 Params:   spender = <PayoutEscrow address>
-          amount  = <funding amount in 6-decimal USDT>
+          amount  = <funding amount in 6-decimal USDC>
 ```
 
-**Transaction 2 — Deposit:**
+**Transaction 2 â€” Deposit:**
 ```
 Target:   <PayoutEscrow address>
 Function: fund(uint256 amount)
@@ -76,17 +76,17 @@ Query these view functions periodically (e.g., every hour):
 |-------|------|--------------|
 | Escrow balance | `escrow.availableBalance()` | > sum of all match deficits |
 | Per-match deficit | `match.getFundingDeficit()` | 0 (fully funded) or small |
-| Total liabilities | `match.totalUSDTLiabilities()` | Decreasing after claims |
+| Total liabilities | `match.totalUSDCLiabilities()` | Decreasing after claims |
 | Total disbursed | `escrow.totalDisbursed()` | Growing slowly |
 
-**Alert threshold**: `escrow.availableBalance() < 2 × Σ match.getFundingDeficit()`
+**Alert threshold**: `escrow.availableBalance() < 2 Ã— Î£ match.getFundingDeficit()`
 
 ### Replenishing the Escrow
 
 When the escrow balance drops below the alert threshold:
 
 1. Calculate total deficit across all active matches
-2. Add a safety buffer (e.g., 2× deficit)
+2. Add a safety buffer (e.g., 2Ã— deficit)
 3. Execute Safe transaction: `approve` + `fund`
 
 ### Emergency: Pause Escrow
@@ -96,7 +96,7 @@ If suspicious activity is detected:
 ```
 Target:   PayoutEscrow
 Function: pause()
-Effect:   All disburseTo() calls will revert → claims from escrow blocked
+Effect:   All disburseTo() calls will revert â†’ claims from escrow blocked
           Claims from contract balance still work
 ```
 
@@ -109,7 +109,7 @@ If funds need to be recovered:
 ```
 Target:   PayoutEscrow
 Function: withdraw(uint256 amount)
-Effect:   USDT transferred from escrow to Safe
+Effect:   USDC transferred from escrow to Safe
 ```
 
 ### Revoking a Match
@@ -131,7 +131,7 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
   "chainId": 88882,
   "rpcUrl": "https://spicy-rpc.chiliz.com",
   "safeAddress": "0x...",
-  "usdt": "0x...",
+  "usdc": "0x...",
   "payoutEscrow": "0x...",
   "matches": [
     "0x...",
@@ -153,7 +153,7 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
     "params": ["<match1>"]
   },
   {
-    "to": "<USDT>",
+    "to": "<USDC>",
     "value": "0",
     "data": "approve(address,uint256)",
     "params": ["<PayoutEscrow>", "1000000000"]
@@ -178,7 +178,7 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
     "params": ["<newMatchProxy>"]
   }
 ]
-```
+``` 
 
 ## Cost Estimates
 
@@ -189,4 +189,4 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
 | `escrow.withdraw()` | ~55,000 |
 | `claim()` (contract pays) | ~85,000 |
 | `claim()` (escrow fallback) | ~130,000 |
-| `claimAll()` (N bets) | ~60,000 + N×45,000 |
+| `claimAll()` (N bets) | ~60,000 + NÃ—45,000 |

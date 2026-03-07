@@ -1,0 +1,11 @@
+{
+  "network": "chilizTestnet",
+  "chainId": 88882,
+  "timestamp": "2026-03-07T18:54:03Z",
+  "contracts": [
+    {
+      "name": "StreamWalletFactory",
+      "address": "0x15b04e400328552f8ceaec150dae959dc7b92b44"
+    }
+  ]
+}
