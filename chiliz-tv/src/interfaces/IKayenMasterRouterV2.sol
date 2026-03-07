@@ -9,7 +9,7 @@ pragma solidity ^0.8.22;
  */
 interface IKayenMasterRouterV2 {
     /**
-     * @notice Swap exact native CHZ for tokens (e.g., USDT)
+     * @notice Swap exact native CHZ for tokens (e.g., USDC)
      * @param amountOutMin Minimum output tokens (slippage protection)
      * @param path Swap path; path[0] = WCHZ, path[last] = output token
      * @param receiveUnwrappedToken Whether to unwrap the output token

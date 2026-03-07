@@ -24,8 +24,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     address public treasury;
     uint16 public defaultPlatformFeeBps; // e.g., 500 = 5%
     address public kayenRouter;
-    address public fanToken;
-    address public usdt;
+    address public usdc;
     address public swapRouter;
 
     /*//////////////////////////////////////////////////////////////
@@ -56,9 +55,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
 
     event KayenRouterUpdated(address indexed oldRouter, address indexed newRouter);
 
-    event FanTokenUpdated(address indexed oldToken, address indexed newToken);
-
-    event UsdtUpdated(address indexed oldUsdt, address indexed newUsdt);
+    event UsdcUpdated(address indexed oldUsdc, address indexed newUsdc);
 
     event SwapRouterUpdated(address indexed oldRouter, address indexed newRouter);
 
@@ -82,16 +79,14 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @param treasury_ The platform treasury address
      * @param defaultPlatformFeeBps_ Default platform fee in basis points
      * @param kayenRouter_ The Kayen DEX router address
-     * @param fanToken_ The fan token (ERC20) address
-     * @param usdt_ The USDT token address
+     * @param usdc_ The USDC token address
      */
     constructor(
         address initialOwner,
         address treasury_,
         uint16 defaultPlatformFeeBps_,
         address kayenRouter_,
-        address fanToken_,
-        address usdt_
+        address usdc_
     ) Ownable(initialOwner) {
         if (treasury_ == address(0)) revert InvalidAddress();
         if (defaultPlatformFeeBps_ > 10_000) revert InvalidFeeBps();
@@ -100,8 +95,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         treasury = treasury_;
         defaultPlatformFeeBps = defaultPlatformFeeBps_;
         kayenRouter = kayenRouter_;
-        fanToken = fanToken_;
-        usdt = usdt_;
+        usdc = usdc_;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -112,20 +106,22 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @notice Subscribe to a streamer (creates wallet if needed)
      * @param streamer The streamer address
      * @param duration The subscription duration in seconds
-     * @param amount The fan token amount for subscription
+     * @param amount The token amount for subscription
+     * @param token The ERC20 token address to use for payment (swapped to USDC)
      * @return wallet The StreamWallet address
      */
     function subscribeToStream(
         address streamer,
         uint256 duration,
-        uint256 amount
+        uint256 amount,
+        address token
     ) external nonReentrant returns (address wallet) {
         if (amount == 0) revert InvalidAmount();
         if (duration == 0) revert InvalidDuration();
         if (streamer == address(0)) revert InvalidAddress();
 
-        // Transfer fan tokens from subscriber to this contract
-        require(IERC20(fanToken).transferFrom(msg.sender, address(this), amount), "Fan token transfer failed");
+        // Transfer tokens from subscriber to this contract
+        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
 
         // Get or create wallet
         wallet = streamerWallets[streamer];
@@ -134,11 +130,11 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             streamerWallets[streamer] = wallet;
         }
 
-        // Approve StreamWallet to pull fan tokens
-        require(IERC20(fanToken).approve(wallet, amount), "Approval failed");
+        // Approve StreamWallet to pull tokens
+        require(IERC20(token).approve(wallet, amount), "Approval failed");
 
-        // Record subscription (wallet pulls fan tokens and swaps to USDT)
-        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0);
+        // Record subscription (wallet pulls tokens and swaps to USDC)
+        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0, token);
 
         emit SubscriptionProcessed(streamer, msg.sender, amount);
     }
@@ -151,19 +147,21 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
      * @notice Send a donation to a streamer (creates wallet if needed)
      * @param streamer The streamer address
      * @param message Optional message from donor
-     * @param amount The fan token amount for donation
+     * @param amount The token amount for donation
+     * @param token The ERC20 token address to use for payment (swapped to USDC)
      * @return wallet The StreamWallet address
      */
     function donateToStream(
         address streamer,
         string calldata message,
-        uint256 amount
+        uint256 amount,
+        address token
     ) external nonReentrant returns (address wallet) {
         if (amount == 0) revert InvalidAmount();
         if (streamer == address(0)) revert InvalidAddress();
 
-        // Transfer fan tokens from donor to this contract
-        require(IERC20(fanToken).transferFrom(msg.sender, address(this), amount), "Fan token transfer failed");
+        // Transfer tokens from donor to this contract
+        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
 
         // Get or create wallet
         wallet = streamerWallets[streamer];
@@ -172,11 +170,11 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             streamerWallets[streamer] = wallet;
         }
 
-        // Approve StreamWallet to pull fan tokens
-        require(IERC20(fanToken).approve(wallet, amount), "Approval failed");
+        // Approve StreamWallet to pull tokens
+        require(IERC20(token).approve(wallet, amount), "Approval failed");
 
-        // Process donation through wallet (wallet pulls fan tokens and swaps to USDT)
-        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, 0);
+        // Process donation through wallet (wallet pulls tokens and swaps to USDC)
+        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, 0, token);
 
         emit DonationProcessed(streamer, msg.sender, amount, message);
     }
@@ -199,8 +197,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             treasury,
             defaultPlatformFeeBps,
             kayenRouter,
-            fanToken,
-            usdt
+            usdc
         );
         // Deploy ERC1967 UUPS proxy
         wallet = address(new ERC1967Proxy(STREAM_WALLET_IMPLEMENTATION, initData));
@@ -295,29 +292,16 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     }
 
     /**
-     * @notice Update the fan token address
-     * @param newFanToken The new fan token address
+     * @notice Update the USDC token address
+     * @param newUsdc The new USDC address
      */
-    function setFanToken(address newFanToken) external onlyOwner {
-        if (newFanToken == address(0)) revert InvalidAddress();
+    function setUsdc(address newUsdc) external onlyOwner {
+        if (newUsdc == address(0)) revert InvalidAddress();
 
-        address oldToken = fanToken;
-        fanToken = newFanToken;
+        address oldUsdc = usdc;
+        usdc = newUsdc;
 
-        emit FanTokenUpdated(oldToken, newFanToken);
-    }
-
-    /**
-     * @notice Update the USDT token address
-     * @param newUsdt The new USDT address
-     */
-    function setUsdt(address newUsdt) external onlyOwner {
-        if (newUsdt == address(0)) revert InvalidAddress();
-
-        address oldUsdt = usdt;
-        usdt = newUsdt;
-
-        emit UsdtUpdated(oldUsdt, newUsdt);
+        emit UsdcUpdated(oldUsdc, newUsdc);
     }
 
     /**

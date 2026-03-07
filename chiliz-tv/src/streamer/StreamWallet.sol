@@ -25,8 +25,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     uint16 public platformFeeBps; // basis points (e.g., 500 = 5%)
     address public factory;
     address public kayenRouter;
-    address public fanToken;
-    address public usdt;
+    address public usdc;
     address public swapRouter;
 
     mapping(address => Subscription) public subscriptions;
@@ -124,16 +123,14 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @param treasury_ The platform treasury address
      * @param platformFeeBps_ Platform fee in basis points
      * @param kayenRouter_ The Kayen DEX router address
-     * @param fanToken_ The fan token (ERC20) address
-     * @param usdt_ The USDT token address
+     * @param usdc_ The USDC token address
      */
     function initialize(
         address streamer_,
         address treasury_,
         uint16 platformFeeBps_,
         address kayenRouter_,
-        address fanToken_,
-        address usdt_
+        address usdc_
     ) external initializer {
         __Ownable_init(streamer_);
         __UUPSUpgradeable_init();
@@ -144,8 +141,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         platformFeeBps = platformFeeBps_;
         factory = msg.sender;
         kayenRouter = kayenRouter_;
-        fanToken = fanToken_;
-        usdt = usdt_;
+        usdc = usdc_;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -170,7 +166,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @param subscriber The subscriber address
      * @param amount The subscription amount in fan tokens
      * @param duration The subscription duration in seconds
-     * @param amountOutMin Minimum USDT to receive from swap (slippage protection)
+     * @param amountOutMin Minimum USDC to receive from swap (slippage protection)
+     * @param token The fan token address to pull and swap
      * @return platformFee The fee portion in fan tokens
      * @return streamerAmount The streamer portion in fan tokens
      */
@@ -178,7 +175,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         address subscriber,
         uint256 amount,
         uint256 duration,
-        uint256 amountOutMin
+        uint256 amountOutMin,
+        address token
     )
         external
         onlyFactory
@@ -189,7 +187,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         if (duration == 0) revert InvalidDuration();
 
         // Pull fan tokens from factory
-        SafeERC20.safeTransferFrom(IERC20(fanToken), msg.sender, address(this), amount);
+        SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount);
 
         // Calculate split
         platformFee = (amount * platformFeeBps) / 10_000;
@@ -202,7 +200,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             // Extend from current expiry (don't lose remaining time)
             expiryTime = sub.expiryTime + duration;
         } else {
-            // New subscription or expired — start from now
+            // New subscription or expired â€” start from now
             expiryTime = block.timestamp + duration;
         }
 
@@ -219,13 +217,13 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         totalRevenue += amount;
 
         // Approve router if needed
-        _ensureRouterApproval(amount);
+        _ensureRouterApproval(token, amount);
 
         address[] memory path = new address[](2);
-        path[0] = fanToken;
-        path[1] = usdt;
+        path[0] = token;
+        path[1] = usdc;
 
-        // Swap platform fee portion to USDT and send to treasury
+        // Swap platform fee portion to USDC and send to treasury
         if (platformFee > 0) {
             IKayenRouter(kayenRouter).swapExactTokensForTokens(
                 platformFee,
@@ -237,7 +235,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             emit PlatformFeeCollected(platformFee, treasury);
         }
 
-        // Swap streamer portion to USDT and send to streamer
+        // Swap streamer portion to USDC and send to streamer
         uint256[] memory amounts = IKayenRouter(kayenRouter).swapExactTokensForTokens(
             streamerAmount,
             0,
@@ -246,7 +244,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             block.timestamp
         );
 
-        // Verify slippage on streamer's USDT output
+        // Verify slippage on streamer's USDC output
         if (amountOutMin > 0 && amounts[amounts.length - 1] < amountOutMin) revert SwapSlippageExceeded();
 
         emit SubscriptionRecorded(subscriber, amount, duration, expiryTime);
@@ -259,17 +257,17 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     /**
      * @notice Record a subscription from the swap router (swap already completed)
      * @dev Only callable by factory or authorized swap router. No token transfers
-     *      or swaps occur here — purely state tracking.
+     *      or swaps occur here â€” purely state tracking.
      * @param subscriber The subscriber address
-     * @param totalUsdtAmount The total USDT amount (before fee split, for metrics)
+     * @param totalUsdcAmount The total USDC amount (before fee split, for metrics)
      * @param duration The subscription duration in seconds
      */
     function recordSubscriptionByRouter(
         address subscriber,
-        uint256 totalUsdtAmount,
+        uint256 totalUsdcAmount,
         uint256 duration
     ) external onlyAuthorized nonReentrant {
-        if (totalUsdtAmount == 0) revert InvalidAmount();
+        if (totalUsdcAmount == 0) revert InvalidAmount();
         if (duration == 0) revert InvalidDuration();
 
         Subscription storage sub = subscriptions[subscriber];
@@ -284,14 +282,14 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             totalSubscribers++;
         }
 
-        sub.amount += totalUsdtAmount;
+        sub.amount += totalUsdcAmount;
         sub.startTime = sub.active ? sub.startTime : block.timestamp;
         sub.expiryTime = expiryTime;
         sub.active = true;
 
-        totalRevenue += totalUsdtAmount;
+        totalRevenue += totalUsdcAmount;
 
-        emit SubscriptionRecorded(subscriber, totalUsdtAmount, duration, expiryTime);
+        emit SubscriptionRecorded(subscriber, totalUsdcAmount, duration, expiryTime);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -301,26 +299,26 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     /**
      * @notice Record a donation from the swap router (swap already completed)
      * @dev Only callable by factory or authorized swap router. No token transfers
-     *      or swaps occur here — purely state tracking.
+     *      or swaps occur here â€” purely state tracking.
      * @param donor The donor address
-     * @param totalUsdtAmount The total USDT donated (before fee split, for metrics)
+     * @param totalUsdcAmount The total USDC donated (before fee split, for metrics)
      * @param platformFee The actual platform fee taken by the router
      * @param streamerAmount The actual amount sent to the streamer
      * @param message Optional donation message
      */
     function recordDonationByRouter(
         address donor,
-        uint256 totalUsdtAmount,
+        uint256 totalUsdcAmount,
         uint256 platformFee,
         uint256 streamerAmount,
         string calldata message
     ) external onlyAuthorized nonReentrant {
-        if (totalUsdtAmount == 0) revert InvalidAmount();
+        if (totalUsdcAmount == 0) revert InvalidAmount();
 
-        lifetimeDonations[donor] += totalUsdtAmount;
-        totalRevenue += totalUsdtAmount;
+        lifetimeDonations[donor] += totalUsdcAmount;
+        totalRevenue += totalUsdcAmount;
 
-        emit DonationReceived(donor, totalUsdtAmount, message, platformFee, streamerAmount);
+        emit DonationReceived(donor, totalUsdcAmount, message, platformFee, streamerAmount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -331,20 +329,22 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @notice Accept a donation with optional message
      * @param amount The donation amount in fan tokens
      * @param message Optional message from donor
-     * @param amountOutMin Minimum USDT to receive from swap (slippage protection)
+     * @param amountOutMin Minimum USDC to receive from swap (slippage protection)
+     * @param token The fan token address to pull and swap
      * @return platformFee The fee portion in fan tokens
      * @return streamerAmount The streamer portion in fan tokens
      */
     function donate(
         uint256 amount,
         string calldata message,
-        uint256 amountOutMin
+        uint256 amountOutMin,
+        address token
     )
         external
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
-        return _donateInternal(msg.sender, amount, message, amountOutMin);
+        return _donateInternal(msg.sender, amount, message, amountOutMin, token);
     }
 
     /**
@@ -352,7 +352,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @param donor The actual donor address (for correct attribution)
      * @param amount The donation amount in fan tokens
      * @param message Optional message from donor
-     * @param amountOutMin Minimum USDT to receive from swap (slippage protection)
+     * @param amountOutMin Minimum USDC to receive from swap (slippage protection)
+     * @param token The fan token address to pull and swap
      * @return platformFee The fee portion in fan tokens
      * @return streamerAmount The streamer portion in fan tokens
      */
@@ -360,26 +361,28 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         address donor,
         uint256 amount,
         string calldata message,
-        uint256 amountOutMin
+        uint256 amountOutMin,
+        address token
     )
         external
         onlyFactory
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
-        return _donateInternal(donor, amount, message, amountOutMin);
+        return _donateInternal(donor, amount, message, amountOutMin, token);
     }
 
     function _donateInternal(
         address donor,
         uint256 amount,
         string calldata message,
-        uint256 amountOutMin
+        uint256 amountOutMin,
+        address token
     ) internal returns (uint256 platformFee, uint256 streamerAmount) {
         if (amount == 0) revert InvalidAmount();
 
         // Pull fan tokens from caller
-        SafeERC20.safeTransferFrom(IERC20(fanToken), msg.sender, address(this), amount);
+        SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount);
 
         // Calculate split
         platformFee = (amount * platformFeeBps) / 10_000;
@@ -390,13 +393,13 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         totalRevenue += amount;
 
         // Approve router if needed
-        _ensureRouterApproval(amount);
+        _ensureRouterApproval(token, amount);
 
         address[] memory path = new address[](2);
-        path[0] = fanToken;
-        path[1] = usdt;
+        path[0] = token;
+        path[1] = usdc;
 
-        // Swap platform fee portion to USDT and send to treasury
+        // Swap platform fee portion to USDC and send to treasury
         if (platformFee > 0) {
             IKayenRouter(kayenRouter).swapExactTokensForTokens(
                 platformFee,
@@ -408,7 +411,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             emit PlatformFeeCollected(platformFee, treasury);
         }
 
-        // Swap streamer portion to USDT and send to streamer
+        // Swap streamer portion to USDC and send to streamer
         uint256[] memory amounts = IKayenRouter(kayenRouter).swapExactTokensForTokens(
             streamerAmount,
             0,
@@ -444,7 +447,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         if (amount > available) revert InsufficientBalance();
 
         totalWithdrawn += amount;
-        SafeERC20.safeTransfer(IERC20(usdt), streamer, amount);
+        SafeERC20.safeTransfer(IERC20(usdc), streamer, amount);
 
         emit RevenueWithdrawn(streamer, amount);
     }
@@ -468,7 +471,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      * @return uint256 The available balance
      */
     function availableBalance() public view returns (uint256) {
-        return IERC20(usdt).balanceOf(address(this));
+        return IERC20(usdc).balanceOf(address(this));
     }
 
     /**
@@ -496,13 +499,14 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Ensure the Kayen router has sufficient approval to spend fan tokens
+     * @notice Ensure the Kayen router has sufficient approval to spend a given fan token
+     * @param token The fan token to approve
      * @param amount The minimum approval needed
      */
-    function _ensureRouterApproval(uint256 amount) internal {
-        uint256 currentAllowance = IERC20(fanToken).allowance(address(this), kayenRouter);
+    function _ensureRouterApproval(address token, uint256 amount) internal {
+        uint256 currentAllowance = IERC20(token).allowance(address(this), kayenRouter);
         if (currentAllowance < amount) {
-            SafeERC20.forceApprove(IERC20(fanToken), kayenRouter, type(uint256).max);
+            SafeERC20.forceApprove(IERC20(token), kayenRouter, type(uint256).max);
         }
     }
 

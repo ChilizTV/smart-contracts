@@ -4,13 +4,13 @@ pragma solidity ^0.8.22;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /**
- * @title MockUSDT
- * @notice Mock USDT token with 6 decimals for testing
+ * @title MockUSDC
+ * @notice Mock USDC token with 6 decimals for testing
  */
-contract MockUSDT is ERC20 {
+contract MockUSDC is ERC20 {
     uint8 private immutable _decimals;
 
-    constructor() ERC20("Tether USD", "USDT") {
+    constructor() ERC20("USD Coin", "USDC") {
         _decimals = 6;
     }
 

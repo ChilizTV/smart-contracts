@@ -8,21 +8,21 @@ import {PayoutEscrow} from "../src/betting/PayoutEscrow.sol";
 import {IPayoutEscrow} from "../src/interfaces/IPayoutEscrow.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {MockUSDT} from "./mocks/MockUSDT.sol";
+import {MockUSDC} from "./mocks/MockUSDC.sol";
 
 /**
  * @title PayoutEscrowTest
  * @notice Tests for the full payout lifecycle with PayoutEscrow integration
  *
  * Coverage:
- *   1.  Full lifecycle: create match → bet → resolve → fund escrow → claim
+ *   1.  Full lifecycle: create match â†’ bet â†’ resolve â†’ fund escrow â†’ claim
  *   2.  Claim from contract balance only (no escrow needed)
- *   3.  Claim from escrow fallback (contract has zero USDT)
+ *   3.  Claim from escrow fallback (contract has zero USDC)
  *   4.  Mixed source: partial contract + partial escrow
  *   5.  Double claim prevention
- *   6.  Insufficient funding (both sources empty) → revert
- *   7.  Unauthorized match → escrow reverts
- *   8.  Escrow paused → claims fail
+ *   6.  Insufficient funding (both sources empty) â†’ revert
+ *   7.  Unauthorized match â†’ escrow reverts
+ *   8.  Escrow paused â†’ claims fail
  *   9.  Escrow withdraw by owner
  *   10. ClaimAll with escrow fallback
  *   11. Refund with escrow fallback (cancelled market)
@@ -35,7 +35,7 @@ contract PayoutEscrowTest is Test {
     FootballMatch public implementation;
     FootballMatch public footballMatch;
     PayoutEscrow public escrow;
-    MockUSDT public usdt;
+    MockUSDC public usdc;
 
     address public owner = address(0x1);
     address public safeAddr = address(0x5AFE);
@@ -53,11 +53,11 @@ contract PayoutEscrowTest is Test {
     bytes32 constant MARKET_WINNER = keccak256("WINNER");
 
     function setUp() public {
-        // Deploy mock USDT
-        usdt = new MockUSDT();
+        // Deploy mock USDC
+        usdc = new MockUSDC();
 
         // Deploy PayoutEscrow owned by Safe
-        escrow = new PayoutEscrow(address(usdt), safeAddr);
+        escrow = new PayoutEscrow(address(usdc), safeAddr);
 
         // Deploy FootballMatch proxy
         implementation = new FootballMatch();
@@ -69,11 +69,11 @@ contract PayoutEscrowTest is Test {
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
         footballMatch = FootballMatch(payable(address(proxy)));
 
-        // Setup roles, USDT, and escrow on the match contract
+        // Setup roles, USDC, and escrow on the match contract
         vm.startPrank(owner);
         footballMatch.grantRole(ODDS_SETTER_ROLE, oddsSetter);
         footballMatch.grantRole(RESOLVER_ROLE, resolver);
-        footballMatch.setUSDTToken(address(usdt));
+        footballMatch.setUSDCToken(address(usdc));
         footballMatch.setPayoutEscrow(address(escrow));
         vm.stopPrank();
 
@@ -81,19 +81,19 @@ contract PayoutEscrowTest is Test {
         vm.prank(safeAddr);
         escrow.authorizeMatch(address(footballMatch));
 
-        // Fund test users (100k USDT each)
-        usdt.mint(alice, 100_000e6);
-        usdt.mint(bob, 100_000e6);
-        usdt.mint(charlie, 100_000e6);
+        // Fund test users (100k USDC each)
+        usdc.mint(alice, 100_000e6);
+        usdc.mint(bob, 100_000e6);
+        usdc.mint(charlie, 100_000e6);
 
         // NOTE: Do NOT blanket pre-fund the match here.
         // Each test that needs solvency pre-funding adds it explicitly
         // via _fundMatchDirect() before placing bets.
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // HELPERS
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function _createAndOpenMarket(uint32 odds) internal {
         vm.prank(owner);
@@ -104,26 +104,26 @@ contract PayoutEscrowTest is Test {
 
     function _placeBet(address user, uint256 marketId, uint64 selection, uint256 amount) internal {
         vm.startPrank(user);
-        usdt.approve(address(footballMatch), amount);
-        footballMatch.placeBetUSDT(marketId, selection, amount);
+        usdc.approve(address(footballMatch), amount);
+        footballMatch.placeBetUSDC(marketId, selection, amount);
         vm.stopPrank();
     }
 
     function _fundEscrow(uint256 amount) internal {
-        usdt.mint(safeAddr, amount);
+        usdc.mint(safeAddr, amount);
         vm.startPrank(safeAddr);
-        usdt.approve(address(escrow), amount);
+        usdc.approve(address(escrow), amount);
         escrow.fund(amount);
         vm.stopPrank();
     }
 
     function _fundMatchDirect(uint256 amount) internal {
-        usdt.mint(address(footballMatch), amount);
+        usdc.mint(address(footballMatch), amount);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 1: Full payout lifecycle with escrow
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_FullPayoutLifecycle() public {
         // Create market, 2.0x odds
@@ -132,8 +132,8 @@ contract PayoutEscrowTest is Test {
         // Pre-fund for solvency check during bet placement
         _fundMatchDirect(100e6);
 
-        // Alice bets 100 USDT at 2.0x → potential payout 200 USDT
-        // Contract receives 100 USDT from bet, needs 100 more for profit portion
+        // Alice bets 100 USDC at 2.0x â†’ potential payout 200 USDC
+        // Contract receives 100 USDC from bet, needs 100 more for profit portion
         _placeBet(alice, 0, 0, 100e6);
 
         // Resolve: Home (0) wins
@@ -142,29 +142,29 @@ contract PayoutEscrowTest is Test {
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
 
-        // Drain pre-fund so only bet deposit remains (100 USDT)
+        // Drain pre-fund so only bet deposit remains (100 USDC)
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(100e6);
+        footballMatch.emergencyWithdrawUSDC(100e6);
         vm.prank(owner);
         footballMatch.unpause();
 
-        // Fund escrow with 100 USDT to cover deficit
+        // Fund escrow with 100 USDC to cover deficit
         _fundEscrow(100e6);
 
         // Alice claims
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
-        uint256 payout = usdt.balanceOf(alice) - aliceBefore;
+        uint256 payout = usdc.balanceOf(alice) - aliceBefore;
 
-        assertEq(payout, 200e6, "Alice should receive 200 USDT (100 * 2.0x)");
+        assertEq(payout, 200e6, "Alice should receive 200 USDC (100 * 2.0x)");
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 2: Claim entirely from contract balance (no escrow needed)
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_ClaimFromContractBalanceOnly() public {
         _createAndOpenMarket(20000);
@@ -178,24 +178,24 @@ contract PayoutEscrowTest is Test {
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
 
-        // Contract has 300 (200 pre-fund + 100 bet), payout 200 → no escrow needed
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        // Contract has 300 (200 pre-fund + 100 bet), payout 200 â†’ no escrow needed
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
 
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 200e6, "Should pay from contract balance");
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 200e6, "Should pay from contract balance");
         // Escrow should not have been touched
         assertEq(escrow.totalDisbursed(), 0, "Escrow should not be touched");
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 3: Claim entirely from escrow fallback (contract has 0 extra)
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_ClaimFromEscrowFallback() public {
         _createAndOpenMarket(20000);
 
-        // Fund match with enough USDT for the solvency check during bet placement
+        // Fund match with enough USDC for the solvency check during bet placement
         _fundMatchDirect(200e6);
         _placeBet(alice, 0, 0, 100e6);
 
@@ -204,35 +204,35 @@ contract PayoutEscrowTest is Test {
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
 
-        // Drain match contract USDT to simulate unfunded state
+        // Drain match contract USDC to simulate unfunded state
         // (In production, the contract just has bet deposits, which are < payout)
-        // Contract has 300 USDT (200 pre-funded + 100 from bet), payout is 200
-        // Withdraw extra to leave only 50 USDT in the contract
+        // Contract has 300 USDC (200 pre-funded + 100 from bet), payout is 200
+        // Withdraw extra to leave only 50 USDC in the contract
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(250e6);
+        footballMatch.emergencyWithdrawUSDC(250e6);
         vm.prank(owner);
         footballMatch.unpause();
 
-        // Contract has 50 USDT, payout is 200 USDT, deficit is 150 USDT
-        assertEq(usdt.balanceOf(address(footballMatch)), 50e6);
+        // Contract has 50 USDC, payout is 200 USDC, deficit is 150 USDC
+        assertEq(usdc.balanceOf(address(footballMatch)), 50e6);
 
         // Fund escrow to cover the deficit
         _fundEscrow(150e6);
 
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
 
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 200e6, "Should get full payout");
-        assertEq(escrow.totalDisbursed(), 150e6, "Escrow should have disbursed 150 USDT");
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 200e6, "Should get full payout");
+        assertEq(escrow.totalDisbursed(), 150e6, "Escrow should have disbursed 150 USDC");
         assertEq(escrow.disbursedPerMatch(address(footballMatch)), 150e6);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 4: Mixed source claim (partial contract + partial escrow)
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_ClaimFromMixedSources() public {
         _createAndOpenMarket(30000); // 3.0x odds
@@ -246,32 +246,32 @@ contract PayoutEscrowTest is Test {
         vm.prank(resolver);
         footballMatch.resolveMarket(0, 0);
 
-        // Contract has 400 USDT (300 pre-funded + 100 from bet)
-        // Payout is 300 USDT → contract has enough
-        // Withdraw to leave only 200 USDT (deficit of 100)
+        // Contract has 400 USDC (300 pre-funded + 100 from bet)
+        // Payout is 300 USDC â†’ contract has enough
+        // Withdraw to leave only 200 USDC (deficit of 100)
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(200e6);
+        footballMatch.emergencyWithdrawUSDC(200e6);
         vm.prank(owner);
         footballMatch.unpause();
 
-        assertEq(usdt.balanceOf(address(footballMatch)), 200e6);
+        assertEq(usdc.balanceOf(address(footballMatch)), 200e6);
 
-        // Fund escrow with 100 USDT to cover the deficit
+        // Fund escrow with 100 USDC to cover the deficit
         _fundEscrow(100e6);
 
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
 
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 300e6, "Alice gets 3.0x payout");
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 300e6, "Alice gets 3.0x payout");
         assertEq(escrow.totalDisbursed(), 100e6, "Escrow covers deficit only");
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 5: Double claim prevention
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_DoubleClaimPrevented() public {
         _createAndOpenMarket(20000);
@@ -294,9 +294,9 @@ contract PayoutEscrowTest is Test {
         footballMatch.claim(0, 0);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 6: Insufficient funding (both contract and escrow empty)
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_InsufficientFundingReverts() public {
         _createAndOpenMarket(20000);
@@ -312,14 +312,14 @@ contract PayoutEscrowTest is Test {
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(300e6); // drain everything
+        footballMatch.emergencyWithdrawUSDC(300e6); // drain everything
         vm.prank(owner);
         footballMatch.unpause();
 
-        assertEq(usdt.balanceOf(address(footballMatch)), 0);
+        assertEq(usdc.balanceOf(address(footballMatch)), 0);
 
         // Escrow also empty
-        assertEq(usdt.balanceOf(address(escrow)), 0);
+        assertEq(usdc.balanceOf(address(escrow)), 0);
 
         // Claim should revert (escrow has insufficient balance)
         vm.prank(alice);
@@ -333,9 +333,9 @@ contract PayoutEscrowTest is Test {
         footballMatch.claim(0, 0);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
-    // TEST 6b: Insufficient funding without escrow set → original revert
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // TEST 6b: Insufficient funding without escrow set â†’ original revert
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_NoEscrowInsufficientReverts() public {
         // Remove escrow
@@ -355,21 +355,21 @@ contract PayoutEscrowTest is Test {
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(300e6);
+        footballMatch.emergencyWithdrawUSDC(300e6);
         vm.prank(owner);
         footballMatch.unpause();
 
-        // Without escrow, reverts with InsufficientUSDTBalance
+        // Without escrow, reverts with InsufficientUSDCBalance
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(BettingMatch.InsufficientUSDTBalance.selector, 200e6, 0)
+            abi.encodeWithSelector(BettingMatch.InsufficientUSDCBalance.selector, 200e6, 0)
         );
         footballMatch.claim(0, 0);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 7: Unauthorized match cannot use escrow
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_UnauthorizedMatchReverts() public {
         // Deploy a second match NOT authorized in escrow
@@ -382,7 +382,7 @@ contract PayoutEscrowTest is Test {
         FootballMatch unauthorizedMatch = FootballMatch(payable(address(proxy2)));
 
         vm.startPrank(owner);
-        unauthorizedMatch.setUSDTToken(address(usdt));
+        unauthorizedMatch.setUSDCToken(address(usdc));
         unauthorizedMatch.setPayoutEscrow(address(escrow));
         unauthorizedMatch.grantRole(RESOLVER_ROLE, resolver);
         unauthorizedMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
@@ -392,11 +392,11 @@ contract PayoutEscrowTest is Test {
         _fundMatchDirect(200e6); // for footballMatch (won't help this one)
 
         // Fund unauthorizedMatch enough for solvency check
-        usdt.mint(address(unauthorizedMatch), 200e6);
+        usdc.mint(address(unauthorizedMatch), 200e6);
 
         vm.startPrank(alice);
-        usdt.approve(address(unauthorizedMatch), 100e6);
-        unauthorizedMatch.placeBetUSDT(0, 0, 100e6);
+        usdc.approve(address(unauthorizedMatch), 100e6);
+        unauthorizedMatch.placeBetUSDC(0, 0, 100e6);
         vm.stopPrank();
 
         vm.prank(owner);
@@ -408,7 +408,7 @@ contract PayoutEscrowTest is Test {
         vm.prank(owner);
         unauthorizedMatch.emergencyPause();
         vm.prank(owner);
-        unauthorizedMatch.emergencyWithdrawUSDT(300e6);
+        unauthorizedMatch.emergencyWithdrawUSDC(300e6);
         vm.prank(owner);
         unauthorizedMatch.unpause();
 
@@ -425,9 +425,9 @@ contract PayoutEscrowTest is Test {
         unauthorizedMatch.claim(0, 0);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 8: Escrow paused blocks disbursements
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowPauseBlocksClaims() public {
         _createAndOpenMarket(20000);
@@ -443,7 +443,7 @@ contract PayoutEscrowTest is Test {
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(200e6); // drain all
+        footballMatch.emergencyWithdrawUSDC(200e6); // drain all
         vm.prank(owner);
         footballMatch.unpause();
 
@@ -459,29 +459,29 @@ contract PayoutEscrowTest is Test {
         vm.expectRevert(); // Pausable: EnforcedPause
         footballMatch.claim(0, 0);
 
-        // Unpause → claim succeeds
+        // Unpause â†’ claim succeeds
         vm.prank(safeAddr);
         escrow.unpause();
 
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 200e6);
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 200e6);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 9: Escrow owner can withdraw
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowWithdrawByOwner() public {
         _fundEscrow(500e6);
 
-        assertEq(usdt.balanceOf(address(escrow)), 500e6);
+        assertEq(usdc.balanceOf(address(escrow)), 500e6);
 
         vm.prank(safeAddr);
         escrow.withdraw(200e6);
-        assertEq(usdt.balanceOf(address(escrow)), 300e6);
-        assertEq(usdt.balanceOf(safeAddr), 200e6);
+        assertEq(usdc.balanceOf(address(escrow)), 300e6);
+        assertEq(usdc.balanceOf(safeAddr), 200e6);
 
         // Non-owner cannot withdraw
         vm.prank(alice);
@@ -489,9 +489,9 @@ contract PayoutEscrowTest is Test {
         escrow.withdraw(100e6);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 10: ClaimAll with escrow fallback
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_ClaimAllWithEscrow() public {
         _createAndOpenMarket(20000);
@@ -505,7 +505,7 @@ contract PayoutEscrowTest is Test {
         footballMatch.setMarketOdds(0, 25000);
         _placeBet(alice, 0, 0, 100e6);
 
-        // Close and resolve → Home wins
+        // Close and resolve â†’ Home wins
         vm.prank(owner);
         footballMatch.closeMarket(0);
         vm.prank(resolver);
@@ -516,23 +516,23 @@ contract PayoutEscrowTest is Test {
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(250e6);
+        footballMatch.emergencyWithdrawUSDC(250e6);
         vm.prank(owner);
         footballMatch.unpause();
 
-        // Contract has 200 USDT (bet deposits). Deficit = 250
+        // Contract has 200 USDC (bet deposits). Deficit = 250
         _fundEscrow(250e6);
 
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claimAll(0);
 
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 450e6, "ClaimAll should pay 450 USDT");
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 450e6, "ClaimAll should pay 450 USDC");
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 11: Refund with escrow fallback (cancelled market)
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_RefundWithEscrow() public {
         _createAndOpenMarket(20000);
@@ -548,59 +548,59 @@ contract PayoutEscrowTest is Test {
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(200e6);
+        footballMatch.emergencyWithdrawUSDC(200e6);
         vm.prank(owner);
         footballMatch.unpause();
 
         _fundEscrow(100e6);
 
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claimRefund(0, 0);
 
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 100e6, "Should refund full amount");
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 100e6, "Should refund full amount");
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 12: getFundingDeficit view
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_GetFundingDeficit() public {
         _createAndOpenMarket(20000);
 
-        // Before any bets → deficit = 0
+        // Before any bets â†’ deficit = 0
         assertEq(footballMatch.getFundingDeficit(), 0);
 
         // Pre-fund match for solvency check
         _fundMatchDirect(500e6);
 
-        // Alice bets 100 USDT at 2.0x → liability = 200
+        // Alice bets 100 USDC at 2.0x â†’ liability = 200
         _placeBet(alice, 0, 0, 100e6);
 
-        // Contract has 600 (500 + 100 from bet), liabilities = 200 → no deficit
+        // Contract has 600 (500 + 100 from bet), liabilities = 200 â†’ no deficit
         assertEq(footballMatch.getFundingDeficit(), 0);
 
-        // Bob bets 200 USDT at 2.0x → liability += 400, total = 600
+        // Bob bets 200 USDC at 2.0x â†’ liability += 400, total = 600
         _placeBet(bob, 0, 0, 200e6);
 
-        // Contract has 800 (500 + 100 + 200), liabilities = 600 → no deficit
+        // Contract has 800 (500 + 100 + 200), liabilities = 600 â†’ no deficit
         assertEq(footballMatch.getFundingDeficit(), 0);
 
         // Drain some funds
         vm.prank(owner);
         footballMatch.emergencyPause();
         vm.prank(owner);
-        footballMatch.emergencyWithdrawUSDT(500e6);
+        footballMatch.emergencyWithdrawUSDC(500e6);
         vm.prank(owner);
         footballMatch.unpause();
 
-        // Contract has 300, liabilities = 600 → deficit = 300
+        // Contract has 300, liabilities = 600 â†’ deficit = 300
         assertEq(footballMatch.getFundingDeficit(), 300e6);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 13: setPayoutEscrow admin control
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_SetPayoutEscrow() public {
         // Only admin can set
@@ -619,9 +619,9 @@ contract PayoutEscrowTest is Test {
         assertEq(address(footballMatch.payoutEscrow()), address(0));
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 14: Escrow authorization lifecycle
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowAuthorizationLifecycle() public {
         address newMatch = address(0x456);
@@ -645,9 +645,9 @@ contract PayoutEscrowTest is Test {
         escrow.authorizeMatch(newMatch);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 15: Escrow validation errors
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowValidationErrors() public {
         // Zero amount fund
@@ -674,18 +674,18 @@ contract PayoutEscrowTest is Test {
         escrow.authorizeMatch(address(0));
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 16: Constructor validation
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowConstructorValidation() public {
         vm.expectRevert(PayoutEscrow.ZeroAddress.selector);
         new PayoutEscrow(address(0), safeAddr);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 17: Multiple matches sharing one escrow
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_MultipleMatchesSharingEscrow() public {
         // Deploy second match
@@ -700,7 +700,7 @@ contract PayoutEscrowTest is Test {
         vm.startPrank(owner);
         match2.grantRole(ODDS_SETTER_ROLE, oddsSetter);
         match2.grantRole(RESOLVER_ROLE, resolver);
-        match2.setUSDTToken(address(usdt));
+        match2.setUSDCToken(address(usdc));
         match2.setPayoutEscrow(address(escrow));
         match2.addMarketWithLine(MARKET_WINNER, 20000, 0);
         match2.openMarket(0);
@@ -715,14 +715,14 @@ contract PayoutEscrowTest is Test {
 
         // Pre-fund both matches for solvency
         _fundMatchDirect(100e6);              // footballMatch
-        usdt.mint(address(match2), 100e6);     // match2
+        usdc.mint(address(match2), 100e6);     // match2
 
         // Alice bets on match1, Bob bets on match2
         _placeBet(alice, 0, 0, 100e6);
 
         vm.startPrank(bob);
-        usdt.approve(address(match2), 100e6);
-        match2.placeBetUSDT(0, 0, 100e6);
+        usdc.approve(address(match2), 100e6);
+        match2.placeBetUSDC(0, 0, 100e6);
         vm.stopPrank();
 
         // Close and resolve both matches
@@ -738,10 +738,10 @@ contract PayoutEscrowTest is Test {
         // Drain pre-funds from both matches to leave only bet deposits
         vm.startPrank(owner);
         footballMatch.emergencyPause();
-        footballMatch.emergencyWithdrawUSDT(100e6);
+        footballMatch.emergencyWithdrawUSDC(100e6);
         footballMatch.unpause();
         match2.emergencyPause();
-        match2.emergencyWithdrawUSDT(100e6);
+        match2.emergencyWithdrawUSDC(100e6);
         match2.unpause();
         vm.stopPrank();
 
@@ -750,16 +750,16 @@ contract PayoutEscrowTest is Test {
         _fundEscrow(200e6);
 
         // Claim from match1
-        uint256 aliceBefore = usdt.balanceOf(alice);
+        uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
-        assertEq(usdt.balanceOf(alice) - aliceBefore, 200e6);
+        assertEq(usdc.balanceOf(alice) - aliceBefore, 200e6);
 
         // Claim from match2
-        uint256 bobBefore = usdt.balanceOf(bob);
+        uint256 bobBefore = usdc.balanceOf(bob);
         vm.prank(bob);
         match2.claim(0, 0);
-        assertEq(usdt.balanceOf(bob) - bobBefore, 200e6);
+        assertEq(usdc.balanceOf(bob) - bobBefore, 200e6);
 
         // Verify escrow tracked per-match disbursements
         assertEq(escrow.disbursedPerMatch(address(footballMatch)), 100e6);
@@ -767,9 +767,9 @@ contract PayoutEscrowTest is Test {
         assertEq(escrow.totalDisbursed(), 200e6);
     }
 
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TEST 18: Escrow availableBalance view
-    // ═════════════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowAvailableBalance() public {
         assertEq(escrow.availableBalance(), 0);

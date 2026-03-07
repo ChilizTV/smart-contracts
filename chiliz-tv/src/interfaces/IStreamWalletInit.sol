@@ -18,7 +18,6 @@ interface IStreamWalletInit {
         address treasury_,
         uint16 platformFeeBps_,
         address kayenRouter_,
-        address fanToken_,
-        address usdt_
+        address usdc_
     ) external;
 }

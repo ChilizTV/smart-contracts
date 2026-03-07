@@ -69,7 +69,10 @@ contract DeployStreaming is Script {
         
         _printHeader();
         _deployFactory();
-        _transferOwnership();
+        // NOTE: Ownership transfer skipped during deployment.
+        // After all post-deployment setup (setSwapRouter, setUsdc, setKayenRouter),
+        // transfer ownership to Safe manually:
+        //   factory.transferOwnership(SAFE_ADDRESS)
         _printSummary();
         
         vm.stopBroadcast();
@@ -93,8 +96,7 @@ contract DeployStreaming is Script {
             treasury,
             500,  // 5% platform fee
             address(0), // kayenRouter - set after deployment
-            address(0), // fanToken - set after deployment
-            address(0)  // usdt - set after deployment
+            address(0)  // usdc - set after deployment
         );
         console.log("StreamWalletFactory:", address(factory));
         console.log("  Owner:", deployer);
@@ -155,8 +157,8 @@ contract DeployStreaming is Script {
         console.log("SUBSCRIBE TO STREAM:");
         console.log("-------------------");
         console.log("cast send", address(factory), "--value 1ether");
-        console.log("  'subscribeToStream(address,uint256)'");
-        console.log("  <STREAMER_ADDRESS> <DURATION_SECONDS>");
+        console.log("  'subscribeToStream(address,uint256,uint256,address)'");
+        console.log("  <STREAMER_ADDRESS> <DURATION_SECONDS> <AMOUNT> <TOKEN_ADDRESS>");
         console.log("");
     }
 }

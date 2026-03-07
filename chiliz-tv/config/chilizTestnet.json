@@ -3,9 +3,9 @@
   "rpcUrl": "https://spicy-rpc.chiliz.com",
   "explorerUrl": "https://testnet.chiliscan.com",
   "verifierUrl": "https://api.routescan.io/v2/network/testnet/evm/88882/etherscan/api",
-  "kayenMasterRouter": "0x0000000000000000000000000000000000000000",
-  "wchz": "0x0000000000000000000000000000000000000000",
-  "usdt": "0x0000000000000000000000000000000000000000",
-  "safeAddress": "0x0000000000000000000000000000000000000000",
-  "forgeFlags": "--legacy --with-gas-price 2501"
+  "kayenMasterRouter": "0x94448122c3F4276CDFA8C190249da4C1c736eEab",
+  "wchz": "0x678c34581db0a7808d0aC669d7025f1408C9a3C6",
+  "usdc": "0xa37936f56249965d407e39347528a1a91eb1cbef",
+  "safeAddress": "0x74E2653e4e0Adf2cb9a56C879d4C28ad0294D677",
+  "forgeFlags": "--legacy --with-gas-price 3500000000001 --skip-simulation"
 }
