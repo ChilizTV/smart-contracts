@@ -15,10 +15,10 @@ contract FootballMatch is BettingMatch {
     // ══════════════════════════════════════════════════════════════════════════
     
     /// @notice Football market type identifiers (bytes32 for gas efficiency)
-    bytes32 public constant MARKET_WINNER = keccak256("WINNER");           // 1X2: Home(0)/Draw(1)/Away(2)
-    bytes32 public constant MARKET_GOALS_TOTAL = keccak256("GOALS_TOTAL"); // Over/Under
-    bytes32 public constant MARKET_BOTH_SCORE = keccak256("BOTH_SCORE");   // Yes(1)/No(0)
-    bytes32 public constant MARKET_HALFTIME = keccak256("HALFTIME");       // 1X2 at halftime
+    bytes32 public constant MARKET_WINNER = keccak256("WINNER");               // 1X2: Home(0)/Draw(1)/Away(2)
+    bytes32 public constant MARKET_GOALS_TOTAL = keccak256("GOALS_TOTAL");     // Over/Under
+    bytes32 public constant MARKET_BOTH_SCORE = keccak256("BOTH_SCORE");       // Yes(1)/No(0)
+    bytes32 public constant MARKET_HALFTIME = keccak256("HALFTIME");           // 1X2 at halftime
     bytes32 public constant MARKET_CORRECT_SCORE = keccak256("CORRECT_SCORE"); // Exact score
     bytes32 public constant MARKET_FIRST_SCORER = keccak256("FIRST_SCORER");   // Player ID
 
