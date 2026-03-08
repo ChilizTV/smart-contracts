@@ -148,17 +148,17 @@ contract DeployBetting is Script {
         console.log("BETTING FLOW:");
         console.log("------------");
         console.log("1. Open market: match.setMarketState(0, MarketState.Open)");
-        console.log("2. User bets USDT: match.placeBetUSDT(0, 0, 100e6)");
+        console.log("2. User bets USDC: match.placeBetUSDC(0, 0, 100e6)");
         console.log("   - marketId: 0 (first market)");
         console.log("   - selection: 0 (Home/Over/Yes/etc.)");
-        console.log("   - amount: 100 USDT (6 decimals)");
+        console.log("   - amount: 100 USDC (6 decimals)");
         console.log("   - Or swap any token via ChilizSwapRouter");
         console.log("   - Odds locked at time of bet (x10000 precision)");
         console.log("3. Owner resolves: match.resolveMarket(0, 0)");
         console.log("   - marketId: 0");
         console.log("   - result: 0 (actual outcome)");
         console.log("4. Winner claims: match.claim(0, 0)");
-        console.log("   - Receives USDT: bet * lockedOdds / 10000");
+        console.log("   - Receives USDC: bet * lockedOdds / 10000");
         console.log("");
         
         console.log("UPGRADING:");

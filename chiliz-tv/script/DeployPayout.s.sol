@@ -12,7 +12,7 @@ import {PayoutEscrow} from "../src/betting/PayoutEscrow.sol";
  * ENVIRONMENT VARIABLES (required):
  *   PRIVATE_KEY   - Deployer private key
  *   SAFE_ADDRESS  - Gnosis Safe multisig (becomes escrow owner)
- *   USDT_ADDRESS  - USDT token address on this network
+ *   USDC_ADDRESS  - USDC token address on this network
  *
  * OPTIONAL:
  *   MATCH_ADDRESSES - Comma-separated list of BettingMatch proxy addresses to authorize
@@ -25,7 +25,7 @@ contract DeployPayout is Script {
 
     address public deployer;
     address public safeAddress;
-    address public usdtAddress;
+    address public usdcAddress;
 
     function run() external {
         deployer = msg.sender;
@@ -43,17 +43,17 @@ contract DeployPayout is Script {
 
     function _loadConfig() internal {
         safeAddress = vm.envAddress("SAFE_ADDRESS");
-        usdtAddress = vm.envAddress("USDT_ADDRESS");
+        usdcAddress = vm.envAddress("USDC_ADDRESS");
         require(safeAddress != address(0), "SAFE_ADDRESS required");
-        require(usdtAddress != address(0), "USDT_ADDRESS required");
+        require(usdcAddress != address(0), "USDC_ADDRESS required");
     }
 
     function _deployEscrow() internal {
         console.log("[1/2] PAYOUT ESCROW");
         console.log("====================");
-        escrow = new PayoutEscrow(usdtAddress, safeAddress);
+        escrow = new PayoutEscrow(usdcAddress, safeAddress);
         console.log("PayoutEscrow:", address(escrow));
-        console.log("  USDT:", usdtAddress);
+        console.log("  USDC:", usdcAddress);
         console.log("  Owner (Safe):", safeAddress);
         console.log("");
     }
@@ -94,9 +94,9 @@ contract DeployPayout is Script {
         console.log("  Function: setPayoutEscrow(address)");
         console.log("  Param:", address(escrow));
         console.log("");
-        console.log("Step 3: Fund the escrow with USDT (from Safe UI):");
+        console.log("Step 3: Fund the escrow with USDC (from Safe UI):");
         console.log("  Transaction 1 - Approve:");
-        console.log("    Target:", usdtAddress);
+        console.log("    Target:", usdcAddress);
         console.log("    Function: approve(address,uint256)");
         console.log("    Params:", address(escrow), "<FUNDING_AMOUNT>");
         console.log("");
@@ -118,7 +118,7 @@ contract DeployPayout is Script {
         console.log("==============================================");
         console.log("Deployer:", deployer);
         console.log("Safe (Owner):", safeAddress);
-        console.log("USDT:", usdtAddress);
+        console.log("USDC:", usdcAddress);
         console.log("==============================================");
         console.log("");
     }
