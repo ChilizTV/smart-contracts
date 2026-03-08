@@ -320,7 +320,7 @@ ChilizTV is not just another betting platform. It is:
 
 ## 11. Partnership Ask — What We Need from Chiliz
 
-### 11.1 Treasury Seed Funding — 50,000 USDC Grant
+### 11.1 Treasury Seed Funding — 10,000 to 50,000 USDC Grant
 
 ChilizTV's betting system uses a **per-match escrow model**: each match contract holds its own USDC reserve to guarantee payouts to winners. This is what makes the platform trustworthy — bettors can verify on-chain that funds exist to cover every accepted bet.
 
@@ -328,11 +328,11 @@ However, variance is inherent to sports betting. In any given week, bettors may 
 
 **What we need:**
 
-A **50,000 USDC grant** to seed the PayoutEscrow — the shared treasury safety net that backstops individual match contracts when payout obligations temporarily exceed deposits.
+A **10,000 USDC to **50,000 USDC grant** to seed the PayoutEscrow — the shared treasury safety net that backstops individual match contracts when payout obligations temporarily exceed deposits.
 
 | Detail | Value |
 |--------|-------|
-| **Amount requested** | 50,000 USDC |
+| **Amount requested** | 10,000 USDC minimum |
 | **Purpose** | Seed the PayoutEscrow contract to guarantee payouts during the launch phase |
 | **Why it's needed** | Low initial volume means higher variance — a few large wins could exceed a single match's pool |
 | **Industry context** | Bookmakers target 4-11% margin per match pool, but early-stage platforms need buffer capital to absorb short-term swings |
