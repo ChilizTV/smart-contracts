@@ -1,4 +1,4 @@
-# ChilizTV â€” Functional Documentation
+# ChilizTV — Functional Documentation
 
 > **Version**: 1.0  
 > **Status**: Production-ready smart contracts on Chiliz Chain  
@@ -18,7 +18,8 @@
 - [8. Ecosystem Integration](#8-ecosystem-integration)
 - [9. Future Extensions](#9-future-extensions)
 - [10. Diagrams](#10-diagrams)
-- [11. Why This Architecture Matters â€” Investor Summary](#11-why-this-architecture-matters--investor-summary)
+- [11. Why This Architecture Matters - Investor Summary](#11-why-this-architecture-matters--investor-summary)
+- [12. Partnership Ask — What We Need from Chiliz](#12-partnership-ask--what-we-need-from-chiliz)
 
 ---
 
@@ -30,9 +31,9 @@ In simple terms, ChilizTV enables:
 
 - **Sports fans** to place bets on football and basketball matches using any token in the Chiliz ecosystem (CHZ, fan tokens, or USDC).
 - **Streamers** to receive donations and subscriptions from their audience, settled transparently on-chain.
-- **The platform** to automatically handle all token conversions, fee collection, and payouts through smart contracts â€” no intermediaries needed.
+- **The platform** to automatically handle all token conversions, fee collection, and payouts through smart contracts — no intermediaries needed.
 
-All financial settlements happen in **USDC** (a stable US dollar token), providing price stability for all participants. Users can pay with native CHZ, any fan token, or USDC â€” the system automatically converts everything behind the scenes.
+All financial settlements happen in **USDC** (a stable US dollar token), providing price stability for all participants. Users can pay with native CHZ, any fan token, or USDC — the system automatically converts everything behind the scenes.
 
 ---
 
@@ -42,10 +43,10 @@ All financial settlements happen in **USDC** (a stable US dollar token), providi
 
 Traditional sports betting and streaming platforms suffer from:
 
-1. **Lack of transparency** â€” Users cannot verify that odds are fair, that payouts are solvent, or that platform fees are correctly applied.
-2. **Centralized custody risk** â€” User funds are held by a single entity with no public accountability.
-3. **Fragmented payment systems** â€” Fan token holders in the Chiliz ecosystem have limited utility for their tokens beyond trading.
-4. **Streamer monetization friction** â€” Content creators on sports platforms lack native, transparent revenue tools tied to the fan economy.
+1. **Lack of transparency** — Users cannot verify that odds are fair, that payouts are solvent, or that platform fees are correctly applied.
+2. **Centralized custody risk** — User funds are held by a single entity with no public accountability.
+3. **Fragmented payment systems** — Fan token holders in the Chiliz ecosystem have limited utility for their tokens beyond trading.
+4. **Streamer monetization friction** — Content creators on sports platforms lack native, transparent revenue tools tied to the fan economy.
 
 ### The Vision
 
@@ -53,12 +54,12 @@ ChilizTV brings **trust, transparency, and composability** to sports entertainme
 
 - Settling all bets and payouts through **auditable smart contracts** on the Chiliz Chain.
 - Enabling **any Chiliz ecosystem token** (CHZ, FC Barcelona Fan Token, PSG Fan Token, etc.) to be used seamlessly for betting and streaming.
-- Providing **real-time solvency guarantees** â€” the contracts enforce that funds are available before accepting bets.
+- Providing **real-time solvency guarantees** — the contracts enforce that funds are available before accepting bets.
 - Creating a **unified economic layer** that ties sports betting, content creation, and fan engagement together within the Chiliz ecosystem.
 
 ### Why Chiliz?
 
-The Chiliz Chain is purpose-built for sports and entertainment. It hosts **40+ official fan tokens** from major sports organizations. ChilizTV sits at the intersection of this ecosystem, giving fan tokens real utility â€” not just as collectibles, but as active financial instruments for betting and creator support.
+The Chiliz Chain is purpose-built for sports and entertainment. It hosts **40+ official fan tokens** from major sports organizations. ChilizTV sits at the intersection of this ecosystem, giving fan tokens real utility — not just as collectibles, but as active financial instruments for betting and creator support.
 
 ---
 
@@ -71,7 +72,7 @@ The Chiliz Chain is purpose-built for sports and entertainment. It hosts **40+ o
 | **Football betting** | Winner (1X2), total goals (over/under), both teams to score, halftime result, correct score, first scorer |
 | **Basketball betting** | Winner, total points, point spread, quarter winner, first to score, highest-scoring quarter |
 | **Dynamic odds** | Odds update in real time; each bet locks its odds at the moment of placement |
-| **Multi-token payments** | Bet with CHZ, any fan token, or USDC â€” all automatically converted to USDC |
+| **Multi-token payments** | Bet with CHZ, any fan token, or USDC — all automatically converted to USDC |
 | **Solvency enforcement** | The contract verifies it can cover all potential payouts before accepting any bet |
 | **Escrow fallback** | A treasury-funded escrow contract backstops payouts if a match contract needs additional liquidity |
 
@@ -87,7 +88,7 @@ The Chiliz Chain is purpose-built for sports and entertainment. It hosts **40+ o
 
 ### 3.3 Unified Swap Router
 
-A single smart contract handles **all token conversions** for both betting and streaming, routing through the **Kayen DEX** (the native decentralized exchange on Chiliz Chain). Users never need to manually swap tokens â€” the platform does it in one transaction.
+A single smart contract handles **all token conversions** for both betting and streaming, routing through the **Kayen DEX** (the native decentralized exchange on Chiliz Chain). Users never need to manually swap tokens — the platform does it in one transaction.
 
 ---
 
@@ -98,18 +99,18 @@ ChilizTV's smart contract system is composed of four interconnected modules:
 ### 4.1 Module Overview
 
 ```
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚                         ChilizTV Platform                            â”‚
-â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
-â”‚  BETTING MODULE  â”‚ STREAMING MODULE â”‚     INFRASTRUCTURE            â”‚
-â”‚                  â”‚                  â”‚                                â”‚
-â”‚ BettingMatch-    â”‚ StreamWallet-    â”‚ ChilizSwapRouter               â”‚
-â”‚   Factory        â”‚   Factory        â”‚   (Kayen DEX integration)     â”‚
-â”‚ FootballMatch    â”‚ StreamWallet     â”‚                                â”‚
-â”‚ BasketballMatch  â”‚                  â”‚ PayoutEscrow                   â”‚
-â”‚                  â”‚                  â”‚   (Treasury safety net)        â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-                              â”‚
+┌──────────────────────────────────────────────────────────────────────┐
+│                         ChilizTV Platform                            │
+├──────────────────┬──────────────────┬────────────────────────────────┤
+│  BETTING MODULE  │ STREAMING MODULE │     INFRASTRUCTURE             │
+│                  │                  │                                │
+│ BettingMatch-    │ StreamWallet-    │ ChilizSwapRouter               │
+│   Factory        │   Factory        │   (Kayen DEX integration)      │
+│ FootballMatch    │ StreamWallet     │                                │
+│ BasketballMatch  │                  │ PayoutEscrow                   │
+│                  │                  │   (Treasury safety net)        │
+└──────────────────┴──────────────────┴────────────────────────────────┘
+                              │
                      Chiliz Chain (L1)
                      Fan Tokens + CHZ + USDC
 ```
@@ -125,20 +126,20 @@ Each sports match is a **separate smart contract** (proxy) that is independently
 - The system admin can upgrade match logic without redeploying.
 
 **Key contracts**:
-- **BettingMatchFactory** â€” Creates new match contracts. Internally deploys `FootballMatch` and `BasketballMatch` logic contracts once. Each call to `createFootballMatch()` or `createBasketballMatch()` spawns a lightweight proxy pointing to the shared logic.
-- **FootballMatch** â€” Football-specific market types and validation logic.
-- **BasketballMatch** â€” Basketball-specific market types (spreads, quarters, etc.).
-- **BettingMatch** (abstract base) â€” Core betting engine: odds management, bet placement, solvency tracking, claims, refunds.
+- **BettingMatchFactory** — Creates new match contracts. Internally deploys `FootballMatch` and `BasketballMatch` logic contracts once. Each call to `createFootballMatch()` or `createBasketballMatch()` spawns a lightweight proxy pointing to the shared logic.
+- **FootballMatch** — Football-specific market types and validation logic.
+- **BasketballMatch** — Basketball-specific market types (spreads, quarters, etc.).
+- **BettingMatch** (abstract base) — Core betting engine: odds management, bet placement, solvency tracking, claims, refunds.
 
 ### 4.3 Streaming Module
 
 **Pattern**: UUPS Proxy (per-streamer wallet)
 
-Each streamer gets their own **StreamWallet** proxy â€” a smart wallet that tracks subscriptions, donations, revenue, and allows withdrawals.
+Each streamer gets their own **StreamWallet** proxy — a smart wallet that tracks subscriptions, donations, revenue, and allows withdrawals.
 
 **Key contracts**:
-- **StreamWalletFactory** â€” Deploys new StreamWallet proxies for streamers. Handles fan-token-based subscriptions and donations (swapping to USDC via Kayen DEX inside the wallet).
-- **StreamWallet** â€” Per-streamer revenue wallet. Tracks subscribers, donation history, platform fees, and accumulated balance. Supports withdrawals by the streamer.
+- **StreamWalletFactory** — Deploys new StreamWallet proxies for streamers. Handles fan-token-based subscriptions and donations (swapping to USDC via Kayen DEX inside the wallet).
+- **StreamWallet** — Per-streamer revenue wallet. Tracks subscribers, donation history, platform fees, and accumulated balance. Supports withdrawals by the streamer.
 
 ### 4.4 Unified Swap Router
 
@@ -188,13 +189,13 @@ The smart contracts are the settlement layer. The following components operate o
 
 ### 5.2 Placing a Bet
 
-A user can bet through three paths â€” all converge to USDC settlement:
+A user can bet through three paths — all converge to USDC settlement:
 
 | Path | User action | What happens |
 |------|-------------|--------------|
 | **Direct USDC** | User approves USDC, calls `placeBetUSDC()` | USDC transferred directly to match contract |
-| **Via CHZ** | User sends CHZ to `placeBetWithCHZ()` on the Swap Router | CHZ â†’ USDC swap via Kayen DEX â†’ bet placed on match |
-| **Via Fan Token** | User approves token, calls `placeBetWithToken()` on the Swap Router | Token â†’ USDC swap via Kayen DEX â†’ bet placed on match |
+| **Via CHZ** | User sends CHZ to `placeBetWithCHZ()` on the Swap Router | CHZ → USDC swap via Kayen DEX → bet placed on match |
+| **Via Fan Token** | User approves token, calls `placeBetWithToken()` on the Swap Router | Token → USDC swap via Kayen DEX → bet placed on match |
 
 In every case:
 - The **odds are locked** at the exact moment the bet is placed.
@@ -205,7 +206,7 @@ In every case:
 
 - The odds engine (off-chain) monitors betting activity and calculates new odds.
 - It pushes updated odds on-chain via the `ODDS_SETTER_ROLE`.
-- **Existing bets are not affected** â€” each bet retains the odds it was placed at.
+- **Existing bets are not affected** — each bet retains the odds it was placed at.
 - New bets are placed at the new odds.
 
 ### 5.4 Resolving a Match
@@ -223,8 +224,8 @@ In every case:
    - The market is resolved.
    - The bet's selection matches the result.
    - The bet hasn't already been claimed.
-3. **Payout is calculated**: `betAmount Ã— lockedOdds / 10,000`.
-   - Example: 500 USDC bet at 2.20x odds â†’ 500 Ã— 22,000 / 10,000 = **1,100 USDC payout**.
+3. **Payout is calculated**: `betAmount × lockedOdds / 10,000`.
+   - Example: 500 USDC bet at 2.20x odds → 500 × 22,000 / 10,000 = **1,100 USDC payout**.
 4. If the contract has enough USDC, it pays directly.
 5. If not, it pulls the shortfall from the **PayoutEscrow**, then pays the winner.
 6. A `claimAll()` function allows claiming all winning bets in a single transaction.
@@ -296,7 +297,7 @@ Streamers call `withdrawRevenue()` on their StreamWallet at any time to withdraw
 Before any USDC bet is accepted, the contract checks:
 
 ```
-totalOutstandingLiabilities + potentialNewPayout â‰¤ contractUSDCBalance + incomingDeposit
+totalOutstandingLiabilities + potentialNewPayout ≤ contractUSDCBalance + incomingDeposit
 ```
 
 If this check fails, the bet is **rejected**. This prevents the contract from ever accepting bets it cannot cover.
@@ -330,8 +331,8 @@ The PayoutEscrow is owned by a **Gnosis Safe** multisig wallet, requiring multip
 ### 7.8 Deadline & Slippage Protection
 
 All swap operations enforce:
-- A **deadline** timestamp â€” the transaction reverts if processed too late.
-- A **minimum output amount** â€” protects users from unfavorable price slippage.
+- A **deadline** timestamp — the transaction reverts if processed too late.
+- A **minimum output amount** — protects users from unfavorable price slippage.
 
 ### 7.9 Audit Status
 
@@ -360,8 +361,8 @@ The Swap Router automatically converts fan tokens to USDC via Kayen DEX, making 
 ### 8.3 Kayen DEX Integration
 
 **Kayen** is the native decentralized exchange on Chiliz Chain. ChilizTV integrates two Kayen router contracts:
-- **MasterRouterV2** â€” For swapping native CHZ to USDC.
-- **TokenRouter** â€” For swapping any ERC20 (fan tokens, WCHZ) to USDC.
+- **MasterRouterV2** — For swapping native CHZ to USDC.
+- **TokenRouter** — For swapping any ERC20 (fan tokens, WCHZ) to USDC.
 
 ### 8.4 Gnosis Safe
 
@@ -370,9 +371,9 @@ The platform treasury and escrow system are managed through **Gnosis Safe**, a b
 ### 8.5 USDC as Settlement Layer
 
 All financial flows settle in **USDC** (a stablecoin pegged to the US dollar). This provides:
-- **Price stability** â€” Bettors know their payout in dollar terms, not volatile crypto prices.
-- **Simplified accounting** â€” Revenue, fees, and payouts are all denominated in dollars.
-- **Universal compatibility** â€” USDC is widely understood and accepted.
+- **Price stability** — Bettors know their payout in dollar terms, not volatile crypto prices.
+- **Simplified accounting** — Revenue, fees, and payouts are all denominated in dollars.
+- **Universal compatibility** — USDC is widely understood and accepted.
 
 ---
 
@@ -384,7 +385,7 @@ Based on the architecture's design, the following extensions are naturally suppo
 |-----------|-------------|-------|
 | **Additional sports** | High | New sport contracts inherit from `BettingMatch`. Only need sport-specific market types and validation. |
 | **Multi-chain deployment** | High | Contracts are standard Solidity with no chain-specific dependencies. Could deploy to Base, Arbitrum, or other EVM chains. |
-| **Live in-play betting** | Medium | The market state machine already supports `Open â†’ Suspended â†’ Open` transitions for in-play scenarios. Odds updates via `ODDS_SETTER_ROLE` enable real-time adjustments. |
+| **Live in-play betting** | Medium | The market state machine already supports `Open → Suspended → Open` transitions for in-play scenarios. Odds updates via `ODDS_SETTER_ROLE` enable real-time adjustments. |
 | **Parlay / multi-bets** | Medium | Would require a new orchestrator contract that coordinates bets across multiple match proxies. |
 | **NFT-gated features** | Medium | Access control extensions could require specific NFTs for premium markets or streamer content. |
 | **On-chain governance** | Medium | Platform fee parameters and treasury management could be governed by token holders. |
@@ -399,37 +400,37 @@ Based on the architecture's design, the following extensions are naturally suppo
 
 ```mermaid
 flowchart TB
-    subgraph Users["ðŸ‘¥ Users"]
+    subgraph Users["👥 Users"]
         Bettor["Bettor"]
         Fan["Fan / Subscriber"]
         Streamer["Streamer"]
     end
 
-    subgraph Tokens["ðŸ’° Payment Options"]
+    subgraph Tokens["💰 Payment Options"]
         CHZ["CHZ (native)"]
         FanToken["Fan Tokens (ERC20)"]
         USDC_pay["USDC (direct)"]
     end
 
-    subgraph SwapLayer["ðŸ”„ Unified Swap Router"]
+    subgraph SwapLayer["🔄 Unified Swap Router"]
         CSR["ChilizSwapRouter"]
         Kayen["Kayen DEX\n(MasterRouter + TokenRouter)"]
     end
 
-    subgraph BettingSystem["ðŸ† Betting Module"]
+    subgraph BettingSystem["🏆 Betting Module"]
         Factory["BettingMatchFactory"]
         FM["FootballMatch\n(UUPS Proxy)"]
         BM["BasketballMatch\n(UUPS Proxy)"]
         Escrow["PayoutEscrow\n(Gnosis Safe funded)"]
     end
 
-    subgraph StreamingSystem["ðŸ“º Streaming Module"]
+    subgraph StreamingSystem["📺 Streaming Module"]
         SWFactory["StreamWalletFactory"]
         SW1["StreamWallet #1"]
         SW2["StreamWallet #N"]
     end
 
-    subgraph Treasury["ðŸ¦ Treasury"]
+    subgraph Treasury["🏦 Treasury"]
         Safe["Gnosis Safe\nMultisig"]
         TreasuryAddr["Platform Treasury"]
     end
@@ -446,7 +447,7 @@ flowchart TB
     CSR <-->|"swap"| Kayen
     CSR -->|"USDC + placeBetUSDCFor"| FM
     CSR -->|"USDC + placeBetUSDCFor"| BM
-    CSR -->|"fee â†’ treasury\nremainder â†’ streamer"| TreasuryAddr
+    CSR -->|"fee → treasury\nremainder → streamer"| TreasuryAddr
     CSR -->|"record donation/sub"| SW1
 
     Factory -->|"deploy"| FM
@@ -492,10 +493,10 @@ sequenceDiagram
     rect rgb(230, 255, 230)
         Note over Admin, Escrow: BETTING PHASE
         Bettor->>Router: placeBetWithCHZ{100 CHZ}(Match, market=0, sel=Home)
-        Router->>DEX: swap 100 CHZ â†’ USDC
+        Router->>DEX: swap 100 CHZ → USDC
         DEX-->>Router: 25 USDC
         Router->>Match: transfer 25 USDC + placeBetUSDCFor(Bettor)
-        Match->>Match: Lock odds 2.20x, record bet, check solvency âœ“
+        Match->>Match: Lock odds 2.20x, record bet, check solvency ✓
 
         Note over Admin: Odds engine adjusts odds
         Admin->>Match: setMarketOdds(0, newOdds=18000)
@@ -506,21 +507,21 @@ sequenceDiagram
         Note over Admin, Escrow: RESOLUTION PHASE
         Admin->>Match: closeMarket(0)
         Resolver->>Match: resolveMarket(0, result=Home wins)
-        Match->>Match: State â†’ Resolved, deduct losing liabilities
+        Match->>Match: State → Resolved, deduct losing liabilities
     end
 
     rect rgb(255, 245, 235)
         Note over Admin, Escrow: PAYOUT PHASE
         Bettor->>Match: claim(market=0, betIndex=0)
-        Match->>Match: Verify: selection == result âœ“
-        Match->>Match: Payout = 25 Ã— 22000 / 10000 = 55 USDC
+        Match->>Match: Verify: selection == result ✓
+        Match->>Match: Payout = 25 × 22000 / 10000 = 55 USDC
 
         alt Contract has enough USDC
-            Match->>Bettor: transfer 55 USDC âœ“
+            Match->>Bettor: transfer 55 USDC ✓
         else Contract underfunded
             Match->>Escrow: disburseTo(Match, deficit)
             Escrow->>Match: transfer deficit USDC
-            Match->>Bettor: transfer 55 USDC âœ“
+            Match->>Bettor: transfer 55 USDC ✓
         end
     end
 ```
@@ -529,25 +530,25 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    subgraph Funding["ðŸ’° Funding Sources"]
+    subgraph Funding["💰 Funding Sources"]
         Safe["Gnosis Safe\n(Multisig Treasury)"]
         BetDeposits["Bettor USDC Deposits\n(from losing bets)"]
         TreasuryFund["Admin Treasury Funding\n(fundUSDCTreasury)"]
     end
 
-    subgraph MatchContract["ðŸŸï¸ Match Contract (Proxy)"]
+    subgraph MatchContract["🏟️ Match Contract (Proxy)"]
         Balance["USDC Balance"]
-        Solvency["Solvency Check\nliabilities â‰¤ balance"]
+        Solvency["Solvency Check\nliabilities ≤ balance"]
         Disburse["_disburse() Logic"]
     end
 
-    subgraph EscrowContract["ðŸ”’ PayoutEscrow"]
+    subgraph EscrowContract["🔒 PayoutEscrow"]
         EscrowBalance["USDC Reserve"]
         Whitelist["Authorized Matches\n(whitelist)"]
         DisburseTo["disburseTo()"]
     end
 
-    subgraph Payouts["ðŸ’¸ Payouts"]
+    subgraph Payouts["💸 Payouts"]
         Winner["Winner Claims"]
         Refund["Cancelled Market\nRefunds"]
     end
@@ -558,8 +559,8 @@ flowchart TB
     TreasuryFund -->|"fundUSDCTreasury"| Balance
 
     Balance --> Solvency
-    Solvency -->|"âœ“ Sufficient"| Disburse
-    Solvency -->|"âœ— Shortfall"| DisburseTo
+    Solvency -->|"✓ Sufficient"| Disburse
+    Solvency -->|"✗ Shortfall"| DisburseTo
 
     Whitelist -->|"verify match"| DisburseTo
     EscrowBalance -->|"transfer deficit"| DisburseTo
@@ -629,11 +630,11 @@ stateDiagram-v2
 
 ---
 
-## 11. Why This Architecture Matters â€” Investor Summary
+## 11. Why This Architecture Matters — Investor Summary
 
 ### Transparency
 
-Every bet, every payout, every fee is recorded on the public blockchain. Solvency can be verified by anyone at any time. There is no "black box" â€” the smart contract code is the source of truth.
+Every bet, every payout, every fee is recorded on the public blockchain. Solvency can be verified by anyone at any time. There is no "black box" — the smart contract code is the source of truth.
 
 ### Security
 
@@ -653,23 +654,64 @@ Every bet, every payout, every fee is recorded on the public blockchain. Solvenc
 
 - **Native Chiliz chain deployment**: Purpose-built for the sports fan economy.
 - **Fan token utility**: Gives real, active utility to 40+ fan tokens that currently have limited use cases.
-- **DEX integration**: Seamless token conversion via Kayen DEX means users can bet or tip with whichever token they hold â€” no manual swaps needed.
+- **DEX integration**: Seamless token conversion via Kayen DEX means users can bet or tip with whichever token they hold — no manual swaps needed.
 
 ### Revenue Model
 
 - **Betting margins**: The platform operates as a bookmaker with configurable odds. The difference between true probabilities and offered odds generates margin.
 - **Streaming platform fees**: A configurable percentage (e.g., 5%) of every donation and subscription flows to the platform treasury.
-- **Both revenue streams are enforced by smart contracts** â€” transparent, automatic, and tamper-proof.
+- **Both revenue streams are enforced by smart contracts** — transparent, automatic, and tamper-proof.
 
 ### Differentiation
 
 ChilizTV is not just another betting platform. It is:
-1. **On-chain transparent** â€” Users can verify everything.
-2. **Multi-token native** â€” Pay with CHZ, fan tokens, or stablecoins seamlessly.
-3. **Dual-product** â€” Betting + streaming in one unified system.
-4. **Chiliz-native** â€” Built specifically for the sports fan token ecosystem, not a generic DeFi fork.
-5. **Upgrade-ready** â€” Architecture supports new sports, new chains, and new features without starting over.
+1. **On-chain transparent** — Users can verify everything.
+2. **Multi-token native** — Pay with CHZ, fan tokens, or stablecoins seamlessly.
+3. **Dual-product** — Betting + streaming in one unified system.
+4. **Chiliz-native** — Built specifically for the sports fan token ecosystem, not a generic DeFi fork.
+5. **Upgrade-ready** — Architecture supports new sports, new chains, and new features without starting over.
 
 ---
 
-*This document was produced from direct analysis of the ChilizTV smart contract codebase. All features described are implemented and present in the contracts. No speculative features have been included.*
+## 12. Partnership Ask — What We Need from Chiliz
+
+### 12.1 Treasury Seed Funding — 10,000 USDC Grant
+
+ChilizTV's betting system uses a **per-match escrow model**: each match contract holds its own USDC reserve to guarantee payouts to winners. This is what makes the platform trustworthy — bettors can verify on-chain that funds exist to cover every accepted bet.
+
+However, variance is inherent to sports betting. In any given week, bettors may win more than expected. The industry standard for bookmaker margin (also called "overround" or "vig") is **8% to 11% of the total betting pool per match** — meaning for every $100 wagered across all outcomes, the operator expects to retain $8–$11 on average. But this is a *statistical average* over time. Individual matches can swing heavily toward bettors, especially in early stages with lower volumes.
+
+**What we need:**
+
+A **10,000 USDC grant** to seed the PayoutEscrow — the shared treasury safety net that backstops individual match contracts when payout obligations temporarily exceed deposits.
+
+| Detail | Value |
+|--------|-------|
+| **Amount requested** | 10,000 USDC |
+| **Purpose** | Seed the PayoutEscrow contract to guarantee payouts during the launch phase |
+| **Why it's needed** | Low initial volume means higher variance — a few large wins could exceed a single match's pool |
+| **Industry context** | Bookmakers target 8–11% margin per match pool, but early-stage platforms need buffer capital to absorb short-term swings |
+| **How it's managed** | Held in a Gnosis Safe multisig — no single party can withdraw. Fully auditable on-chain |
+| **Risk profile** | Capital is *not spent* — it's a reserve. As volume grows and margins stabilize, the escrow becomes self-sustaining from retained house edge |
+
+This is not an operating expense. It is **collateral** — a solvency buffer that ensures every winning bettor gets paid from day one, building the trust needed to grow the platform.
+
+### 12.2 Communication & Visibility Support
+
+ChilizTV is a **two-sided platform**: it needs both **streamers creating content** and **viewers engaging** (betting, donating, subscribing). Building this ecosystem requires visibility within the Chiliz community.
+
+**What we need:**
+
+Support from Chiliz in amplifying ChilizTV to the fan token community:
+
+| Ask | Impact |
+|-----|--------|
+| **Social media co-promotion** | Announce ChilizTV on Chiliz official channels to reach the existing fan token holder base |
+| **Streamer onboarding** | Help connect us with sports content creators who are already active in the Chiliz/Socios ecosystem |
+| **Event visibility** | Feature ChilizTV at Chiliz ecosystem events, partner showcases, or fan token campaigns |
+| **Ecosystem listing** | Include ChilizTV in the official Chiliz ecosystem page / app directory |
+| **Fan token partnerships** | Introductions to club partners for co-branded betting events (e.g., "FC Barcelona match day" with $BAR token betting) |
+
+ChilizTV gives **real utility to fan tokens** — not just holding or trading, but active engagement through betting and streamer support. This aligns directly with Chiliz's mission to increase fan token usage. With Chiliz visibility, we can bootstrap the user base needed to make the platform self-sustaining.
+
+---

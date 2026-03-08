@@ -28,7 +28,7 @@ This PR adds comprehensive deployment scripts for all Chiliz-TV smart contracts 
 
 4. **script/DeployPayout.s.sol**
    - PayoutEscrow deployment
-   - Configures USDT token and owner
+   - Configures USDC token and owner
    - Can also be deployed via `deploy.sh --payout`
 
 ### Documentation (643 lines)
@@ -67,25 +67,25 @@ This PR adds comprehensive deployment scripts for all Chiliz-TV smart contracts 
 Every deployment script follows the UUPS (Universal Upgradeable Proxy Standard) pattern:
 
 ```
-┌─────────────────────┐
-│ Gnosis Safe (Owner) │ ◄── Controls factory
-└──────────┬──────────┘
-           │ owns
-           ▼
-┌─────────────────────┐
-│ Factory Contract    │ ◄── Creates proxies
-└──────────┬──────────┘
-           │ deploys
-           ▼
-┌─────────────────────┐
-│ Implementation      │ ◄── Logic contract (immutable in factory)
-└─────────────────────┘
-           ▲
-           │ delegatecall (via ERC1967)
-┌──────────┴──────────┐
-│ ERC1967Proxy        │ ◄── Per instance
-│  (StreamWallet)     │     Owner can upgrade individually
-└─────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ Gnosis Safe (Owner) â”‚ â—„â”€â”€ Controls factory
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+           â”‚ owns
+           â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ Factory Contract    â”‚ â—„â”€â”€ Creates proxies
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+           â”‚ deploys
+           â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ Implementation      â”‚ â—„â”€â”€ Logic contract (immutable in factory)
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+           â–²
+           â”‚ delegatecall (via ERC1967)
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ ERC1967Proxy        â”‚ â—„â”€â”€ Per instance
+â”‚  (StreamWallet)     â”‚     Owner can upgrade individually
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 **Key Benefits:**
@@ -104,8 +104,8 @@ All scripts follow this streamlined order:
    - Implementations stored as immutable for gas efficiency
 
 2. **Transfer Ownership** (to Safe multisig)
-   - BettingMatchFactory → Safe
-   - StreamWalletFactory → Safe
+   - BettingMatchFactory â†’ Safe
+   - StreamWalletFactory â†’ Safe
    - Safe controls factory operations
 
 **Gas Optimization:**
@@ -292,17 +292,17 @@ Possible additions:
 
 This PR provides a complete, production-ready deployment infrastructure for Chiliz-TV smart contracts with:
 
-- ✅ Streamlined deployment scripts
-- ✅ Comprehensive documentation
-- ✅ UUPS pattern fully implemented
-- ✅ Gas-optimized architecture (3x savings)
-- ✅ Safe multisig integration
-- ✅ Environment setup guide
-- ✅ Deployment checklist
-- ✅ 119/119 tests passing
-- ✅ Individual upgrade control
-- ✅ Emergency procedures
-- ✅ Production-ready
+- âœ… Streamlined deployment scripts
+- âœ… Comprehensive documentation
+- âœ… UUPS pattern fully implemented
+- âœ… Gas-optimized architecture (3x savings)
+- âœ… Safe multisig integration
+- âœ… Environment setup guide
+- âœ… Deployment checklist
+- âœ… 119/119 tests passing
+- âœ… Individual upgrade control
+- âœ… Emergency procedures
+- âœ… Production-ready
 
 **Architecture: Clean UUPS pattern with gas-efficient immutable implementations**
 
