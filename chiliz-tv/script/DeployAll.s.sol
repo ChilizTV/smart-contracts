@@ -68,9 +68,10 @@ contract DeployAll is Script {
         _deployStreamingSystem();
         _deploySwapRouter();
         _deployPayoutEscrow();
+        _linkContracts();
         // NOTE: Ownership transfer skipped during deployment.
-        // After all post-deployment setup (setSwapRouter, setStreamWalletFactory,
-        // grantRole, setUSDCToken, etc.), transfer ownership to Safe manually.
+        // After all post-deployment setup (grantRole, setUSDCToken, etc.),
+        // transfer ownership to Safe manually.
         _printSummary();
         _printPostDeploymentSteps();
 
@@ -137,6 +138,16 @@ contract DeployAll is Script {
         console.log("PayoutEscrow:", address(payoutEscrow));
         console.log("  USDC:", usdcAddress);
         console.log("  Owner (Safe):", treasury);
+        console.log("");
+    }
+
+    function _linkContracts() internal {
+        console.log("LINKING CONTRACTS");
+        console.log("=================");
+        streamFactory.setSwapRouter(address(swapRouter));
+        console.log("StreamWalletFactory.setSwapRouter ->", address(swapRouter));
+        swapRouter.setStreamWalletFactory(address(streamFactory));
+        console.log("ChilizSwapRouter.setStreamWalletFactory ->", address(streamFactory));
         console.log("");
     }
 
