@@ -573,12 +573,17 @@ abstract contract BettingMatch is
         onlyRole(RESOLVER_ROLE) 
     {
         MarketCore storage core = _marketCores[marketId];
-        
+
         // Market must be Closed before resolution (prevents front-running)
         if (core.state != MarketState.Closed) {
             revert InvalidMarketState(marketId, core.state, MarketState.Closed);
         }
-        
+
+        // Validate result is a legitimate selection for this market type.
+        // Prevents an erroneous result from wiping out all liabilities and
+        // permanently locking bettors' funds with no claimable winner.
+        _validateSelection(marketId, result);
+
         core.result = result;
         core.resolvedAt = uint40(block.timestamp);
         core.state = MarketState.Resolved;

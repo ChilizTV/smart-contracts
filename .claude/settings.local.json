@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /e/Helder/GitHub_Repo/smart-contracts/chiliz-tv/src -type f -name *.sol)",
+      "Bash(find /e/Helder/GitHub_Repo/smart-contracts/chiliz-tv/test -type f -name *.sol)",
+      "Bash(find /e/Helder/GitHub_Repo/smart-contracts/chiliz-tv/script -type f -name *.sol)",
+      "Bash(forge build:*)",
+      "Bash(forge test:*)"
+    ]
+  }
+}
