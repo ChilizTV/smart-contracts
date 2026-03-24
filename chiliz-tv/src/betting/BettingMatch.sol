@@ -256,10 +256,13 @@ abstract contract BettingMatch is
         __ReentrancyGuard_init();
         __Pausable_init();
         
-        // Grant all roles to owner
+        // Grant operational roles to owner.
+        // RESOLVER_ROLE is intentionally NOT granted here: resolution must be
+        // assigned to a separate, dedicated oracle address after deployment via
+        // grantRole(RESOLVER_ROLE, oracle). This prevents the same key that
+        // controls admin/treasury from also resolving markets (self-deal attack).
         _grantRole(DEFAULT_ADMIN_ROLE, _owner);
         _grantRole(ADMIN_ROLE, _owner);
-        _grantRole(RESOLVER_ROLE, _owner);
         _grantRole(PAUSER_ROLE, _owner);
         _grantRole(TREASURY_ROLE, _owner);
         _grantRole(ODDS_SETTER_ROLE, _owner);
@@ -578,7 +581,10 @@ abstract contract BettingMatch is
         if (core.state != MarketState.Closed) {
             revert InvalidMarketState(marketId, core.state, MarketState.Closed);
         }
-        
+
+        // Validate result is a known selection for this market type (sport-specific)
+        _validateSelection(marketId, result);
+
         core.result = result;
         core.resolvedAt = uint40(block.timestamp);
         core.state = MarketState.Resolved;
@@ -699,27 +705,68 @@ abstract contract BettingMatch is
     }
     
     /**
-     * @notice Batch claim all winning bets for a market
+     * @notice Batch claim all winning bets/refunds for a market in one transaction
+     * @dev May revert with out-of-gas for users with very many bets. Use claimRange for pagination.
+     *      Reverts if the market is not yet Resolved or Cancelled so callers get a clear error
+     *      rather than a silent no-op.
      * @param marketId Market identifier
      */
-    function claimAll(uint256 marketId) 
-        external 
-        nonReentrant 
+    function claimAll(uint256 marketId)
+        external
+        nonReentrant
         validMarket(marketId)
-        whenNotPaused 
+        whenNotPaused
     {
+        MarketState state = _marketCores[marketId].state;
+        if (state != MarketState.Resolved && state != MarketState.Cancelled) {
+            revert InvalidMarketState(marketId, state, MarketState.Resolved);
+        }
+        uint256 count = _userBets[marketId][msg.sender].length;
+        if (count > 0) _processClaims(marketId, 0, count);
+    }
+
+    /**
+     * @notice Paginated batch claim — safe alternative to claimAll for large bet arrays
+     * @dev Process bets from index `start` (inclusive) to `end` (exclusive).
+     *      If `end` exceeds the actual bet count it is clamped automatically.
+     *      Example: user has 500 bets → call claimRange(id, 0, 100), (id, 100, 200), …
+     *      Reverts if the market is not yet Resolved or Cancelled.
+     * @param marketId Market identifier
+     * @param start First bet index to process (0-based, inclusive)
+     * @param end Last bet index to process (exclusive, clamped to array length)
+     */
+    function claimRange(uint256 marketId, uint256 start, uint256 end)
+        external
+        nonReentrant
+        validMarket(marketId)
+        whenNotPaused
+    {
+        MarketState state = _marketCores[marketId].state;
+        if (state != MarketState.Resolved && state != MarketState.Cancelled) {
+            revert InvalidMarketState(marketId, state, MarketState.Resolved);
+        }
+        uint256 count = _userBets[marketId][msg.sender].length;
+        uint256 cap = end > count ? count : end;
+        if (start < cap) _processClaims(marketId, start, cap);
+    }
+
+    /**
+     * @dev Internal: process winning/refund claims for bets[start..end).
+     *      Single _disburse call at the end — gas-efficient batching.
+     */
+    function _processClaims(uint256 marketId, uint256 start, uint256 end) internal {
         MarketCore storage core = _marketCores[marketId];
         Bet[] storage userBets = _userBets[marketId][msg.sender];
-        
+
         uint256 totalPayout = 0;
-        
-        for (uint256 i = 0; i < userBets.length; i++) {
+
+        for (uint256 i = start; i < end; i++) {
             Bet storage bet = userBets[i];
             if (bet.claimed) continue;
-            
+
             bool shouldPay = false;
             uint256 amount = 0;
-            
+
             if (core.state == MarketState.Resolved && bet.selection == core.result) {
                 uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
                 amount = (bet.amount * betOdds) / ODDS_PRECISION;
@@ -728,35 +775,36 @@ abstract contract BettingMatch is
                 amount = bet.amount;
                 shouldPay = true;
             }
-            
+
             if (shouldPay) {
                 bet.claimed = true;
-                
-                // Reduce liabilities
-                uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-                uint256 potentialPayout = (bet.amount * betOdds) / ODDS_PRECISION;
+
                 if (core.state == MarketState.Cancelled) {
+                    // Refund = bet.amount, but the liability that was reserved was the full
+                    // potential payout (bet.amount * odds). Recompute it here to release the
+                    // correct amount from totalUSDCLiabilities.
+                    uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+                    uint256 potentialPayout = (bet.amount * betOdds) / ODDS_PRECISION;
                     if (totalUSDCLiabilities >= potentialPayout) {
                         totalUSDCLiabilities -= potentialPayout;
                     } else {
                         totalUSDCLiabilities = 0;
                     }
+                    emit Refund(marketId, msg.sender, i, amount);
                 } else {
+                    // Resolved win: `amount` is already (bet.amount * betOdds) / ODDS_PRECISION,
+                    // the exact value that was reserved — no second lookup needed.
                     if (totalUSDCLiabilities >= amount) {
                         totalUSDCLiabilities -= amount;
                     } else {
                         totalUSDCLiabilities = 0;
                     }
-                }
-                totalPayout += amount;
-                if (core.state == MarketState.Cancelled) {
-                    emit Refund(marketId, msg.sender, i, amount);
-                } else {
                     emit Payout(marketId, msg.sender, i, amount);
                 }
+                totalPayout += amount;
             }
         }
-        
+
         if (totalPayout > 0) {
             _disburse(msg.sender, totalPayout);
         }
@@ -899,6 +947,20 @@ abstract contract BettingMatch is
         SafeERC20.safeTransfer(usdcToken, msg.sender, amount);
         emit EmergencyUSDCWithdrawn(msg.sender, amount);
     }
+
+    /**
+     * @notice Manually reconcile totalUSDCLiabilities after an emergency withdrawal.
+     * @dev After emergencyWithdrawUSDC the on-chain liability counter remains stale
+     *      (too high), which would prevent new bets once the contract is unpaused.
+     *      Call this while still paused to set the correct value before unpausing.
+     *      Only callable while paused to prevent accidental misconfiguration during
+     *      normal operation.
+     * @param newValue The corrected liabilities value (must be <= current USDC balance)
+     */
+    function resetLiabilities(uint256 newValue) external onlyRole(ADMIN_ROLE) {
+        if (!paused()) revert ContractNotPaused();
+        totalUSDCLiabilities = newValue;
+    }
     
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
@@ -935,5 +997,6 @@ abstract contract BettingMatch is
     // STORAGE GAP
     // --------------------------------------------------------------------------------------------------
     
-    uint256[37] private __gap;
+    // 12 named slots used above + 38 gap = 50 total (OZ upgradeable convention)
+    uint256[38] private __gap;
 }

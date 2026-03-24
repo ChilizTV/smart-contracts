@@ -8,6 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IKayenMasterRouterV2} from "../interfaces/IKayenMasterRouterV2.sol";
 import {IKayenRouter} from "../interfaces/IKayenRouter.sol";
 import {BettingMatch} from "../betting/BettingMatch.sol";
+import {BettingMatchFactory} from "../betting/BettingMatchFactory.sol";
 import {StreamWallet} from "../streamer/StreamWallet.sol";
 import {StreamWalletFactory} from "../streamer/StreamWalletFactory.sol";
 
@@ -70,6 +71,11 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
 
     /// @notice StreamWalletFactory for wallet lookup/creation
     StreamWalletFactory public streamWalletFactory;
+
+    /// @notice BettingMatchFactory for validating that bettingMatch addresses are legitimate
+    /// @dev Optional: if unset, no validation is performed (backward-compatible).
+    ///      Should be set immediately after deployment.
+    BettingMatchFactory public bettingMatchFactory;
 
     // ══════════════════════════════════════════════════════════════════════════
     // EVENTS — BETTING
@@ -173,6 +179,12 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
     error DeadlinePassed();
     error InvalidFeeBps();
     error TokenIsUSDC();
+    /// @notice Thrown when bettingMatch was not deployed by the registered factory
+    error UnauthorizedBettingMatch(address bettingMatch);
+    /// @notice Thrown when setStreamWalletFactory is called but the factory's swapRouter
+    ///         is not this contract — prevents a misconfiguration that would silently
+    ///         revert every streaming recording call.
+    error RouterNotConfiguredOnFactory();
 
     // ══════════════════════════════════════════════════════════════════════════
     // CONSTRUCTOR
@@ -463,8 +475,28 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         platformFeeBps = _feeBps;
     }
 
+    /// @notice Register the BettingMatchFactory so that bettingMatch addresses are validated
+    ///         before USDC is forwarded to them (M-02 fix).
+    /// @dev Set this immediately after deployment. Once set, placeBetWith* functions will
+    ///      reject any bettingMatch that was not deployed by this factory.
+    function setMatchFactory(address _factory) external onlyOwner {
+        if (_factory == address(0)) revert ZeroAddress();
+        bettingMatchFactory = BettingMatchFactory(_factory);
+    }
+
+    /// @notice Register the StreamWalletFactory for wallet recording.
+    /// @dev Validates that this router is already set as swapRouter on the factory,
+    ///      preventing a misconfiguration where streaming calls silently revert.
+    ///      Correct setup order: (1) deploy router, (2) factory.setSwapRouter(router),
+    ///      (3) router.setStreamWalletFactory(factory).
     function setStreamWalletFactory(address _factory) external onlyOwner {
         if (_factory == address(0)) revert ZeroAddress();
+        // Guard against config order mistake: the factory must already have this
+        // router registered as its swapRouter, otherwise every streaming recording
+        // call will revert with Unauthorized inside getOrCreateWallet.
+        if (StreamWalletFactory(_factory).swapRouter() != address(this)) {
+            revert RouterNotConfiguredOnFactory();
+        }
         streamWalletFactory = StreamWalletFactory(_factory);
     }
 
@@ -526,7 +558,9 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
     // ══════════════════════════════════════════════════════════════════════════
 
     /**
-     * @dev Transfer USDC to betting contract and place bet on behalf of user
+     * @dev Transfer USDC to betting contract and place bet on behalf of user.
+     *      If bettingMatchFactory is configured, the target address is validated
+     *      against the factory registry before any funds are forwarded (M-02 fix).
      */
     function _placeBetOnBehalf(
         address bettingMatch,
@@ -534,6 +568,14 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         uint64 selection,
         uint256 amount
     ) internal {
+        if (bettingMatch == address(0)) revert ZeroAddress();
+        // Validate against factory registry when available. This prevents USDC from
+        // being forwarded to arbitrary contracts that happen to implement placeBetUSDCFor.
+        if (address(bettingMatchFactory) != address(0)) {
+            if (!bettingMatchFactory.isMatch(bettingMatch)) {
+                revert UnauthorizedBettingMatch(bettingMatch);
+            }
+        }
         usdc.safeTransfer(bettingMatch, amount);
         BettingMatch(payable(bettingMatch)).placeBetUSDCFor(msg.sender, marketId, selection, amount);
     }

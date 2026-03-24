@@ -77,9 +77,9 @@ contract PayoutEscrowTest is Test {
         footballMatch.setPayoutEscrow(address(escrow));
         vm.stopPrank();
 
-        // Authorize match in escrow
+        // Authorize match in escrow (cap: 1M USDC)
         vm.prank(safeAddr);
-        escrow.authorizeMatch(address(footballMatch));
+        escrow.authorizeMatch(address(footballMatch), 1_000_000e6);
 
         // Fund test users (100k USDC each)
         usdc.mint(alice, 100_000e6);
@@ -474,9 +474,14 @@ contract PayoutEscrowTest is Test {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_EscrowWithdrawByOwner() public {
+        // Revoke the match authorized in setUp to free up the allocation
+        vm.prank(safeAddr);
+        escrow.revokeMatch(address(footballMatch));
+
         _fundEscrow(500e6);
 
         assertEq(usdc.balanceOf(address(escrow)), 500e6);
+        assertEq(escrow.freeBalance(), 500e6);
 
         vm.prank(safeAddr);
         escrow.withdraw(200e6);
@@ -631,7 +636,7 @@ contract PayoutEscrowTest is Test {
 
         // Authorize
         vm.prank(safeAddr);
-        escrow.authorizeMatch(newMatch);
+        escrow.authorizeMatch(newMatch, 1_000_000e6);
         assertTrue(escrow.authorizedMatches(newMatch));
 
         // Revoke
@@ -642,7 +647,7 @@ contract PayoutEscrowTest is Test {
         // Non-owner cannot authorize
         vm.prank(alice);
         vm.expectRevert();
-        escrow.authorizeMatch(newMatch);
+        escrow.authorizeMatch(newMatch, 1_000_000e6);
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -660,18 +665,21 @@ contract PayoutEscrowTest is Test {
         vm.expectRevert(PayoutEscrow.ZeroAmount.selector);
         escrow.withdraw(0);
 
-        // Withdraw more than balance
+        // Withdraw more than free balance
+        // Revoke match first so funded amount becomes free
+        vm.prank(safeAddr);
+        escrow.revokeMatch(address(footballMatch));
         _fundEscrow(100e6);
         vm.prank(safeAddr);
         vm.expectRevert(
-            abi.encodeWithSelector(PayoutEscrow.InsufficientEscrowBalance.selector, 200e6, 100e6)
+            abi.encodeWithSelector(PayoutEscrow.InsufficientFreeBalance.selector, 200e6, 100e6)
         );
         escrow.withdraw(200e6);
 
         // Zero address authorization
         vm.prank(safeAddr);
         vm.expectRevert(PayoutEscrow.ZeroAddress.selector);
-        escrow.authorizeMatch(address(0));
+        escrow.authorizeMatch(address(0), 1_000_000e6);
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -706,9 +714,9 @@ contract PayoutEscrowTest is Test {
         match2.openMarket(0);
         vm.stopPrank();
 
-        // Authorize second match in escrow
+        // Authorize second match in escrow (cap: 1M USDC)
         vm.prank(safeAddr);
-        escrow.authorizeMatch(address(match2));
+        escrow.authorizeMatch(address(match2), 1_000_000e6);
 
         // Setup first match
         _createAndOpenMarket(20000);
@@ -777,8 +785,52 @@ contract PayoutEscrowTest is Test {
         _fundEscrow(1000e6);
         assertEq(escrow.availableBalance(), 1000e6);
 
+        // Revoke match first so funded amount becomes free (not committed)
+        vm.prank(safeAddr);
+        escrow.revokeMatch(address(footballMatch));
+
         vm.prank(safeAddr);
         escrow.withdraw(400e6);
         assertEq(escrow.availableBalance(), 600e6);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // H-01: AlreadyAuthorized guard prevents double-auth inflation
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_H01_AlreadyAuthorized_Reverts() public {
+        // footballMatch was authorized in setUp; a second call must revert
+        vm.prank(safeAddr);
+        vm.expectRevert(abi.encodeWithSelector(
+            PayoutEscrow.AlreadyAuthorized.selector,
+            address(footballMatch)
+        ));
+        escrow.authorizeMatch(address(footballMatch), 500_000e6);
+    }
+
+    function test_H01_ReAuthorizeAfterRevoke_AccountsForDisbursed() public {
+        // Initial: authorized at 1_000_000e6 -> totalAllocated = 1_000_000e6
+        assertEq(escrow.totalAllocated(), 1_000_000e6);
+
+        // Fund escrow and simulate 300 USDC disbursed by footballMatch
+        _fundEscrow(300e6);
+        vm.prank(address(footballMatch));
+        escrow.disburseTo(alice, 300e6);
+        // totalAllocated = 1_000_000e6 - 300e6 = 999_700e6
+        assertEq(escrow.totalAllocated(), 999_700e6);
+        assertEq(escrow.disbursedPerMatch(address(footballMatch)), 300e6);
+
+        // Revoke: frees remaining 999_700e6 allocation
+        vm.prank(safeAddr);
+        escrow.revokeMatch(address(footballMatch));
+        assertEq(escrow.totalAllocated(), 0);
+        assertFalse(escrow.authorizedMatches(address(footballMatch)));
+
+        // Re-authorize with cap=500e6; 300e6 already disbursed -> only 200e6 reserved
+        vm.prank(safeAddr);
+        escrow.authorizeMatch(address(footballMatch), 500e6);
+        assertEq(escrow.totalAllocated(), 200e6);
+        assertEq(escrow.matchCaps(address(footballMatch)), 500e6);
+        assertTrue(escrow.authorizedMatches(address(footballMatch)));
     }
 }

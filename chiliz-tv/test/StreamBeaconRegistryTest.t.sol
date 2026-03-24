@@ -328,7 +328,7 @@ contract StreamBeaconRegistryTest is Test {
 
         // Donate directly to wallet
         vm.prank(viewer2);
-        streamWallet.donate(donationAmount, message, 0, address(fanToken));
+        streamWallet.donate(donationAmount, message, 0, block.timestamp + 1 hours, address(fanToken));
 
         // Check donation recorded
         assertEq(streamWallet.getDonationAmount(viewer2), donationAmount);
@@ -384,11 +384,11 @@ contract StreamBeaconRegistryTest is Test {
 
         // First donation
         vm.prank(viewer1);
-        streamWallet.donate(donation1, "First!", 0, address(fanToken));
+        streamWallet.donate(donation1, "First!", 0, block.timestamp + 1 hours, address(fanToken));
 
         // Second donation from same viewer
         vm.prank(viewer1);
-        streamWallet.donate(donation2, "Second!", 0, address(fanToken));
+        streamWallet.donate(donation2, "Second!", 0, block.timestamp + 1 hours, address(fanToken));
 
         // Should accumulate
         assertEq(streamWallet.getDonationAmount(viewer1), donation1 + donation2);
@@ -527,9 +527,9 @@ contract StreamBeaconRegistryTest is Test {
         // Deploy new implementation
         StreamWallet newImplementation = new StreamWallet();
 
-        // Upgrade via streamer (wallet owner)
-        vm.prank(streamer1);
-        StreamWallet(payable(wallet)).upgradeToAndCall(address(newImplementation), "");
+        // Upgrade via factory owner (platform admin) — NOT the streamer
+        vm.prank(admin);
+        factory.upgradeWallet(streamer1, address(newImplementation));
 
         // Existing proxy should still work with new implementation
         StreamWallet streamWallet = StreamWallet(payable(wallet));
@@ -543,15 +543,25 @@ contract StreamBeaconRegistryTest is Test {
 
         StreamWallet newImplementation = new StreamWallet();
 
-        // Try to upgrade as non-owner (viewer)
+        // Viewer cannot upgrade directly
         vm.prank(viewer1);
         vm.expectRevert();
         StreamWallet(payable(wallet)).upgradeToAndCall(address(newImplementation), "");
 
-        // Try as admin (not wallet owner)
-        vm.prank(admin);
+        // Streamer cannot upgrade their own wallet (prevented by OnlyFactory guard)
+        vm.prank(streamer1);
         vm.expectRevert();
         StreamWallet(payable(wallet)).upgradeToAndCall(address(newImplementation), "");
+
+        // Non-owner cannot call factory.upgradeWallet
+        vm.prank(viewer1);
+        vm.expectRevert();
+        factory.upgradeWallet(streamer1, address(newImplementation));
+
+        // Platform admin CAN upgrade via factory
+        vm.prank(admin);
+        factory.upgradeWallet(streamer1, address(newImplementation));
+        assertTrue(StreamWallet(payable(wallet)).isSubscribed(viewer1));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -598,7 +608,7 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(viewer1);
         fanToken.approve(address(streamWallet), donationAmount);
         vm.prank(viewer1);
-        streamWallet.donate(donationAmount, "Love your content!", 0, address(fanToken));
+        streamWallet.donate(donationAmount, "Love your content!", 0, block.timestamp + 1 hours, address(fanToken));
 
         // Calculate expected totals
         uint256 totalRevenue = sub1Amount + sub2Amount + donationAmount;
@@ -719,5 +729,48 @@ contract StreamBeaconRegistryTest is Test {
         vm.prank(admin);
         vm.expectRevert(StreamWalletFactory.InvalidAddress.selector);
         factory.setKayenRouter(address(0));
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    L-03: StreamWallet.setSwapRouter
+    //////////////////////////////////////////////////////////////*/
+
+    function test_L03_SetSwapRouter_ZeroReverts() public {
+        // Deploy a wallet for streamer1 using admin (factory owner)
+        vm.prank(admin);
+        address walletAddr = factory.deployWalletFor(streamer1);
+        StreamWallet wallet = StreamWallet(payable(walletAddr));
+
+        // streamer1 is the wallet owner — setting zero address must revert
+        vm.prank(streamer1);
+        vm.expectRevert(StreamWallet.InvalidAddress.selector);
+        wallet.setSwapRouter(address(0));
+    }
+
+    function test_L03_SetSwapRouter_EmitsEvent() public {
+        vm.prank(admin);
+        address walletAddr = factory.deployWalletFor(streamer1);
+        StreamWallet wallet = StreamWallet(payable(walletAddr));
+
+        address newRouter = address(0xABC);
+
+        vm.expectEmit(true, true, false, false);
+        emit StreamWallet.SwapRouterUpdated(address(0), newRouter);
+
+        vm.prank(streamer1);
+        wallet.setSwapRouter(newRouter);
+
+        assertEq(wallet.swapRouter(), newRouter);
+    }
+
+    function test_L03_SetSwapRouter_OnlyOwnerOrFactory() public {
+        vm.prank(admin);
+        address walletAddr = factory.deployWalletFor(streamer1);
+        StreamWallet wallet = StreamWallet(payable(walletAddr));
+
+        // viewer1 is neither owner nor factory — must revert
+        vm.prank(viewer1);
+        vm.expectRevert(StreamWallet.OnlyAuthorized.selector);
+        wallet.setSwapRouter(address(0x1));
     }
 }

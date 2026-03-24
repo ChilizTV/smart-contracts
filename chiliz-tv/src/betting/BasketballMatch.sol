@@ -122,18 +122,29 @@ contract BasketballMatch is BettingMatch {
     
     function _validateSelection(uint256 marketId, uint64 selection) internal view override {
         BasketballMarket storage bm = basketballMarkets[marketId];
+        // maxSelections is the MAXIMUM VALID SELECTION INDEX (inclusive).
+        // Valid selections are in the range [0, maxSelections].
+        // e.g. maxSelections=1 → {0, 1} = 2 outcomes (Home / Away).
         if (selection > bm.maxSelections) {
             revert InvalidSelection(marketId, selection, bm.maxSelections);
         }
     }
-    
+
+    /**
+     * @notice Returns the maximum valid selection index (inclusive) for each market type.
+     * @dev The check in _validateSelection is `selection > maxSelections`, so a return value
+     *      of N allows selections {0, 1, …, N} — i.e., N+1 distinct outcomes.
+     *      Examples:
+     *        return 1  → valid selections: {0, 1}   (2 outcomes — binary markets)
+     *        return 3  → valid selections: {0,1,2,3} (4 outcomes — quarters)
+     */
     function _getMaxSelections(bytes32 marketType) internal pure returns (uint8) {
-        if (marketType == MARKET_WINNER) return 1;           // 0,1 (Home/Away)
-        if (marketType == MARKET_TOTAL_POINTS) return 1;     // 0,1 (Under/Over)
-        if (marketType == MARKET_SPREAD) return 1;           // 0,1 (Home covers/Away covers)
-        if (marketType == MARKET_QUARTER_WINNER) return 1;   // 0,1
-        if (marketType == MARKET_FIRST_TO_SCORE) return 1;   // 0,1
-        if (marketType == MARKET_HIGHEST_QUARTER) return 3;  // 0,1,2,3 (Q1/Q2/Q3/Q4)
+        if (marketType == MARKET_WINNER) return 1;           // {0,1} Home / Away
+        if (marketType == MARKET_TOTAL_POINTS) return 1;     // {0,1} Under / Over
+        if (marketType == MARKET_SPREAD) return 1;           // {0,1} Home covers / Away covers
+        if (marketType == MARKET_QUARTER_WINNER) return 1;   // {0,1} Home / Away
+        if (marketType == MARKET_FIRST_TO_SCORE) return 1;   // {0,1} Home scores first / Away scores first
+        if (marketType == MARKET_HIGHEST_QUARTER) return 3;  // {0,1,2,3} Q1 / Q2 / Q3 / Q4
         revert InvalidMarketType(marketType);
     }
 

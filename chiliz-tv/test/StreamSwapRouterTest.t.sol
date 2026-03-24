@@ -3,6 +3,8 @@ pragma solidity ^0.8.22;
 
 import {Test} from "forge-std/Test.sol";
 import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
+import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
+import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {MockKayenRouter} from "./mocks/MockKayenRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -309,5 +311,70 @@ contract StreamSwapRouterTest is Test {
         vm.prank(viewer1);
         vm.expectRevert();
         streamSwapRouter.setTreasury(address(0xABC));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // M-02: setMatchFactory — registry validation for bettingMatch addresses
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_M02_SetMatchFactory_SetsFactory() public {
+        BettingMatchFactory bmf = new BettingMatchFactory();
+        streamSwapRouter.setMatchFactory(address(bmf));
+        assertEq(address(streamSwapRouter.bettingMatchFactory()), address(bmf));
+    }
+
+    function test_M02_SetMatchFactory_ZeroReverts() public {
+        vm.expectRevert(ChilizSwapRouter.ZeroAddress.selector);
+        streamSwapRouter.setMatchFactory(address(0));
+    }
+
+    function test_M02_NonOwner_SetMatchFactory_Reverts() public {
+        BettingMatchFactory bmf = new BettingMatchFactory();
+        vm.prank(viewer1);
+        vm.expectRevert();
+        streamSwapRouter.setMatchFactory(address(bmf));
+    }
+
+    function test_M02_PlaceBetWithUSDC_UnauthorizedMatch_Reverts() public {
+        // Register a real factory — the unknown address is NOT in it
+        BettingMatchFactory bmf = new BettingMatchFactory();
+        streamSwapRouter.setMatchFactory(address(bmf));
+
+        address unknownMatch = address(0xBEEF);
+        uint256 betAmount = 10e6;
+
+        vm.startPrank(viewer1);
+        usdc.approve(address(streamSwapRouter), betAmount);
+        vm.expectRevert(abi.encodeWithSelector(
+            ChilizSwapRouter.UnauthorizedBettingMatch.selector,
+            unknownMatch
+        ));
+        streamSwapRouter.placeBetWithUSDC(unknownMatch, 0, 0, betAmount);
+        vm.stopPrank();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // M-04: setStreamWalletFactory — config-order validation
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_M04_SetStreamWalletFactory_WrongConfig_Reverts() public {
+        // Deploy factory with a different (or unset) swapRouter
+        StreamWalletFactory swf = new StreamWalletFactory(
+            address(this), treasury, 500, address(mockRouter), address(usdc)
+        );
+        // swf.swapRouter() == address(0), not streamSwapRouter
+        vm.expectRevert(ChilizSwapRouter.RouterNotConfiguredOnFactory.selector);
+        streamSwapRouter.setStreamWalletFactory(address(swf));
+    }
+
+    function test_M04_SetStreamWalletFactory_CorrectConfig_Works() public {
+        StreamWalletFactory swf = new StreamWalletFactory(
+            address(this), treasury, 500, address(mockRouter), address(usdc)
+        );
+        // Configure the factory to point to this router first
+        swf.setSwapRouter(address(streamSwapRouter));
+        // Now registration should succeed
+        streamSwapRouter.setStreamWalletFactory(address(swf));
+        assertEq(address(streamSwapRouter.streamWalletFactory()), address(swf));
     }
 }

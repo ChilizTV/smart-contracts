@@ -7,6 +7,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {StreamWallet} from "./StreamWallet.sol";
 import {IStreamWalletInit} from "../interfaces/IStreamWalletInit.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title StreamWalletFactory
@@ -14,12 +15,17 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @dev Uses ERC1967 proxy pattern matching betting system architecture
  */
 contract StreamWalletFactory is ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
 
     /*//////////////////////////////////////////////////////////////
                                  STATE
     //////////////////////////////////////////////////////////////*/
 
-    address private immutable STREAM_WALLET_IMPLEMENTATION;
+    /// @notice Current StreamWallet implementation used for new proxy deployments.
+    /// @dev Mutable so the platform can roll out bug fixes or new features without
+    ///      redeploying this factory. Existing wallets are NOT auto-upgraded; call
+    ///      upgradeWallet() individually for each streamer that needs the new impl.
+    address public streamWalletImplementation;
     mapping(address => address) public streamerWallets; // streamer => wallet
     address public treasury;
     uint16 public defaultPlatformFeeBps; // e.g., 500 = 5%
@@ -59,6 +65,10 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
 
     event SwapRouterUpdated(address indexed oldRouter, address indexed newRouter);
 
+    event ImplementationUpdated(address indexed oldImplementation, address indexed newImplementation);
+
+    event WalletUpgraded(address indexed streamer, address indexed wallet, address indexed newImplementation);
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -91,7 +101,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         if (treasury_ == address(0)) revert InvalidAddress();
         if (defaultPlatformFeeBps_ > 10_000) revert InvalidFeeBps();
 
-        STREAM_WALLET_IMPLEMENTATION = address(new StreamWallet());
+        streamWalletImplementation = address(new StreamWallet());
         treasury = treasury_;
         defaultPlatformFeeBps = defaultPlatformFeeBps_;
         kayenRouter = kayenRouter_;
@@ -121,7 +131,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         if (streamer == address(0)) revert InvalidAddress();
 
         // Transfer tokens from subscriber to this contract
-        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
         // Get or create wallet
         wallet = streamerWallets[streamer];
@@ -131,10 +141,10 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         }
 
         // Approve StreamWallet to pull tokens
-        require(IERC20(token).approve(wallet, amount), "Approval failed");
+        IERC20(token).forceApprove(wallet, amount);
 
         // Record subscription (wallet pulls tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0, token);
+        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0, block.timestamp + 5 minutes, token);
 
         emit SubscriptionProcessed(streamer, msg.sender, amount);
     }
@@ -161,7 +171,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         if (streamer == address(0)) revert InvalidAddress();
 
         // Transfer tokens from donor to this contract
-        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
         // Get or create wallet
         wallet = streamerWallets[streamer];
@@ -171,10 +181,10 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         }
 
         // Approve StreamWallet to pull tokens
-        require(IERC20(token).approve(wallet, amount), "Approval failed");
+        IERC20(token).forceApprove(wallet, amount);
 
         // Process donation through wallet (wallet pulls tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, 0, token);
+        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, 0, block.timestamp + 5 minutes, token);
 
         emit DonationProcessed(streamer, msg.sender, amount, message);
     }
@@ -199,8 +209,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
             kayenRouter,
             usdc
         );
-        // Deploy ERC1967 UUPS proxy
-        wallet = address(new ERC1967Proxy(STREAM_WALLET_IMPLEMENTATION, initData));
+        // Deploy ERC1967 UUPS proxy pointing at the current implementation
+        wallet = address(new ERC1967Proxy(streamWalletImplementation, initData));
 
         // Set swap router on the new wallet if configured
         if (swapRouter != address(0)) {
@@ -318,6 +328,38 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     }
 
     /**
+     * @notice Update the StreamWallet implementation used for all future proxy deployments
+     * @dev Does NOT affect already-deployed wallets. Use upgradeWallet() to migrate
+     *      existing wallets individually after validating the new implementation.
+     * @param newImplementation Address of the new StreamWallet implementation contract
+     */
+    function setImplementation(address newImplementation) external onlyOwner {
+        if (newImplementation == address(0)) revert InvalidAddress();
+
+        address old = streamWalletImplementation;
+        streamWalletImplementation = newImplementation;
+
+        emit ImplementationUpdated(old, newImplementation);
+    }
+
+    /**
+     * @notice Upgrade a streamer's StreamWallet to a new implementation (platform admin only)
+     * @dev Only callable by the factory owner. StreamWallet._authorizeUpgrade enforces
+     *      that only the factory contract can initiate upgrades, preventing streamers
+     *      from self-upgrading to malicious implementations.
+     * @param streamer The streamer whose wallet to upgrade
+     * @param newImplementation The new StreamWallet implementation address
+     */
+    function upgradeWallet(address streamer, address newImplementation) external onlyOwner {
+        if (newImplementation == address(0)) revert InvalidAddress();
+        address wallet = streamerWallets[streamer];
+        if (wallet == address(0)) revert InvalidAddress();
+
+        StreamWallet(payable(wallet)).upgradeToAndCall(newImplementation, "");
+        emit WalletUpgraded(streamer, wallet, newImplementation);
+    }
+
+    /**
      * @notice Get the wallet address for a streamer
      * @param streamer The streamer address
      * @return wallet The wallet address (address(0) if not deployed)
@@ -336,10 +378,10 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
     }
 
     /**
-     * @notice Get current implementation address
+     * @notice Get the implementation address used for new wallet deployments
      * @return Current StreamWallet implementation
      */
     function implementation() external view returns (address) {
-        return STREAM_WALLET_IMPLEMENTATION;
+        return streamWalletImplementation;
     }
 }

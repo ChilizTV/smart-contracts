@@ -65,6 +65,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
 
     event PlatformFeeCollected(uint256 amount, address indexed treasury);
 
+    event SwapRouterUpdated(address indexed oldRouter, address indexed newRouter);
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -73,7 +75,9 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     error OnlyStreamer();
     error OnlyAuthorized();
     error InvalidAmount();
+    error InvalidAddress();
     error InvalidDuration();
+    error InvalidFeeBps();
     error InsufficientBalance();
     error SwapSlippageExceeded();
 
@@ -136,6 +140,8 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
 
+        if (platformFeeBps_ > 10_000) revert InvalidFeeBps();
+
         streamer = streamer_;
         treasury = treasury_;
         platformFeeBps = platformFeeBps_;
@@ -154,7 +160,10 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
      */
     function setSwapRouter(address _swapRouter) external {
         if (msg.sender != factory && msg.sender != owner()) revert OnlyAuthorized();
+        if (_swapRouter == address(0)) revert InvalidAddress();
+        address old = swapRouter;
         swapRouter = _swapRouter;
+        emit SwapRouterUpdated(old, _swapRouter);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -176,6 +185,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         uint256 amount,
         uint256 duration,
         uint256 amountOutMin,
+        uint256 deadline,
         address token
     )
         external
@@ -230,7 +240,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
                 0,
                 path,
                 treasury,
-                block.timestamp
+                deadline
             );
             emit PlatformFeeCollected(platformFee, treasury);
         }
@@ -241,7 +251,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             0,
             path,
             streamer,
-            block.timestamp
+            deadline
         );
 
         // Verify slippage on streamer's USDC output
@@ -338,13 +348,14 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         uint256 amount,
         string calldata message,
         uint256 amountOutMin,
+        uint256 deadline,
         address token
     )
         external
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
-        return _donateInternal(msg.sender, amount, message, amountOutMin, token);
+        return _donateInternal(msg.sender, amount, message, amountOutMin, deadline, token);
     }
 
     /**
@@ -362,6 +373,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         uint256 amount,
         string calldata message,
         uint256 amountOutMin,
+        uint256 deadline,
         address token
     )
         external
@@ -369,7 +381,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         nonReentrant
         returns (uint256 platformFee, uint256 streamerAmount)
     {
-        return _donateInternal(donor, amount, message, amountOutMin, token);
+        return _donateInternal(donor, amount, message, amountOutMin, deadline, token);
     }
 
     function _donateInternal(
@@ -377,6 +389,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
         uint256 amount,
         string calldata message,
         uint256 amountOutMin,
+        uint256 deadline,
         address token
     ) internal returns (uint256 platformFee, uint256 streamerAmount) {
         if (amount == 0) revert InvalidAmount();
@@ -406,7 +419,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
                 0,
                 path,
                 treasury,
-                block.timestamp
+                deadline
             );
             emit PlatformFeeCollected(platformFee, treasury);
         }
@@ -417,7 +430,7 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
             0,
             path,
             streamer,
-            block.timestamp
+            deadline
         );
 
         // Verify slippage
@@ -515,8 +528,12 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Authorize upgrade (only streamer/owner can upgrade)
-     * @param newImplementation The new implementation address
+     * @notice Authorize upgrade — only the factory (platform admin) can upgrade wallets.
+     * @dev Prevents streamers from upgrading their own wallet to a malicious implementation
+     *      that could steal subscriber funds or bypass fee enforcement.
+     *      Upgrades must go through StreamWalletFactory.upgradeWallet().
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(address) internal view override {
+        if (msg.sender != factory) revert OnlyFactory();
+    }
 }

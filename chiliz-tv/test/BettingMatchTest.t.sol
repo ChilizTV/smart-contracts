@@ -523,9 +523,106 @@ contract BettingMatchTest is Test {
         // Valid odds
         vm.prank(owner);
         footballMatch.addMarketWithLine(MARKET_WINNER, 10001, 0); // 1.0001x OK
-        
+
         vm.prank(owner);
         footballMatch.addMarketWithLine(MARKET_WINNER, 1000000, 0); // 100x OK
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // L-01: claimAll / claimRange revert when market not yet settled
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_L01_ClaimAll_RevertsOnOpenMarket() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+        usdc.mint(address(footballMatch), 200e6);
+        _placeBet(alice, 0, 0, 100e6);
+
+        // MarketState: Open=1, Resolved=4
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(
+            BettingMatch.InvalidMarketState.selector,
+            uint256(0), uint8(1), uint8(4)
+        ));
+        footballMatch.claimAll(0);
+    }
+
+    function test_L01_ClaimAll_RevertsOnClosedMarket() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+        usdc.mint(address(footballMatch), 200e6);
+        _placeBet(alice, 0, 0, 100e6);
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
+
+        // MarketState: Closed=3, Resolved=4
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(
+            BettingMatch.InvalidMarketState.selector,
+            uint256(0), uint8(3), uint8(4)
+        ));
+        footballMatch.claimAll(0);
+    }
+
+    function test_L01_ClaimRange_RevertsOnOpenMarket() public {
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+        usdc.mint(address(footballMatch), 200e6);
+        _placeBet(alice, 0, 0, 100e6);
+
+        // MarketState: Open=1, Resolved=4
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(
+            BettingMatch.InvalidMarketState.selector,
+            uint256(0), uint8(1), uint8(4)
+        ));
+        footballMatch.claimRange(0, 0, 1);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // M-01: resetLiabilities — post-emergency liability correction
+    // ══════════════════════════════════════════════════════════════════════════
+
+    function test_M01_ResetLiabilities_RevertsWhenNotPaused() public {
+        vm.prank(owner);
+        vm.expectRevert(BettingMatch.ContractNotPaused.selector);
+        footballMatch.resetLiabilities(0);
+    }
+
+    function test_M01_ResetLiabilities_UpdatesValue() public {
+        // Set up a liability
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+        usdc.mint(address(footballMatch), 200e6);
+        _placeBet(alice, 0, 0, 100e6); // liability = 200e6
+
+        assertEq(footballMatch.totalUSDCLiabilities(), 200e6);
+
+        // Pause and correct the liability to 0
+        vm.prank(owner);
+        footballMatch.emergencyPause();
+        vm.prank(owner);
+        footballMatch.resetLiabilities(0);
+
+        assertEq(footballMatch.totalUSDCLiabilities(), 0);
+    }
+
+    function test_M01_ResetLiabilities_OnlyAdmin() public {
+        vm.prank(owner);
+        footballMatch.emergencyPause();
+
+        // alice has no ADMIN_ROLE
+        vm.prank(alice);
+        vm.expectRevert();
+        footballMatch.resetLiabilities(0);
     }
 }
 

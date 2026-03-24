@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(forge build:*)",
+      "Bash(~/.foundry/bin/forge build:*)",
+      "Bash(~/.foundry/bin/forge test:*)"
+    ]
+  }
+}
