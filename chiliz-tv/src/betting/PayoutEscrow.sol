@@ -14,7 +14,7 @@ import {IPayoutEscrow} from "../interfaces/IPayoutEscrow.sol";
  * @notice Centralized USDC escrow funded by a Gnosis Safe treasury to backstop
  *         betting payouts across all BettingMatch contracts on a network.
  *
- * @dev Architecture:
+ * @dev Architecture (one escrow per match):
  *   ┌────────────┐  fund()   ┌──────────────┐  disburseTo()  ┌──────────────┐
  *   │ Gnosis Safe│ ────────> │ PayoutEscrow │ <──────────── │ BettingMatch │
  *   │ (Treasury) │           │ (USDC Pool)  │               │   (Proxy)    │
@@ -39,9 +39,11 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice USDC token used for all escrow operations
     IERC20 public immutable usdc;
+    /// @notice USDC token used for all escrow operations
+    IERC20 public immutable usdc;
 
-    /// @notice Whitelist of BettingMatch contracts authorized to disburse
-    mapping(address => bool) public authorizedMatches;
+    /// @notice The single BettingMatch contract authorized to call disburseTo()
+    address public immutable authorizedMatch;
 
     /// @notice Maximum USDC each match is allowed to draw from this escrow
     mapping(address => uint256) public matchCaps;
@@ -66,7 +68,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     event MatchCapUpdated(address indexed matchContract, uint256 newCap);
     event MatchRevoked(address indexed matchContract);
     event Funded(address indexed from, uint256 amount);
-    event Disbursed(address indexed matchContract, address indexed recipient, uint256 amount);
+    event Disbursed(address indexed recipient, uint256 amount);
     event Withdrawn(address indexed to, uint256 amount);
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -87,7 +89,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     // ══════════════════════════════════════════════════════════════════════════
 
     modifier onlyAuthorizedMatch() {
-        if (!authorizedMatches[msg.sender]) revert UnauthorizedMatch(msg.sender);
+        if (msg.sender != authorizedMatch) revert UnauthorizedCaller(msg.sender);
         _;
     }
 
@@ -173,6 +175,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
 
     // ══════════════════════════════════════════════════════════════════════════
     // FUNDING (Safe approves USDC, then calls fund())
+    // FUNDING (Safe approves USDC, then calls fund())
     // ══════════════════════════════════════════════════════════════════════════
 
     /// @notice Deposit USDC into the escrow reserve
@@ -181,11 +184,12 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     function fund(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
         usdc.safeTransferFrom(msg.sender, address(this), amount);
+        usdc.safeTransferFrom(msg.sender, address(this), amount);
         emit Funded(msg.sender, amount);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // DISBURSEMENT (called by authorized BettingMatch contracts only)
+    // DISBURSEMENT (called by authorizedMatch only)
     // ══════════════════════════════════════════════════════════════════════════
 
     /// @inheritdoc IPayoutEscrow

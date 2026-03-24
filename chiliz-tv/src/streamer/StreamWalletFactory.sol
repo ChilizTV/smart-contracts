@@ -124,6 +124,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         address streamer,
         uint256 duration,
         uint256 amount,
+        uint256 amountOutMin,
+        uint256 deadline,
         address token
     ) external nonReentrant returns (address wallet) {
         if (amount == 0) revert InvalidAmount();
@@ -165,6 +167,8 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         address streamer,
         string calldata message,
         uint256 amount,
+        uint256 amountOutMin,
+        uint256 deadline,
         address token
     ) external nonReentrant returns (address wallet) {
         if (amount == 0) revert InvalidAmount();

@@ -420,6 +420,47 @@ contract BettingMatchTest is Test {
         
         assertEq(usdc.balanceOf(alice) - balanceBefore, 100e6, "Should refund full amount");
     }
+
+    function test_Security_ResolveWithInvalidSelectionReverts() public {
+        // WINNER market: valid selections are 0 (Home), 1 (Draw), 2 (Away)
+        vm.prank(owner);
+        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
+
+        vm.prank(owner);
+        footballMatch.openMarket(0);
+
+        _placeBet(alice, 0, 0, 100e6); // Alice bets Home
+
+        vm.prank(owner);
+        footballMatch.closeMarket(0);
+
+        // Attempt to resolve with result=3 -- out of range for WINNER (maxSelections=2).
+        // Without this fix, this would silently wipe all liabilities and permanently lock bettors' funds.
+        vm.prank(resolver);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                FootballMatch.InvalidSelection.selector,
+                0,  // marketId
+                3,  // invalid result
+                2   // maxSelections for WINNER
+            )
+        );
+        footballMatch.resolveMarket(0, 3);
+
+        // Market must still be Closed -- not Resolved -- so the resolver can correct the result
+        BettingMatch.MarketCore memory core = footballMatch.getMarketCore(0);
+        assertEq(uint8(core.state), uint8(BettingMatch.MarketState.Closed), "Market must stay Closed");
+
+        // Resolve correctly: Home wins (selection 0)
+        vm.prank(resolver);
+        footballMatch.resolveMarket(0, 0);
+
+        // Alice can now claim her payout normally
+        uint256 before = usdc.balanceOf(alice);
+        vm.prank(alice);
+        footballMatch.claim(0, 0);
+        assertEq(usdc.balanceOf(alice) - before, 200e6, "Alice should get 2.00x payout");
+    }
     
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // MULTIPLE BETS PER USER

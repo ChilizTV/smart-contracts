@@ -12,8 +12,7 @@ import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 // Unified swap router
 import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 
-// Payout escrow (treasury-backed payout fallback)
-import {PayoutEscrow} from "../src/betting/PayoutEscrow.sol";
+// PayoutEscrow is deployed per-match by BettingMatchFactory — no shared escrow
 
 /**
  * @title DeployAll
@@ -48,7 +47,6 @@ contract DeployAll is Script {
     BettingMatchFactory public bettingFactory;
     StreamWalletFactory public streamFactory;
     ChilizSwapRouter public swapRouter;
-    PayoutEscrow public payoutEscrow;
 
     address public deployer;
     address public treasury;
@@ -67,7 +65,6 @@ contract DeployAll is Script {
         _deployBettingSystem();
         _deployStreamingSystem();
         _deploySwapRouter();
-        _deployPayoutEscrow();
         _linkContracts();
         // NOTE: Ownership transfer skipped during deployment.
         // After all post-deployment setup (grantRole, setUSDCToken, etc.),
@@ -97,7 +94,7 @@ contract DeployAll is Script {
     }
 
     function _deployBettingSystem() internal {
-        console.log("[1/4] BETTING MATCH FACTORY");
+        console.log("[1/3] BETTING MATCH FACTORY");
         console.log("===========================");
         bettingFactory = new BettingMatchFactory();
         console.log("BettingMatchFactory:", address(bettingFactory));
@@ -106,7 +103,7 @@ contract DeployAll is Script {
     }
 
     function _deployStreamingSystem() internal {
-        console.log("[2/4] STREAM WALLET FACTORY");
+        console.log("[2/3] STREAM WALLET FACTORY");
         console.log("===========================");
         streamFactory = new StreamWalletFactory(
             deployer, treasury, platformFeeBps, kayenRouter, usdcAddress
@@ -118,7 +115,7 @@ contract DeployAll is Script {
     }
 
     function _deploySwapRouter() internal {
-        console.log("[3/4] CHILIZ SWAP ROUTER (unified)");
+        console.log("[3/3] CHILIZ SWAP ROUTER (unified)");
         console.log("===================================");
         swapRouter = new ChilizSwapRouter(
             kayenRouter, kayenRouter, usdcAddress, wchz, treasury, platformFeeBps
@@ -128,16 +125,6 @@ contract DeployAll is Script {
         console.log("  WCHZ:", wchz);
         console.log("  Treasury:", treasury);
         console.log("  Platform Fee:", platformFeeBps, "bps");
-        console.log("");
-    }
-
-    function _deployPayoutEscrow() internal {
-        console.log("[4/4] PAYOUT ESCROW");
-        console.log("====================");
-        payoutEscrow = new PayoutEscrow(usdcAddress, treasury);
-        console.log("PayoutEscrow:", address(payoutEscrow));
-        console.log("  USDC:", usdcAddress);
-        console.log("  Owner (Safe):", treasury);
         console.log("");
     }
 
@@ -185,7 +172,7 @@ contract DeployAll is Script {
         console.log("BettingMatchFactory:", address(bettingFactory));
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("ChilizSwapRouter:   ", address(swapRouter));
-        console.log("PayoutEscrow:       ", address(payoutEscrow));
+        console.log("Note: PayoutEscrow is deployed per-match by BettingMatchFactory");
         console.log("=========================================");
         console.log("");
     }
@@ -193,16 +180,14 @@ contract DeployAll is Script {
     function _printPostDeploymentSteps() internal view {
         console.log("POST-DEPLOYMENT STEPS:");
         console.log("======================");
-        console.log("1. For each BettingMatch proxy:");
+        console.log("1. For each BettingMatch (proxy + escrow deployed together by factory):");
         console.log("   a) cast send <MATCH> 'setUSDCToken(address)'", usdcAddress);
         console.log("   b) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'SWAP_ROUTER_ROLE')", address(swapRouter));
-        console.log("   c) cast send <MATCH> 'setPayoutEscrow(address)'", address(payoutEscrow));
-        console.log("2. Authorize each match in the escrow (from Safe):");
-        console.log("   cast send", address(payoutEscrow), "'authorizeMatch(address)' <MATCH>");
-        console.log("3. Fund escrow with USDC (from Safe):");
-        console.log("   Step A: cast send <USDC> 'approve(address,uint256)' <ESCROW> <AMOUNT>");
-        console.log("   Escrow address:", address(payoutEscrow));
-        console.log("   Step B: cast send", address(payoutEscrow), "'fund(uint256)' <AMOUNT>");
+        console.log("   c) Escrow is wired at deploy time - no authorizeMatch needed");
+        console.log("2. Fund each match's dedicated escrow with USDC (from Safe):");
+        console.log("   Step A: cast send <USDC> 'approve(address,uint256)' <MATCH_ESCROW> <AMOUNT>");
+        console.log("   Step B: cast send <MATCH_ESCROW> 'fund(uint256)' <AMOUNT>");
+        console.log("   Note: get escrow address via BettingMatchFactory.getEscrow(<MATCH>)");
         console.log("=========================================");
     }
 }

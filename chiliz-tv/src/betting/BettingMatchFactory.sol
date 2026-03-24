@@ -5,6 +5,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {FootballMatch} from "./FootballMatch.sol";
 import {BasketballMatch} from "./BasketballMatch.sol";
+import {PayoutEscrow} from "./PayoutEscrow.sol";
 
 /// @title BettingMatchFactory
 /// @notice Factory contract to deploy UUPS-upgradeable sport-specific match proxies with dynamic odds
@@ -142,16 +143,46 @@ contract BettingMatchFactory is Ownable {
     // ══════════════════════════════════════════════════════════════════════════
 
     /// @notice Retrieve all deployed proxy addresses
-    /// @return Array of match proxy addresses
     function getAllMatches() external view returns (address[] memory) {
         return allMatches;
     }
 
     /// @notice Get the sport type of a specific match
-    /// @param matchAddress The address of the match contract
-    /// @return The sport type (FOOTBALL or BASKETBALL)
     function getSportType(address matchAddress) external view returns (SportType) {
         if (!isMatch[matchAddress]) revert MatchNotFound(matchAddress);
         return matchSportType[matchAddress];
+    }
+
+    /// @notice Get the dedicated escrow for a match
+    function getEscrow(address matchAddress) external view returns (address) {
+        if (!isMatch[matchAddress]) revert MatchNotFound(matchAddress);
+        return matchEscrow[matchAddress];
+    }
+
+    // ── internals ─────────────────────────────────────────────────────────────
+
+    function _deployProxy(address impl, bytes memory initData) internal returns (address proxy) {
+        proxy = address(new ERC1967Proxy(impl, initData));
+    }
+
+    function _deployEscrow(
+        address matchProxy,
+        address _usdc,
+        address _escrowOwner
+    ) internal returns (address escrow) {
+        escrow = address(new PayoutEscrow(_usdc, matchProxy, _escrowOwner));
+    }
+
+    function _register(
+        address proxy,
+        address escrow,
+        SportType sport,
+        address matchOwner
+    ) internal {
+        allMatches.push(proxy);
+        isMatch[proxy] = true;
+        matchSportType[proxy] = sport;
+        matchEscrow[proxy] = escrow;
+        emit MatchCreated(proxy, escrow, sport, matchOwner);
     }
 }

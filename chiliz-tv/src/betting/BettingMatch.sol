@@ -576,7 +576,7 @@ abstract contract BettingMatch is
         onlyRole(RESOLVER_ROLE) 
     {
         MarketCore storage core = _marketCores[marketId];
-        
+
         // Market must be Closed before resolution (prevents front-running)
         if (core.state != MarketState.Closed) {
             revert InvalidMarketState(marketId, core.state, MarketState.Closed);
