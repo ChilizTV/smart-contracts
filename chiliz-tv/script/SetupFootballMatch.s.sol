@@ -65,7 +65,6 @@ contract SetupFootballMatch is Script {
     BettingMatchFactory public factory;
     FootballMatch public match_;
     address public matchAddress;
-    address public escrowAddress;
     address public deployer;
     
     // ============================================================================
@@ -105,19 +104,11 @@ contract SetupFootballMatch is Script {
         console.log("STEP 1: Creating Football Match");
         console.log("================================");
         
-        address usdcAddr = vm.envAddress("USDC_ADDRESS");
-        address escrowOwner = vm.envOr("ESCROW_OWNER", deployer);
-
-        BettingMatchFactory.MatchInfo memory info = factory.createFootballMatch(
-            MATCH_NAME, deployer, usdcAddr, escrowOwner
-        );
-        matchAddress = info.proxy;
-        escrowAddress = info.escrow;
+        matchAddress = factory.createFootballMatch(MATCH_NAME, deployer);
         match_ = FootballMatch(payable(matchAddress));
 
         console.log("Match Name:", MATCH_NAME);
         console.log("Match Address:", matchAddress);
-        console.log("Escrow Address:", escrowAddress);
         console.log("Owner:", deployer);
         console.log("");
     }

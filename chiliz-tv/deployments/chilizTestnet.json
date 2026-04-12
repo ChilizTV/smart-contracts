@@ -1,23 +1,29 @@
 {
   "network": "chilizTestnet",
   "chainId": 88882,
-  "timestamp": "2026-03-10T13:14:23Z",
+  "timestamp": "2026-03-17T18:08:24Z",
   "contracts": [
     {
       "name": "BettingMatchFactory.sol\\BettingMatchFactory",
-      "address": "0xd8f27998602a19776520c1194ac19da2bf6fef52"
+      "address": "0x2045142968434998adfffd38e3d041baffaec172"
     },
     {
       "name": "StreamWalletFactory.sol\\StreamWalletFactory",
-      "address": "0xeb60647889de6435fb5a1d88f3ae754d27890f5c"
+      "address": "0xef2f2a1d7e7268f55c906c7e4b32a5938941875e"
     },
     {
       "name": "ChilizSwapRouter.sol\\ChilizSwapRouter",
-      "address": "0x2c4ecfb3fcd46cfd71cde91e74873d86ab7ad579"
-    },
-    {
-      "name": "PayoutEscrow.sol\\PayoutEscrow",
-      "address": "0x5ef49b11ea2e0917f36f99bc664ab40de56b5bcd"
+      "address": "0x11f7b00e6bc73e6763f689c4d3c7c12c782d0c1b"
     }
-  ]
+  ],
+  "implementations": {
+    "note": "Populated after each upgrade run. Update with addresses from forge broadcast output.",
+    "FootballMatch": "",
+    "BasketballMatch": "",
+    "StreamWallet": ""
+  },
+  "escrow": {
+    "note": "Single shared PayoutEscrow — deploy via DeployPayout.s.sol, then authorizeMatch() for each proxy.",
+    "PayoutEscrow": ""
+  }
 }

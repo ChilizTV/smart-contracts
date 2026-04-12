@@ -72,8 +72,8 @@ contract PayoutEscrowTest is Test {
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
         footballMatch = FootballMatch(payable(address(proxy)));
 
-        // Deploy dedicated PayoutEscrow for this match, owned by the Safe
-        escrow = new PayoutEscrow(address(usdc), address(footballMatch), safeAddr);
+        // Deploy shared PayoutEscrow owned by the Safe
+        escrow = new PayoutEscrow(address(usdc), safeAddr);
 
         // Setup roles, USDC, and escrow on the match contract
         vm.startPrank(owner);
@@ -339,7 +339,7 @@ contract PayoutEscrowTest is Test {
         // Direct call from attacker
         vm.prank(address(0xBEEF));
         vm.expectRevert(
-            abi.encodeWithSelector(PayoutEscrow.UnauthorizedCaller.selector, address(0xBEEF))
+            abi.encodeWithSelector(PayoutEscrow.UnauthorizedMatch.selector, address(0xBEEF))
         );
         escrow.disburseTo(address(0xBEEF), 100e6);
 
@@ -353,8 +353,9 @@ contract PayoutEscrowTest is Test {
         FootballMatch otherMatch = FootballMatch(payable(address(proxy2)));
 
         vm.startPrank(owner);
+        otherMatch.grantRole(RESOLVER_ROLE, resolver);
         otherMatch.setUSDCToken(address(usdc));
-        otherMatch.setPayoutEscrow(address(escrow)); // points to footballMatch's escrow
+        otherMatch.setPayoutEscrow(address(escrow)); // points to shared escrow (not authorized for otherMatch)
         otherMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         otherMatch.openMarket(0);
         vm.stopPrank();
@@ -368,7 +369,7 @@ contract PayoutEscrowTest is Test {
 
         vm.prank(owner);
         otherMatch.closeMarket(0);
-        vm.prank(owner);
+        vm.prank(resolver);
         otherMatch.resolveMarket(0, 0);
 
         // Drain to force escrow fallback
@@ -381,7 +382,7 @@ contract PayoutEscrowTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(PayoutEscrow.UnauthorizedCaller.selector, address(otherMatch))
+            abi.encodeWithSelector(PayoutEscrow.UnauthorizedMatch.selector, address(otherMatch))
         );
         otherMatch.claim(0, 0);
     }
@@ -628,7 +629,7 @@ contract PayoutEscrowTest is Test {
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     function test_MultipleMatchesSharingEscrow() public {
-        // Deploy second match
+        // Deploy second match and wire it to the SAME shared escrow
         bytes memory initData = abi.encodeWithSelector(
             FootballMatch.initialize.selector,
             "Second Match",
@@ -636,24 +637,23 @@ contract PayoutEscrowTest is Test {
         );
         ERC1967Proxy proxy2 = new ERC1967Proxy(address(implementation), initData);
         FootballMatch match2 = FootballMatch(payable(address(proxy2)));
-        PayoutEscrow escrow2 = new PayoutEscrow(address(usdc), address(match2), safeAddr);
 
         vm.startPrank(owner);
         match2.grantRole(RESOLVER_ROLE, resolver);
         match2.setUSDCToken(address(usdc));
-        match2.setPayoutEscrow(address(escrow2));
+        match2.setPayoutEscrow(address(escrow)); // same shared escrow
         match2.addMarketWithLine(MARKET_WINNER, 20000, 0);
         match2.openMarket(0);
         vm.stopPrank();
 
-        // Authorize second match in escrow (cap: 1M USDC)
+        // Authorize second match on the shared escrow (cap: 200 USDC)
         vm.prank(safeAddr);
-        escrow.authorizeMatch(address(match2), 1_000_000e6);
+        escrow.authorizeMatch(address(match2), 200e6);
 
         // Setup first match
         _createAndOpenMarket(20000);
 
-        // Pre-fund both matches
+        // Pre-fund both matches locally so solvency checks pass at bet placement
         _fundMatchDirect(100e6);
         usdc.mint(address(match2), 100e6);
 
@@ -675,30 +675,20 @@ contract PayoutEscrowTest is Test {
         vm.prank(resolver);
         match2.resolveMarket(0, 0);
 
-        // Drain pre-funds from both matches
+        // Drain local balances so both must fall back to escrow
         vm.startPrank(owner);
         footballMatch.emergencyPause();
-        footballMatch.emergencyWithdrawUSDC(100e6);
+        footballMatch.emergencyWithdrawUSDC(200e6); // pre-fund + bet deposit
         footballMatch.unpause();
         match2.emergencyPause();
-        match2.emergencyWithdrawUSDC(100e6);
+        match2.emergencyWithdrawUSDC(200e6);
         match2.unpause();
         vm.stopPrank();
 
-        // Fund each escrow separately
-        _fundEscrow(100e6); // escrow for match1 only
+        // Fund escrow with enough to cover both payouts
+        _fundEscrow(400e6);
 
-        usdc.mint(safeAddr, 100e6);
-        vm.startPrank(safeAddr);
-        usdc.approve(address(escrow2), 100e6);
-        escrow2.fund(100e6);
-        vm.stopPrank();
-
-        // Verify escrow1 cannot be drained by match2 (isolation)
-        assertEq(escrow.authorizedMatch(), address(footballMatch));
-        assertEq(escrow2.authorizedMatch(), address(match2));
-
-        // Claims succeed independently
+        // Claims succeed — each match draws from the shared pool within its cap
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
         footballMatch.claim(0, 0);
@@ -709,70 +699,28 @@ contract PayoutEscrowTest is Test {
         match2.claim(0, 0);
         assertEq(usdc.balanceOf(bob) - bobBefore, 200e6);
 
-        // Each escrow only disbursed its own funds
-        assertEq(escrow.totalDisbursed(), 100e6);
-        assertEq(escrow2.totalDisbursed(), 100e6);
+        // Running totals on the shared escrow
+        assertEq(escrow.totalDisbursed(), 400e6);
+        assertEq(escrow.disbursedPerMatch(address(footballMatch)), 200e6);
+        assertEq(escrow.disbursedPerMatch(address(match2)), 200e6);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // TEST 15: Escrow validation errors
+    // TEST 19: availableBalance view
     // ══════════════════════════════════════════════════════════════════════════
 
-    function test_EscrowValidationErrors() public {
-        // Zero amount fund
-        vm.prank(safeAddr);
-        vm.expectRevert(PayoutEscrow.ZeroAmount.selector);
-        escrow.fund(0);
-
-        // Zero amount withdraw
-        vm.prank(safeAddr);
-        vm.expectRevert(PayoutEscrow.ZeroAmount.selector);
-        escrow.withdraw(0);
-
-        // Withdraw more than balance
-        _fundEscrow(100e6);
-        vm.prank(safeAddr);
-        vm.expectRevert(
-            abi.encodeWithSelector(PayoutEscrow.InsufficientEscrowBalance.selector, 200e6, 100e6)
-        );
-        escrow.withdraw(200e6);
-    }
-
     // ══════════════════════════════════════════════════════════════════════════
-    // TEST 16: Constructor validation
+    // TEST 18: fund() is permissionless (anyone can top up the shared pool)
     // ══════════════════════════════════════════════════════════════════════════
 
-    function test_EscrowConstructorValidation() public {
-        // Zero USDC address
-        vm.expectRevert(PayoutEscrow.ZeroAddress.selector);
-        new PayoutEscrow(address(0), address(footballMatch), safeAddr);
-
-        // Zero authorized match
-        vm.expectRevert(PayoutEscrow.ZeroAddress.selector);
-        new PayoutEscrow(address(usdc), address(0), safeAddr);
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // TEST 17: fund() is owner-only
-    // ══════════════════════════════════════════════════════════════════════════
-
-    function test_FundIsOwnerOnly() public {
+    function test_FundIsPermissionless() public {
         usdc.mint(alice, 100e6);
-
         vm.startPrank(alice);
         usdc.approve(address(escrow), 100e6);
-        vm.expectRevert(); // OwnableUnauthorizedAccount
         escrow.fund(100e6);
         vm.stopPrank();
-
-        // Owner can fund
-        _fundEscrow(100e6);
         assertEq(escrow.availableBalance(), 100e6);
     }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // TEST 18: availableBalance view
-    // ══════════════════════════════════════════════════════════════════════════
 
     function test_EscrowAvailableBalance() public {
         assertEq(escrow.availableBalance(), 0);

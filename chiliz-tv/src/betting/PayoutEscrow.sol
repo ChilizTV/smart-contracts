@@ -11,18 +11,23 @@ import {IPayoutEscrow} from "../interfaces/IPayoutEscrow.sol";
 /**
  * @title PayoutEscrow
  * @author Chiliz Team
- * @notice Centralized USDC escrow funded by a Gnosis Safe treasury to backstop
- *         betting payouts across all BettingMatch contracts on a network.
+ * @notice Single shared USDC escrow funded by a Gnosis Safe treasury to backstop
+ *         betting payouts across ALL BettingMatch contracts on a network.
  *
- * @dev Architecture (one escrow per match):
+ * @dev Architecture (one escrow for all matches):
  *   ┌────────────┐  fund()   ┌──────────────┐  disburseTo()  ┌──────────────┐
  *   │ Gnosis Safe│ ────────> │ PayoutEscrow │ <──────────── │ BettingMatch │
- *   │ (Treasury) │           │ (USDC Pool)  │               │   (Proxy)    │
+ *   │ (Treasury) │           │  (USDC Pool) │               │   (Proxy N)  │
  *   └────────────┘           └──────────────┘               └──────────────┘
  *
- * Only whitelisted BettingMatch contracts can call `disburseTo()`.
- * Each match has a per-match disbursement cap set at authorization time.
- * The Safe (owner) manages whitelist, caps, funding, withdrawals, and pause state.
+ * Only BettingMatch contracts whitelisted via authorizeMatch() can call disburseTo().
+ * Each authorized match has a cap that limits its total draw from the shared pool.
+ * The Safe (owner) manages the whitelist, caps, funding, withdrawals, and pause state.
+ *
+ * Key invariant:
+ *   freeBalance = max(0, usdc.balanceOf(this) - totalAllocated)
+ *   Only freeBalance may be withdrawn by the owner; allocated funds are reserved
+ *   for authorized matches up to their individual caps.
  *
  * Security:
  *   - ReentrancyGuard on all state-changing external functions
@@ -39,26 +44,23 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice USDC token used for all escrow operations
     IERC20 public immutable usdc;
-    /// @notice USDC token used for all escrow operations
-    IERC20 public immutable usdc;
 
-    /// @notice The single BettingMatch contract authorized to call disburseTo()
-    address public immutable authorizedMatch;
+    /// @notice Whether a BettingMatch proxy is authorized to call disburseTo()
+    mapping(address => bool) public authorizedMatches;
 
-    /// @notice Maximum USDC each match is allowed to draw from this escrow
+    /// @notice Maximum total USDC each authorized match may draw from this escrow
     mapping(address => uint256) public matchCaps;
 
-    /// @notice Sum of remaining allocations across all authorized matches.
-    /// @dev    Invariant: usdc.balanceOf(this) should always be >= totalAllocated once funded.
+    /// @notice Running USDC disbursed per match (accounting, never decremented)
+    mapping(address => uint256) public disbursedPerMatch;
+
+    /// @notice Sum of remaining (uncommitted) allocations across all authorized matches.
+    /// @dev    Invariant: usdc.balanceOf(this) >= totalAllocated once funded.
     ///         freeBalance = max(0, balance - totalAllocated)
-    ///         Only free balance may be withdrawn by the owner.
     uint256 public totalAllocated;
 
-    /// @notice Running total of USDC disbursed to winners (accounting only)
+    /// @notice Running total of all USDC disbursed to winners (accounting only)
     uint256 public totalDisbursed;
-
-    /// @notice Per-match running total of USDC disbursed (accounting only)
-    mapping(address => uint256) public disbursedPerMatch;
 
     // ══════════════════════════════════════════════════════════════════════════
     // EVENTS
@@ -68,7 +70,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     event MatchCapUpdated(address indexed matchContract, uint256 newCap);
     event MatchRevoked(address indexed matchContract);
     event Funded(address indexed from, uint256 amount);
-    event Disbursed(address indexed recipient, uint256 amount);
+    event Disbursed(address indexed matchContract, address indexed recipient, uint256 amount);
     event Withdrawn(address indexed to, uint256 amount);
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -89,7 +91,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     // ══════════════════════════════════════════════════════════════════════════
 
     modifier onlyAuthorizedMatch() {
-        if (msg.sender != authorizedMatch) revert UnauthorizedCaller(msg.sender);
+        if (!authorizedMatches[msg.sender]) revert UnauthorizedMatch(msg.sender);
         _;
     }
 
@@ -97,8 +99,8 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     // CONSTRUCTOR
     // ══════════════════════════════════════════════════════════════════════════
 
-    /// @param _usdc USDC token address
-    /// @param _owner Owner (Gnosis Safe address)
+    /// @param _usdc  USDC token address
+    /// @param _owner Owner address (Gnosis Safe / treasury multisig)
     constructor(address _usdc, address _owner) Ownable(_owner) {
         if (_usdc == address(0)) revert ZeroAddress();
         usdc = IERC20(_usdc);
@@ -110,26 +112,28 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Authorize a BettingMatch contract to call disburseTo() up to `cap` USDC
     /// @param matchContract The BettingMatch proxy address
-    /// @param cap Maximum total USDC this match may draw from the escrow
+    /// @param cap           Maximum total USDC this match may draw from the escrow
     function authorizeMatch(address matchContract, uint256 cap) external onlyOwner {
         if (matchContract == address(0)) revert ZeroAddress();
         if (cap == 0) revert ZeroAmount();
         // Prevent double-authorization: re-calling would inflate totalAllocated
         // without a corresponding increase in the match's actual cap.
         if (authorizedMatches[matchContract]) revert AlreadyAuthorized(matchContract);
+
         uint256 disbursed = disbursedPerMatch[matchContract];
         if (cap < disbursed) revert CapBelowDisbursed(matchContract, cap, disbursed);
+
         authorizedMatches[matchContract] = true;
         matchCaps[matchContract] = cap;
-        // Subtract already-disbursed amount: a re-authorized match that previously
-        // paid out some funds only needs (cap - disbursed) allocated from the pool.
+        // A re-authorized match that previously paid out some funds only needs
+        // (cap - disbursed) newly allocated from the shared pool.
         totalAllocated += cap - disbursed;
         emit MatchAuthorized(matchContract, cap);
     }
 
     /// @notice Update the disbursement cap for an already-authorized match
     /// @param matchContract The BettingMatch proxy address
-    /// @param newCap New maximum total USDC this match may draw
+    /// @param newCap        New maximum total USDC this match may draw
     function updateMatchCap(address matchContract, uint256 newCap) external onlyOwner {
         if (!authorizedMatches[matchContract]) revert UnauthorizedMatch(matchContract);
         if (newCap == 0) revert ZeroAmount();
@@ -137,9 +141,9 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
         uint256 disbursed = disbursedPerMatch[matchContract];
         if (newCap < disbursed) revert CapBelowDisbursed(matchContract, newCap, disbursed);
 
-        // Adjust totalAllocated by the change in remaining (uncommitted) cap.
-        // remaining = cap - disbursed; delta = newRemaining - oldRemaining = newCap - oldCap
         uint256 oldCap = matchCaps[matchContract];
+        // Adjust totalAllocated by the delta in remaining (uncommitted) cap.
+        // delta = (newCap - disbursed) - (oldCap - disbursed) = newCap - oldCap
         if (newCap > oldCap) {
             totalAllocated += newCap - oldCap;
         } else {
@@ -151,6 +155,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Revoke a BettingMatch contract's authorization
+    /// @param matchContract The BettingMatch proxy address
     function revokeMatch(address matchContract) external onlyOwner {
         if (authorizedMatches[matchContract]) {
             // Release remaining (unused) allocation back to the free pool.
@@ -165,34 +170,29 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     // PAUSE (Owner / Safe)
     // ══════════════════════════════════════════════════════════════════════════
 
-    function pause() external onlyOwner {
-        _pause();
-    }
+    function pause() external onlyOwner { _pause(); }
 
-    function unpause() external onlyOwner {
-        _unpause();
-    }
+    function unpause() external onlyOwner { _unpause(); }
 
     // ══════════════════════════════════════════════════════════════════════════
     // FUNDING (Safe approves USDC, then calls fund())
-    // FUNDING (Safe approves USDC, then calls fund())
     // ══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Deposit USDC into the escrow reserve
-    /// @param amount USDC amount to deposit
-    /// @dev Caller must have approved this contract for `amount` USDC first
+    /// @notice Deposit USDC into the shared escrow reserve
+    /// @param amount USDC amount to deposit (caller must approve first)
     function fund(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
-        usdc.safeTransferFrom(msg.sender, address(this), amount);
         usdc.safeTransferFrom(msg.sender, address(this), amount);
         emit Funded(msg.sender, amount);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // DISBURSEMENT (called by authorizedMatch only)
+    // DISBURSEMENT (called by authorized BettingMatch contracts only)
     // ══════════════════════════════════════════════════════════════════════════
 
     /// @inheritdoc IPayoutEscrow
+    /// @dev msg.sender must be an authorized BettingMatch proxy.
+    ///      Reverts if cap or escrow balance is insufficient.
     function disburseTo(address recipient, uint256 amount)
         external
         override
@@ -211,8 +211,9 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
         uint256 balance = usdc.balanceOf(address(this));
         if (balance < amount) revert InsufficientEscrowBalance(amount, balance);
 
-        totalAllocated -= amount;
-        totalDisbursed += amount;
+        // Checks-Effects-Interactions
+        totalAllocated           -= amount;
+        totalDisbursed           += amount;
         disbursedPerMatch[msg.sender] = newDisbursed;
 
         usdc.safeTransfer(recipient, amount);
@@ -238,7 +239,7 @@ contract PayoutEscrow is IPayoutEscrow, Ownable, ReentrancyGuard, Pausable {
     // VIEW FUNCTIONS
     // ══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Current total USDC balance held by this contract
+    /// @notice Total USDC balance held by this contract
     function availableBalance() external view returns (uint256) {
         return usdc.balanceOf(address(this));
     }

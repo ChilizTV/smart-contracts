@@ -146,7 +146,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         IERC20(token).forceApprove(wallet, amount);
 
         // Record subscription (wallet pulls tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, 0, block.timestamp + 5 minutes, token);
+        StreamWallet(payable(wallet)).recordSubscription(msg.sender, amount, duration, amountOutMin, deadline, token);
 
         emit SubscriptionProcessed(streamer, msg.sender, amount);
     }
@@ -188,7 +188,7 @@ contract StreamWalletFactory is ReentrancyGuard, Ownable {
         IERC20(token).forceApprove(wallet, amount);
 
         // Process donation through wallet (wallet pulls tokens and swaps to USDC)
-        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, 0, block.timestamp + 5 minutes, token);
+        StreamWallet(payable(wallet)).donateFor(msg.sender, amount, message, amountOutMin, deadline, token);
 
         emit DonationProcessed(streamer, msg.sender, amount, message);
     }
