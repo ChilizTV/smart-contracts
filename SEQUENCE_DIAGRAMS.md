@@ -72,7 +72,7 @@ sequenceDiagram
 
         Deployer->>SWFactory: deploy StreamWalletFactory(<br/>  initialOwner, treasury, feeBps,<br/>  kayenRouter, fanToken, usdc)
         activate SWFactory
-        Note right of SWFactory: Constructor internally deploys:<br/>StreamWallet impl (immutable)<br/>Stores treasury, feeBps, router, tokens
+        Note right of SWFactory: Constructor internally deploys StreamWallet impl.<br/>`streamWalletImplementation` is MUTABLE via `setImplementation()`<br/>(affects NEW wallets only). Existing wallets upgrade individually<br/>via `upgradeWallet(streamer, newImpl)`. No beacon — per-wallet UUPS.<br/>Stores treasury, feeBps, router, tokens.
         SWFactory->>SWImpl: new StreamWallet()
         SWImpl-->>SWFactory: STREAM_WALLET_IMPLEMENTATION set
         SWFactory-->>Deployer: StreamWalletFactory deployed âœ“
@@ -92,11 +92,15 @@ sequenceDiagram
     rect rgb(240, 240, 255)
         Note over Deployer,Safe: PHASE 5: CROSS-SYSTEM WIRING
 
-        Deployer->>SwapRouter: setStreamWalletFactory(SWFactory)
-        SwapRouter-->>Deployer: âœ“
+        Note right of Deployer: Order matters: SWFactory must know the router<br/>BEFORE the router registers the factory, otherwise<br/>ChilizSwapRouter reverts `RouterNotConfiguredOnFactory`.
 
         Deployer->>SWFactory: setSwapRouter(SwapRouter)
         SWFactory-->>Deployer: âœ“
+
+        Deployer->>SwapRouter: setStreamWalletFactory(SWFactory)
+        SwapRouter-->>Deployer: âœ“
+
+        Note right of Deployer: Per new BettingMatch proxy:<br/>1. match.setUSDCToken(usdc)<br/>2. match.setPayoutEscrow(Escrow)<br/>3. Escrow.authorizeMatch(match, cap)  // Safe<br/>4. match.grantRole(RESOLVER_ROLE, oracle)<br/>5. match.grantRole(SWAP_ROUTER_ROLE, SwapRouter)
 
         Note over Deployer,Safe: Fund PayoutEscrow via Gnosis Safe
         Safe->>USDC: approve(Escrow, amount)
@@ -642,10 +646,10 @@ sequenceDiagram
     rect rgb(240, 240, 240)
         Note over Sub,Treasury: STREAMER WITHDRAWAL
 
-        Streamer->>Wallet: withdrawRevenue(100e6)
+        Streamer->>Wallet: withdrawRevenue()
         activate Wallet
-        Note right of Wallet: onlyStreamer âœ“<br/>available = USDC.balanceOf(wallet)<br/>100 â‰¤ available âœ“<br/>totalWithdrawn += 100<br/>safeTransfer(streamer, 100)
-        Wallet-->>Streamer: emit RevenueWithdrawn(streamer, 100) âœ“
+        Note right of Wallet: onlyStreamer âœ“<br/>available = USDC.balanceOf(wallet)<br/>(no amount parameter — drains full balance)<br/>totalWithdrawn += available<br/>safeTransfer(streamer, available)
+        Wallet-->>Streamer: emit RevenueWithdrawn(streamer, amount) âœ“
         deactivate Wallet
     end
 ```

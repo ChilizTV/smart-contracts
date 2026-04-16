@@ -78,7 +78,7 @@ Every deployment script follows the UUPS (Universal Upgradeable Proxy Standard) 
            â”‚ deploys
            â–¼
 â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚ Implementation      â”‚ â—„â”€â”€ Logic contract (immutable in factory)
+â”‚ Implementation      â”‚ â—„â”€â”€ Logic contract (mutable pointer on factory; setter is onlyOwner, affects new proxies only)
 â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
            â–²
            â”‚ delegatecall (via ERC1967)
@@ -99,18 +99,19 @@ Every deployment script follows the UUPS (Universal Upgradeable Proxy Standard) 
 All scripts follow this streamlined order:
 
 1. **Deploy Factory** (includes implementation)
-   - BettingMatchFactory (deploys Football/Basketball implementations internally)
-   - StreamWalletFactory (deploys StreamWallet implementation internally)
-   - Implementations stored as immutable for gas efficiency
+   - BettingMatchFactory (deploys Football/Basketball implementations in its constructor)
+   - StreamWalletFactory (deploys StreamWallet implementation in its constructor)
+   - Implementation pointers on both factories are **mutable** via `onlyOwner` setters (`setFootballImplementation` / `setBasketballImplementation` / `setImplementation`). They affect **new proxy deployments only** — existing proxies are NOT auto-upgraded and must be upgraded individually (UUPS on betting via `upgradeToAndCall`, UUPS on streaming via `StreamWalletFactory.upgradeWallet`).
 
 2. **Transfer Ownership** (to Safe multisig)
-   - BettingMatchFactory â†’ Safe
-   - StreamWalletFactory â†’ Safe
-   - Safe controls factory operations
+   - BettingMatchFactory â†’ Safe (controls who gets new matches + implementation pointer)
+   - StreamWalletFactory â†’ Safe (controls per-wallet upgrades)
+   - PayoutEscrow â†’ Safe (controls match whitelist, caps, funding, free-balance withdraw)
+   - ChilizSwapRouter â†’ Safe (controls treasury, platformFeeBps, registered factories)
 
 **Gas Optimization:**
-- First proxy deployment: ~680K gas (includes implementation)
-- Subsequent deployments: ~200K gas (reuses immutable implementation)
+- First proxy deployment: ~680K gas (factory constructor cost already paid separately — implementations sit on-chain ready to be reused)
+- Subsequent deployments: ~200K gas (reuses the same implementation via ERC1967Proxy)
 - At 1M users: Saves ~1 trillion gas vs deploying full contracts
 
 ### Security Features
@@ -180,9 +181,10 @@ cast send $FACTORY_ADDRESS \
 cast send $TOKEN "approve(address,uint256)" $FACTORY $AMOUNT
 
 # Subscribe
+# subscribeToStream(streamer, duration, amount, amountOutMin, deadline, token)
 cast send $FACTORY \
-  "subscribeToStream(address,uint256,uint256)" \
-  $STREAMER $AMOUNT $DURATION
+  "subscribeToStream(address,uint256,uint256,uint256,uint256,address)" \
+  $STREAMER $DURATION $AMOUNT 0 $(date -d '+5 min' +%s) $TOKEN
 ```
 
 ### Upgrade Individual Wallet (Wallet Owner)
@@ -304,6 +306,6 @@ This PR provides a complete, production-ready deployment infrastructure for Chil
 - âœ… Emergency procedures
 - âœ… Production-ready
 
-**Architecture: Clean UUPS pattern with gas-efficient immutable implementations**
+**Architecture: UUPS per proxy (both betting and streaming), gas-efficient via shared implementations. Factory implementation pointers are mutable (onlyOwner) so bug-fixed implementations can be rolled out to NEW matches/wallets; existing proxies upgrade individually.**
 
 The scripts are ready for testnet deployment and can be used for mainnet after successful testing.

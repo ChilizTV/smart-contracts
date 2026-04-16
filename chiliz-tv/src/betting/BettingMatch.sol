@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.22;
+pragma solidity 0.8.24;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -9,191 +9,156 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IPayoutEscrow} from "../interfaces/IPayoutEscrow.sol";
+import {ILiquidityPool} from "../interfaces/ILiquidityPool.sol";
 
 /**
- * @title BettingMatchV2
- * @author Chiliz Team
- * @notice Abstract base contract for UUPS-upgradeable sports betting with dynamic odds
- * 
- * @dev Architecture Overview:
- * --------------------------------------------------------------------------------------------------
- * |                           DYNAMIC ODDS SYSTEM                               |
- * --------------------------------------------------------------------------------------------------
- * |  Market                                                                     |
- * |  ├── oddsRegistry: uint32[] (append-only list of unique odds values)        |
- * |  ├── oddsToIndex: mapping(uint32 => uint16) (O(1) lookup)                   |
- * |  ├── currentOddsIndex: uint16 (pointer to active odds)                      |
- * |  └── bets: mapping(address => Bet[])                                        |
- * |       └── Bet: { amount, selection, oddsIndex, claimed }                    |
- * --------------------------------------------------------------------------------------------------
- * 
- * Odds Precision: oddsX10000 (4 decimal places)
- *   - 1.01x = 10100, 2.18x = 21800, 100.00x = 1000000
- *   - Bounds: [10001, 1000000] â†’ (1.0001x to 100.00x)
- * 
- * Gas Optimization Analysis:
- * --------------------------------------------------------------------------------------------------
- * | Approach                       | Storage Cost      | Trade-off             |
- * --------------------------------------------------------------------------------------------------
- * | A) Direct odds per bet (uint32)| 32 bits/bet       | Simple, no lookup     |
- * | B) OddsIndex (uint16) + array  | 16 bits/bet +     | Dedupe saves gas when |
- * |                                | 32 bits/unique    | many bets share odds  |
- * --------------------------------------------------------------------------------------------------
- * 
- * Choice: Approach B with uint16 oddsIndex
- *   - Max 65535 unique odds per market (more than sufficient)
- *   - Saves 16 bits per bet when odds are shared (common case)
- *   - O(1) lookup via oddsToIndex mapping
+ * @title BettingMatch
+ * @author ChilizTV Team
+ * @notice Abstract base for UUPS-upgradeable sports betting with dynamic odds.
+ *
+ * @dev Since the LiquidityPool migration this contract holds NO USDC. All stakes
+ *      flow into `LiquidityPool`, all payouts come back out of it. The match is
+ *      pure bookkeeping: markets, odds registry, bets, resolution.
+ *
+ *      Storage invariant: `_marketLiabilities[mktId]` and
+ *      `_selectionLiabilities[mktId][sel]` track the TOTAL potential winner
+ *      payout reserved for this market/selection, NOT the net exposure. They
+ *      are used to compute `losingLiab` on resolution and to release the
+ *      correct amount on refund/cancellation. The pool tracks net exposure
+ *      separately via its own `marketLiability` / `matchLiability` maps.
+ *
+ *      Odds are x10000 precision: 2.18x = 21800, min 1.0001x = 10001, max
+ *      100x = 1000000.
  */
-abstract contract BettingMatch is 
-    Initializable, 
-    OwnableUpgradeable, 
-    AccessControlUpgradeable, 
-    UUPSUpgradeable, 
-    ReentrancyGuardUpgradeable, 
-    PausableUpgradeable 
+abstract contract BettingMatch is
+    Initializable,
+    OwnableUpgradeable,
+    AccessControlUpgradeable,
+    UUPSUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable
 {
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // CONSTANTS & ROLES
-    // --------------------------------------------------------------------------------------------------
-    
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant RESOLVER_ROLE = keccak256("RESOLVER_ROLE");
-    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
+    // ═══════════════════════════════════════════════════════════════════════
+
+    bytes32 public constant ADMIN_ROLE       = keccak256("ADMIN_ROLE");
+    bytes32 public constant RESOLVER_ROLE    = keccak256("RESOLVER_ROLE");
+    bytes32 public constant PAUSER_ROLE      = keccak256("PAUSER_ROLE");
     bytes32 public constant ODDS_SETTER_ROLE = keccak256("ODDS_SETTER_ROLE");
     bytes32 public constant SWAP_ROUTER_ROLE = keccak256("SWAP_ROUTER_ROLE");
-    
-    /// @notice Odds precision: multiply by 10000 (4 decimals)
-    /// @dev 2.18x = 21800, min 1.0001x = 10001, max 100x = 1000000
+
+    /// @notice Odds precision: multiply by 10000 (4 decimals).
     uint32 public constant ODDS_PRECISION = 10000;
-    uint32 public constant MIN_ODDS = 10001;   // 1.0001x minimum
-    uint32 public constant MAX_ODDS = 1000000; // 100.00x maximum
-    
-    // --------------------------------------------------------------------------------------------------
+    uint32 public constant MIN_ODDS       = 10001;   // 1.0001x
+    uint32 public constant MAX_ODDS       = 1000000; // 100.00x
+
+    // ═══════════════════════════════════════════════════════════════════════
     // ENUMS
-    // --------------------------------------------------------------------------------------------------
-    
-    /// @notice Market lifecycle states
-    enum MarketState { 
-        Inactive,   // Not yet opened for betting
-        Open,       // Accepting bets
-        Suspended,  // Temporarily paused (e.g., match started)
-        Closed,     // No more bets, awaiting result
-        Resolved,   // Result set, payouts available
-        Cancelled   // Refunds available
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Market lifecycle states.
+    enum MarketState {
+        Inactive,
+        Open,
+        Suspended,
+        Closed,
+        Resolved,
+        Cancelled
     }
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // STRUCTS
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Individual bet with odds snapshot
-     * @dev Packed into 2 storage slots:
-     *      Slot 1: amount (256 bits)
-     *      Slot 2: selection (64) + oddsIndex (16) + timestamp (40) + claimed (8) = 128 bits
-     */
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Individual bet with odds snapshot. Packed into 2 slots.
     struct Bet {
-        uint256 amount;       // Bet amount in USDC (6 decimals)
-        uint64  selection;    // Encoded user pick (outcome ID)
-        uint16  oddsIndex;    // Index into market's oddsRegistry
-        uint40  timestamp;    // Block timestamp when bet was placed
-        bool    claimed;      // Whether payout/refund was claimed
+        uint256 amount;     // Net stake (USDC, 6 decimals) — protocol fee already skimmed
+        uint64  selection;
+        uint16  oddsIndex;
+        uint40  timestamp;
+        bool    claimed;
     }
-    
-    /**
-     * @notice Odds registry for a market (gas-optimized deduplication)
-     * @dev Append-only array + reverse mapping for O(1) lookup
-     */
+
+    /// @notice Odds registry for a market (gas-optimized deduplication).
     struct OddsRegistry {
-        uint32[] values;                    // Unique odds values (append-only)
-        mapping(uint32 => uint16) toIndex;  // odds value => index (1-based, 0 = not found)
-        uint16 currentIndex;                // Active odds index for new bets
+        uint32[] values;
+        mapping(uint32 => uint16) toIndex; // 1-based; 0 = not found
+        uint16 currentIndex;
     }
-    
-    /**
-     * @notice Base market data (extended by sport-specific contracts)
-     */
+
     struct MarketCore {
         MarketState state;
-        uint64      result;          // Encoded result (set on resolution)
+        uint64      result;
         uint40      createdAt;
         uint40      resolvedAt;
-        uint256     totalPool;       // Total USDC wagered
+        uint256     totalPool;
     }
 
-    // --------------------------------------------------------------------------------------------------
-    // STORAGE (Upgrade-safe layout)
-    // --------------------------------------------------------------------------------------------------
-    
-    /// @notice Human-readable name of the match
-    string public matchName;
-    
-    /// @notice Sport type identifier (e.g., "FOOTBALL", "BASKETBALL")
-    string public sportType;
-    
-    /// @notice Number of markets created
-    uint256 public marketCount;
-    
-    /// @notice Odds registries per market
-    mapping(uint256 => OddsRegistry) internal _oddsRegistries;
-    
-    /// @notice User bets per market (supports multiple bets per user at different odds)
-    mapping(uint256 => mapping(address => Bet[])) internal _userBets;
-    
-    /// @notice Market core data
-    mapping(uint256 => MarketCore) internal _marketCores;
+    // ═══════════════════════════════════════════════════════════════════════
+    // STORAGE (Upgrade-safe — do not reorder)
+    // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice USDC token address (set during initialization, address(0) = USDC disabled)
+    string public matchName;
+    string public sportType;
+    uint256 public marketCount;
+
+    mapping(uint256 => OddsRegistry)                  internal _oddsRegistries;
+    mapping(uint256 => mapping(address => Bet[]))     internal _userBets;
+    mapping(uint256 => MarketCore)                    internal _marketCores;
+
+    /// @notice USDC token address. Used only for quoting decimals/metadata —
+    ///         this contract never holds USDC.
     IERC20 public usdcToken;
 
-    /// @notice Total outstanding USDC liabilities (potential payouts for winning bets)
-    uint256 public totalUSDCLiabilities;
+    /// @notice LiquidityPool that custodies bet stakes and pays winners.
+    ILiquidityPool public liquidityPool;
 
-    /// @notice Total USDC pool deposited via bets
-    uint256 public totalUSDCPool;
-
-    /// @notice Optional PayoutEscrow for treasury-backed payout fallback
-    IPayoutEscrow public payoutEscrow;
-
-    /// @notice Per-market total liabilities for solvency cleanup on resolution
+    /// @notice Per-market TOTAL potential payout (= stake × odds / 10000 summed over bets).
+    ///         Drives payout bookkeeping for the match.
     mapping(uint256 => uint256) internal _marketLiabilities;
 
-    /// @notice Per-market per-selection liabilities (for deducting losing bets on resolution)
+    /// @notice Per-market/per-selection potential payout. Drives resolution math.
     mapping(uint256 => mapping(uint64 => uint256)) internal _selectionLiabilities;
 
-    // --------------------------------------------------------------------------------------------------
+    /// @notice Per-market TOTAL net exposure (= Σ payout - stake). Mirrors the
+    ///         pool's per-market liability accounting and lets us compute the
+    ///         exact losing-side release on resolution.
+    mapping(uint256 => uint256) internal _marketNetExposure;
+
+    /// @notice Per-market/per-selection net exposure. Parallel to
+    ///         `_selectionLiabilities` but tracks net exposure instead of
+    ///         full potential payout.
+    mapping(uint256 => mapping(uint64 => uint256)) internal _selectionNetExposures;
+
+    // ═══════════════════════════════════════════════════════════════════════
     // EVENTS
-    // --------------------------------------------------------------------------------------------------
-    
+    // ═══════════════════════════════════════════════════════════════════════
+
     event MatchInitialized(string indexed name, string sportType, address indexed owner);
     event MarketCreated(uint256 indexed marketId, string marketType, uint32 initialOdds);
     event MarketStateChanged(uint256 indexed marketId, MarketState oldState, MarketState newState);
     event OddsUpdated(uint256 indexed marketId, uint32 oldOdds, uint32 newOdds, uint16 oddsIndex);
     event BetPlaced(
-        uint256 indexed marketId, 
-        address indexed user, 
+        uint256 indexed marketId,
+        address indexed user,
         uint256 betIndex,
-        uint256 amount, 
-        uint64 selection, 
-        uint32 odds,
-        uint16 oddsIndex
+        uint256 amount,
+        uint64  selection,
+        uint32  odds,
+        uint16  oddsIndex
     );
     event MarketResolved(uint256 indexed marketId, uint64 result, uint40 resolvedAt);
     event MarketCancelled(uint256 indexed marketId, string reason);
     event Payout(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
     event Refund(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
     event USDCTokenSet(address indexed token);
-    event PayoutEscrowSet(address indexed escrow);
-    event USDCTreasuryFunded(address indexed funder, uint256 amount);
-    event EmergencyUSDCWithdrawn(address indexed recipient, uint256 amount);
+    event LiquidityPoolSet(address indexed pool);
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // CUSTOM ERRORS
-    // --------------------------------------------------------------------------------------------------
-    
+    // ═══════════════════════════════════════════════════════════════════════
+
     error InvalidMarketId(uint256 marketId);
     error InvalidMarketState(uint256 marketId, MarketState current, MarketState required);
     error InvalidOddsValue(uint32 odds, uint32 min, uint32 max);
@@ -202,22 +167,19 @@ abstract contract BettingMatch is
     error BetNotFound(uint256 marketId, address user, uint256 betIndex);
     error AlreadyClaimed(uint256 marketId, address user, uint256 betIndex);
     error BetLost(uint256 marketId, address user, uint256 betIndex);
-    error MarketNotCancelled(uint256 marketId);
-    error ContractNotPaused();
     error MaxOddsEntriesReached(uint256 marketId);
     error USDCNotConfigured();
-    error InsufficientUSDCBalance(uint256 required, uint256 available);
-    error USDCSolvencyExceeded(uint256 newLiability, uint256 availableUSDC);
+    error LiquidityPoolNotConfigured();
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // MODIFIERS
-    // --------------------------------------------------------------------------------------------------
-    
+    // ═══════════════════════════════════════════════════════════════════════
+
     modifier validMarket(uint256 marketId) {
         _validMarket(marketId);
         _;
     }
-    
+
     modifier inState(uint256 marketId, MarketState required) {
         _inState(marketId, required);
         _;
@@ -234,20 +196,14 @@ abstract contract BettingMatch is
         }
     }
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // INITIALIZER
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Initialize the betting match contract
-     * @param _matchName Descriptive name of this match
-     * @param _sportType Sport identifier (e.g., "FOOTBALL")
-     * @param _owner Owner/admin address
-     */
+    // ═══════════════════════════════════════════════════════════════════════
+
     // forge-lint: disable-next-line(mixed-case-function)
     function __BettingMatchV2_init(
-        string memory _matchName, 
-        string memory _sportType, 
+        string memory _matchName,
+        string memory _sportType,
         address _owner
     ) internal onlyInitializing {
         __Ownable_init(_owner);
@@ -255,191 +211,117 @@ abstract contract BettingMatch is
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
-        
-        // Grant operational roles to owner.
-        // RESOLVER_ROLE is intentionally NOT granted here: resolution must be
-        // assigned to a separate, dedicated oracle address after deployment via
-        // grantRole(RESOLVER_ROLE, oracle). This prevents the same key that
-        // controls admin/treasury from also resolving markets (self-deal attack).
+
+        // RESOLVER_ROLE is intentionally NOT granted here. Resolution must be
+        // assigned to a dedicated oracle address after deployment via
+        // `grantRole(RESOLVER_ROLE, oracle)` to separate the resolver key
+        // from the admin key.
         _grantRole(DEFAULT_ADMIN_ROLE, _owner);
-        _grantRole(ADMIN_ROLE, _owner);
-        _grantRole(PAUSER_ROLE, _owner);
-        _grantRole(TREASURY_ROLE, _owner);
-        _grantRole(ODDS_SETTER_ROLE, _owner);
-        
-        
+        _grantRole(ADMIN_ROLE,         _owner);
+        _grantRole(PAUSER_ROLE,        _owner);
+        _grantRole(ODDS_SETTER_ROLE,   _owner);
+
         matchName = _matchName;
         sportType = _sportType;
-        
+
         emit MatchInitialized(_matchName, _sportType, _owner);
     }
 
-    /**
-     * @notice Set the USDC token address for USDC-denominated betting
-     * @param _usdcToken Address of the USDC token contract
-     */
+    /// @notice Set the USDC token address (metadata only — this contract holds no USDC).
     function setUSDCToken(address _usdcToken) external onlyRole(ADMIN_ROLE) {
         usdcToken = IERC20(_usdcToken);
         emit USDCTokenSet(_usdcToken);
     }
 
-    /**
-     * @notice Set the PayoutEscrow contract for treasury-backed payout fallback
-     * @param _escrow Address of the deployed PayoutEscrow (address(0) to disable)
-     */
-    function setPayoutEscrow(address _escrow) external onlyRole(ADMIN_ROLE) {
-        payoutEscrow = IPayoutEscrow(_escrow);
-        emit PayoutEscrowSet(_escrow);
+    /// @notice Set the LiquidityPool used for stake custody and payouts.
+    function setLiquidityPool(address _pool) external onlyRole(ADMIN_ROLE) {
+        liquidityPool = ILiquidityPool(_pool);
+        emit LiquidityPoolSet(_pool);
     }
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // ODDS MANAGEMENT
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Set new odds for a market (can be called multiple times)
-     * @param marketId Market identifier
-     * @param newOdds New odds value (x10000 precision)
-     * @dev 
-     *   - If odds already exists in registry, reuses existing index
-     *   - If new odds, appends to registry and creates new index
-     *   - O(1) lookup via oddsToIndex mapping
-     */
-    function setMarketOdds(uint256 marketId, uint32 newOdds) 
-        external 
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Set new odds for a market (can be called multiple times).
+    /// @dev    If the value already exists in the registry, reuses its index;
+    ///         otherwise appends. O(1) lookup via `toIndex`.
+    function setMarketOdds(uint256 marketId, uint32 newOdds)
+        external
         validMarket(marketId)
-        onlyRole(ODDS_SETTER_ROLE) 
+        onlyRole(ODDS_SETTER_ROLE)
     {
         _validateOdds(newOdds);
-        
+
         MarketCore storage core = _marketCores[marketId];
-        // Can only set odds when market is Open or Inactive
         if (core.state != MarketState.Open && core.state != MarketState.Inactive) {
             revert InvalidMarketState(marketId, core.state, MarketState.Open);
         }
-        
+
         OddsRegistry storage registry = _oddsRegistries[marketId];
         uint32 oldOdds = _getCurrentOdds(marketId);
-        
         uint16 newIndex = _getOrCreateOddsIndex(marketId, newOdds);
         registry.currentIndex = newIndex;
-        
+
         emit OddsUpdated(marketId, oldOdds, newOdds, newIndex);
     }
-    
-    /**
-     * @notice Get or create an odds index for a value
-     * @param marketId Market identifier  
-     * @param odds Odds value to find/create
-     * @return index The odds index (1-based)
-     */
+
     function _getOrCreateOddsIndex(uint256 marketId, uint32 odds) internal returns (uint16 index) {
         OddsRegistry storage registry = _oddsRegistries[marketId];
-        
-        // Check if odds already exists (1-based index, 0 means not found)
         index = registry.toIndex[odds];
-        if (index != 0) {
-            return index;
-        }
-        
-        // Safety check: max 65534 unique odds per market (uint16 - 1 for 0-sentinel)
-        if (registry.values.length >= 65534) {
-            revert MaxOddsEntriesReached(marketId);
-        }
-        
-        // Append new odds
+        if (index != 0) return index;
+
+        if (registry.values.length >= 65534) revert MaxOddsEntriesReached(marketId);
+
         registry.values.push(odds);
         index = uint16(registry.values.length); // 1-based
         registry.toIndex[odds] = index;
-        
-        return index;
     }
-    
-    /**
-     * @notice Get current active odds for a market
-     * @param marketId Market identifier
-     * @return Current odds value (0 if not set)
-     */
+
     function _getCurrentOdds(uint256 marketId) internal view returns (uint32) {
         OddsRegistry storage registry = _oddsRegistries[marketId];
         if (registry.currentIndex == 0) return 0;
-        return registry.values[registry.currentIndex - 1]; // Convert 1-based to 0-based
+        return registry.values[registry.currentIndex - 1];
     }
-    
-    /**
-     * @notice Get odds value by index
-     * @param marketId Market identifier
-     * @param oddsIndex Odds index (1-based)
-     * @return Odds value
-     */
+
     function _getOddsByIndex(uint256 marketId, uint16 oddsIndex) internal view returns (uint32) {
         if (oddsIndex == 0) return 0;
         return _oddsRegistries[marketId].values[oddsIndex - 1];
     }
-    
-    /**
-     * @notice Validate odds bounds
-     */
+
     function _validateOdds(uint32 odds) internal pure {
         if (odds < MIN_ODDS || odds > MAX_ODDS) {
             revert InvalidOddsValue(odds, MIN_ODDS, MAX_ODDS);
         }
     }
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // MARKET STATE MANAGEMENT
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Open a market for betting
-     */
-    function openMarket(uint256 marketId) 
-        external 
-        validMarket(marketId) 
-        onlyRole(ADMIN_ROLE) 
-    {
-        _transitionMarketState(marketId, MarketState.Open);
-    }
-    
-    /**
-     * @notice Suspend betting temporarily (e.g., match started)
-     */
-    function suspendMarket(uint256 marketId) 
-        external 
-        validMarket(marketId) 
-        onlyRole(ADMIN_ROLE) 
-    {
-        _transitionMarketState(marketId, MarketState.Suspended);
-    }
-    
-    /**
-     * @notice Close market for betting (awaiting result)
-     */
-    function closeMarket(uint256 marketId) 
-        external 
-        validMarket(marketId) 
-        onlyRole(ADMIN_ROLE) 
-    {
-        _transitionMarketState(marketId, MarketState.Closed);
-    }
-    
-    /**
-     * @notice Cancel market and enable refunds
-     */
-    function cancelMarket(uint256 marketId, string calldata reason) 
-        external 
-        validMarket(marketId) 
-        onlyRole(ADMIN_ROLE) 
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function openMarket(uint256 marketId)
+        external validMarket(marketId) onlyRole(ADMIN_ROLE)
+    { _transitionMarketState(marketId, MarketState.Open); }
+
+    function suspendMarket(uint256 marketId)
+        external validMarket(marketId) onlyRole(ADMIN_ROLE)
+    { _transitionMarketState(marketId, MarketState.Suspended); }
+
+    function closeMarket(uint256 marketId)
+        external validMarket(marketId) onlyRole(ADMIN_ROLE)
+    { _transitionMarketState(marketId, MarketState.Closed); }
+
+    function cancelMarket(uint256 marketId, string calldata reason)
+        external validMarket(marketId) onlyRole(ADMIN_ROLE)
     {
         _transitionMarketState(marketId, MarketState.Cancelled);
         emit MarketCancelled(marketId, reason);
     }
-    
+
     function _transitionMarketState(uint256 marketId, MarketState newState) internal {
         MarketCore storage core = _marketCores[marketId];
         MarketState oldState = core.state;
-        
-        // Enforce valid state transitions
+
         if (newState == MarketState.Open) {
             if (oldState != MarketState.Inactive && oldState != MarketState.Suspended)
                 revert InvalidMarketState(marketId, oldState, newState);
@@ -455,262 +337,236 @@ abstract contract BettingMatch is
         } else {
             revert InvalidMarketState(marketId, oldState, newState);
         }
-        
+
         core.state = newState;
         emit MarketStateChanged(marketId, oldState, newState);
     }
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // BETTING CORE
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
 
-    /**
-     * @notice Place a bet using USDC tokens
-     * @param marketId Market identifier
-     * @param selection Encoded user pick (outcome ID)
-     * @param amount USDC amount (6 decimals)
-     * @dev Caller must have approved this contract to spend `amount` USDC.
-     *      Tracks liabilities to ensure treasury solvency.
-     */
-    function placeBetUSDC(uint256 marketId, uint64 selection, uint256 amount) 
-        external 
+    /// @notice Pure view of the net exposure the pool would reserve for a bet.
+    /// @dev    Returns `amount * currentOdds / 10000 - amount`. Used by the
+    ///         swap router to compute `netExposure` in its fee-split flow.
+    function quoteNetExposure(uint256 marketId, uint256 amount)
+        external
+        view
         validMarket(marketId)
-        inState(marketId, MarketState.Open)
-        whenNotPaused 
+        returns (uint256 netExposure)
     {
-        _placeBetUSDCInternal(msg.sender, marketId, selection, amount, true);
+        uint32 odds = _getCurrentOdds(marketId);
+        if (odds == 0) revert OddsNotSet(marketId);
+        uint256 potentialPayout = (amount * odds) / ODDS_PRECISION;
+        // potentialPayout >= amount since MIN_ODDS > 10000
+        return potentialPayout - amount;
     }
 
-    /**
-     * @notice Place a USDC bet on behalf of a user (called by swap router)
-     * @param user The user to place the bet for
-     * @param marketId Market identifier
-     * @param selection Encoded user pick (outcome ID)
-     * @param amount USDC amount (already transferred to this contract)
-     * @dev Only callable by addresses with SWAP_ROUTER_ROLE.
-     *      USDC must have been transferred to this contract before calling.
-     */
-    function placeBetUSDCFor(address user, uint256 marketId, uint64 selection, uint256 amount)
+    /// @notice Place a bet using USDC. `grossAmount` is skimmed by the pool's
+    ///         protocol fee; the net stake is what ends up bound to the bet.
+    /// @dev    Caller must approve `grossAmount` USDC to THIS contract.
+    function placeBetUSDC(uint256 marketId, uint64 selection, uint256 grossAmount)
+        external
+        validMarket(marketId)
+        inState(marketId, MarketState.Open)
+        whenNotPaused
+    {
+        _placeBetUSDCInternal(msg.sender, marketId, selection, grossAmount, true);
+    }
+
+    /// @notice Place a bet on behalf of a user. Called by ChilizSwapRouter
+    ///         after it has already transferred `netStake` USDC to the pool
+    ///         and paid the protocol fee to treasury.
+    /// @dev    Only callable by SWAP_ROUTER_ROLE. `netStake` is the post-fee
+    ///         amount that will be bound to the bet.
+    function placeBetUSDCFor(address user, uint256 marketId, uint64 selection, uint256 netStake)
         external
         validMarket(marketId)
         inState(marketId, MarketState.Open)
         whenNotPaused
         onlyRole(SWAP_ROUTER_ROLE)
     {
-        _placeBetUSDCInternal(user, marketId, selection, amount, false);
+        _placeBetUSDCInternal(user, marketId, selection, netStake, false);
     }
 
-    /**
-     * @dev Internal: shared logic for USDC bet placement
-     * @param user The user placing the bet
-     * @param marketId Market identifier
-     * @param selection User pick
-     * @param amount USDC amount
-     * @param transferFrom If true, transfers USDC from user via safeTransferFrom
-     */
+    /// @dev Shared placement logic.
+    /// @param transferFrom  true  = direct user bet. We pull gross USDC from
+    ///                      the user, skim the pool's protocol fee to
+    ///                      treasury, forward netStake to the pool, and
+    ///                      record the bet.
+    ///                      false = router bet. USDC is already on the pool
+    ///                      and fee already paid by the router; we just book
+    ///                      the bet.
     function _placeBetUSDCInternal(
         address user,
         uint256 marketId,
-        uint64 selection,
+        uint64  selection,
         uint256 amount,
-        bool transferFrom
+        bool    transferFrom
     ) internal {
-        if (address(usdcToken) == address(0)) revert USDCNotConfigured();
+        if (address(liquidityPool) == address(0)) revert LiquidityPoolNotConfigured();
         if (amount == 0) revert ZeroBetAmount();
-        
+
         OddsRegistry storage registry = _oddsRegistries[marketId];
         if (registry.currentIndex == 0) revert OddsNotSet(marketId);
-        
-        _validateSelection(marketId, selection);
-        
-        uint32 odds = registry.values[registry.currentIndex - 1];
-        uint256 potentialPayout = (amount * odds) / ODDS_PRECISION;
 
+        _validateSelection(marketId, selection);
+
+        uint256 netStake;
         if (transferFrom) {
-            // Check solvency including incoming deposit
-            uint256 availableAfterDeposit = usdcToken.balanceOf(address(this)) + amount;
-            if (totalUSDCLiabilities + potentialPayout > availableAfterDeposit) {
-                revert USDCSolvencyExceeded(totalUSDCLiabilities + potentialPayout, availableAfterDeposit);
+            if (address(usdcToken) == address(0)) revert USDCNotConfigured();
+            uint16 feeBps = liquidityPool.protocolFeeBps();
+            uint256 fee    = (amount * feeBps) / 10_000;
+            netStake       = amount - fee;
+
+            if (fee > 0) {
+                SafeERC20.safeTransferFrom(usdcToken, user, liquidityPool.treasury(), fee);
             }
-            SafeERC20.safeTransferFrom(usdcToken, user, address(this), amount);
+            SafeERC20.safeTransferFrom(usdcToken, user, address(liquidityPool), netStake);
         } else {
-            // USDC already transferred to this contract
-            uint256 usdcBalance = usdcToken.balanceOf(address(this));
-            if (totalUSDCLiabilities + potentialPayout > usdcBalance) {
-                revert USDCSolvencyExceeded(totalUSDCLiabilities + potentialPayout, usdcBalance);
-            }
+            netStake = amount;
         }
-        
+
+        uint32 odds = registry.values[registry.currentIndex - 1];
+        uint256 potentialPayout = (netStake * odds) / ODDS_PRECISION;
+        uint256 netExposure     = potentialPayout - netStake; // odds > 10000
+
         _userBets[marketId][user].push(Bet({
-            amount: amount,
+            amount:    netStake,
             selection: selection,
             oddsIndex: registry.currentIndex,
             timestamp: uint40(block.timestamp),
-            claimed: false
+            claimed:   false
         }));
-        
-        _marketCores[marketId].totalPool += amount;
-        totalUSDCPool += amount;
-        totalUSDCLiabilities += potentialPayout;
-        _marketLiabilities[marketId] += potentialPayout;
-        _selectionLiabilities[marketId][selection] += potentialPayout;
-        
+
+        _marketCores[marketId].totalPool             += netStake;
+        _marketLiabilities[marketId]                 += potentialPayout;
+        _selectionLiabilities[marketId][selection]   += potentialPayout;
+        _marketNetExposure[marketId]                 += netExposure;
+        _selectionNetExposures[marketId][selection]  += netExposure;
+
+        // Pool-side bookkeeping + solvency / cap enforcement. Reverts here
+        // cascade to the user; their USDC transfer is also reverted atomically.
+        liquidityPool.recordBet(address(this), marketId, user, netStake, netExposure);
+
         emit BetPlaced(
             marketId, user,
             _userBets[marketId][user].length - 1,
-            amount, selection, odds, registry.currentIndex
+            netStake, selection, odds, registry.currentIndex
         );
     }
 
-    // --------------------------------------------------------------------------------------------------
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Resolve a market with the final result
-     * @param marketId Market identifier
-     * @param result Encoded result
-     */
-    function resolveMarket(uint256 marketId, uint64 result) 
-        external 
+    // ═══════════════════════════════════════════════════════════════════════
+    // RESOLUTION
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Resolve a market with the final result.
+    /// @dev    Releases every losing selection's reserved net exposure on the
+    ///         pool. Winning-side reservations stay until each winner claims.
+    ///         Net-exposure bookkeeping parallels the payout bookkeeping but
+    ///         is what the pool actually tracks (= `payout - stake`).
+    function resolveMarket(uint256 marketId, uint64 result)
+        external
         validMarket(marketId)
-        onlyRole(RESOLVER_ROLE) 
+        onlyRole(RESOLVER_ROLE)
     {
         MarketCore storage core = _marketCores[marketId];
-
-        // Market must be Closed before resolution (prevents front-running)
         if (core.state != MarketState.Closed) {
             revert InvalidMarketState(marketId, core.state, MarketState.Closed);
         }
-
-        // Validate result is a known selection for this market type (sport-specific)
         _validateSelection(marketId, result);
 
-        core.result = result;
+        core.result     = result;
         core.resolvedAt = uint40(block.timestamp);
-        core.state = MarketState.Resolved;
-        
-        // Deduct losing bets' liabilities (winners' liabilities remain until claimed)
-        uint256 winningLiab = _selectionLiabilities[marketId][result];
-        uint256 losingLiab = _marketLiabilities[marketId] - winningLiab;
-        if (totalUSDCLiabilities >= losingLiab) {
-            totalUSDCLiabilities -= losingLiab;
-        } else {
-            totalUSDCLiabilities = 0;
-        }
-        
+        core.state      = MarketState.Resolved;
+
+        uint256 losingNetExposure =
+            _marketNetExposure[marketId] - _selectionNetExposures[marketId][result];
+        uint256 losingPayout =
+            _marketLiabilities[marketId] - _selectionLiabilities[marketId][result];
+
+        _marketNetExposure[marketId] -= losingNetExposure;
+        _marketLiabilities[marketId] -= losingPayout;
+
+        liquidityPool.settleMarket(address(this), marketId, losingNetExposure);
+
         emit MarketResolved(marketId, result, core.resolvedAt);
     }
 
-    // --------------------------------------------------------------------------------------------------
-    // PAYOUT DISBURSEMENT (Internal)
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
+    // CLAIM / REFUND
+    // ═══════════════════════════════════════════════════════════════════════
 
-    /**
-     * @notice Internal: disburse USDC to a recipient, using PayoutEscrow as fallback
-     * @dev Pays from contract balance first. If insufficient, pulls the deficit
-     *      from the PayoutEscrow into this contract, then transfers the full
-     *      amount to the recipient in a single transfer.
-     *      Reverts if neither source has sufficient funds.
-     * @param to Recipient address
-     * @param amount USDC amount to disburse
-     */
-    function _disburse(address to, uint256 amount) internal {
-        uint256 contractBalance = usdcToken.balanceOf(address(this));
-        if (contractBalance < amount) {
-            if (address(payoutEscrow) == address(0)) {
-                revert InsufficientUSDCBalance(amount, contractBalance);
-            }
-            uint256 deficit = amount - contractBalance;
-            payoutEscrow.disburseTo(address(this), deficit);
-        }
-        SafeERC20.safeTransfer(usdcToken, to, amount);
-    }
-    
-    /**
-     * @notice Claim payout for a winning bet
-     * @param marketId Market identifier
-     * @param betIndex Index of the bet in user's bet array
-     */
-    function claim(uint256 marketId, uint256 betIndex) 
-        external 
-        nonReentrant 
+    /// @notice Claim payout for a winning bet.
+    function claim(uint256 marketId, uint256 betIndex)
+        external
+        nonReentrant
         validMarket(marketId)
         inState(marketId, MarketState.Resolved)
-        whenNotPaused 
+        whenNotPaused
     {
         Bet[] storage userBets = _userBets[marketId][msg.sender];
-        if (betIndex >= userBets.length) {
-            revert BetNotFound(marketId, msg.sender, betIndex);
-        }
-        
+        if (betIndex >= userBets.length) revert BetNotFound(marketId, msg.sender, betIndex);
+
         Bet storage bet = userBets[betIndex];
         if (bet.claimed) revert AlreadyClaimed(marketId, msg.sender, betIndex);
-        
+
         MarketCore storage core = _marketCores[marketId];
-        if (bet.selection != core.result) {
-            revert BetLost(marketId, msg.sender, betIndex);
-        }
-        
-        // Calculate payout using bet's odds (not current odds!)
+        if (bet.selection != core.result) revert BetLost(marketId, msg.sender, betIndex);
+
         uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
         uint256 payout = (bet.amount * betOdds) / ODDS_PRECISION;
-        
-        // CEI: Effects before Interactions
+
+        // CEI: effects before interactions.
         bet.claimed = true;
-        
-        // Reduce liabilities
-        if (totalUSDCLiabilities >= payout) {
-            totalUSDCLiabilities -= payout;
-        } else {
-            totalUSDCLiabilities = 0;
-        }
-        _disburse(msg.sender, payout);
+
+        // Our per-market ledger tracked `potentialPayout` for this winning
+        // bet. Release it as the winner takes their money out.
+        _marketLiabilities[marketId]                  -= payout;
+        _selectionLiabilities[marketId][bet.selection] -= payout;
+
+        uint256 netExp = payout - bet.amount;
+        _marketNetExposure[marketId]                  -= netExp;
+        _selectionNetExposures[marketId][bet.selection] -= netExp;
+
+        // Pool transfers `payout` to the winner and releases `netExp` from
+        // its liability ledger (the exact reservation made on `recordBet`).
+        liquidityPool.payWinner(address(this), marketId, msg.sender, payout, netExp);
+
         emit Payout(marketId, msg.sender, betIndex, payout);
     }
-    
-    /**
-     * @notice Claim refund for a cancelled market
-     * @param marketId Market identifier
-     * @param betIndex Index of the bet in user's bet array
-     */
-    function claimRefund(uint256 marketId, uint256 betIndex) 
-        external 
-        nonReentrant 
+
+    /// @notice Claim refund for a cancelled market.
+    function claimRefund(uint256 marketId, uint256 betIndex)
+        external
+        nonReentrant
         validMarket(marketId)
         inState(marketId, MarketState.Cancelled)
     {
         Bet[] storage userBets = _userBets[marketId][msg.sender];
-        if (betIndex >= userBets.length) {
-            revert BetNotFound(marketId, msg.sender, betIndex);
-        }
-        
+        if (betIndex >= userBets.length) revert BetNotFound(marketId, msg.sender, betIndex);
+
         Bet storage bet = userBets[betIndex];
         if (bet.claimed) revert AlreadyClaimed(marketId, msg.sender, betIndex);
-        
-        uint256 refundAmount = bet.amount;
-        
-        // CEI
+
+        uint256 refund = bet.amount;
+        uint32  betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+        uint256 potentialPayout = (refund * betOdds) / ODDS_PRECISION;
+        uint256 netExp          = potentialPayout - refund;
+
         bet.claimed = true;
-        
-        // Reduce liabilities by potential payout
-        uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-        uint256 potentialPayout = (refundAmount * betOdds) / ODDS_PRECISION;
-        if (totalUSDCLiabilities >= potentialPayout) {
-            totalUSDCLiabilities -= potentialPayout;
-        } else {
-            totalUSDCLiabilities = 0;
-        }
-        _disburse(msg.sender, refundAmount);
-        emit Refund(marketId, msg.sender, betIndex, refundAmount);
+
+        _marketLiabilities[marketId]                  -= potentialPayout;
+        _selectionLiabilities[marketId][bet.selection] -= potentialPayout;
+        _marketNetExposure[marketId]                  -= netExp;
+        _selectionNetExposures[marketId][bet.selection] -= netExp;
+
+        liquidityPool.payRefund(address(this), marketId, msg.sender, refund, netExp);
+        emit Refund(marketId, msg.sender, betIndex, refund);
     }
-    
-    /**
-     * @notice Batch claim all winning bets/refunds for a market in one transaction
-     * @dev May revert with out-of-gas for users with very many bets. Use claimRange for pagination.
-     *      Reverts if the market is not yet Resolved or Cancelled so callers get a clear error
-     *      rather than a silent no-op.
-     * @param marketId Market identifier
-     */
+
+    /// @notice Batch claim all winning/refund bets for a market.
+    /// @dev    May revert OOG for users with very many bets; use `claimRange`.
     function claimAll(uint256 marketId)
         external
         nonReentrant
@@ -725,16 +581,7 @@ abstract contract BettingMatch is
         if (count > 0) _processClaims(marketId, 0, count);
     }
 
-    /**
-     * @notice Paginated batch claim — safe alternative to claimAll for large bet arrays
-     * @dev Process bets from index `start` (inclusive) to `end` (exclusive).
-     *      If `end` exceeds the actual bet count it is clamped automatically.
-     *      Example: user has 500 bets → call claimRange(id, 0, 100), (id, 100, 200), …
-     *      Reverts if the market is not yet Resolved or Cancelled.
-     * @param marketId Market identifier
-     * @param start First bet index to process (0-based, inclusive)
-     * @param end Last bet index to process (exclusive, clamped to array length)
-     */
+    /// @notice Paginated batch claim — safe alternative for large bet arrays.
     function claimRange(uint256 marketId, uint256 start, uint256 end)
         external
         nonReentrant
@@ -750,241 +597,111 @@ abstract contract BettingMatch is
         if (start < cap) _processClaims(marketId, start, cap);
     }
 
-    /**
-     * @dev Internal: process winning/refund claims for bets[start..end).
-     *      Single _disburse call at the end — gas-efficient batching.
-     */
+    /// @dev Internal: process winning/refund claims for bets[start..end).
     function _processClaims(uint256 marketId, uint256 start, uint256 end) internal {
         MarketCore storage core = _marketCores[marketId];
         Bet[] storage userBets = _userBets[marketId][msg.sender];
-
-        uint256 totalPayout = 0;
 
         for (uint256 i = start; i < end; i++) {
             Bet storage bet = userBets[i];
             if (bet.claimed) continue;
 
-            bool shouldPay = false;
-            uint256 amount = 0;
-
             if (core.state == MarketState.Resolved && bet.selection == core.result) {
                 uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-                amount = (bet.amount * betOdds) / ODDS_PRECISION;
-                shouldPay = true;
-            } else if (core.state == MarketState.Cancelled) {
-                amount = bet.amount;
-                shouldPay = true;
-            }
+                uint256 payout = (bet.amount * betOdds) / ODDS_PRECISION;
+                uint256 netExp = payout - bet.amount;
 
-            if (shouldPay) {
                 bet.claimed = true;
+                _marketLiabilities[marketId]                  -= payout;
+                _selectionLiabilities[marketId][bet.selection] -= payout;
+                _marketNetExposure[marketId]                  -= netExp;
+                _selectionNetExposures[marketId][bet.selection] -= netExp;
 
-                if (core.state == MarketState.Cancelled) {
-                    // Refund = bet.amount, but the liability that was reserved was the full
-                    // potential payout (bet.amount * odds). Recompute it here to release the
-                    // correct amount from totalUSDCLiabilities.
-                    uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-                    uint256 potentialPayout = (bet.amount * betOdds) / ODDS_PRECISION;
-                    if (totalUSDCLiabilities >= potentialPayout) {
-                        totalUSDCLiabilities -= potentialPayout;
-                    } else {
-                        totalUSDCLiabilities = 0;
-                    }
-                    emit Refund(marketId, msg.sender, i, amount);
-                } else {
-                    // Resolved win: `amount` is already (bet.amount * betOdds) / ODDS_PRECISION,
-                    // the exact value that was reserved — no second lookup needed.
-                    if (totalUSDCLiabilities >= amount) {
-                        totalUSDCLiabilities -= amount;
-                    } else {
-                        totalUSDCLiabilities = 0;
-                    }
-                    emit Payout(marketId, msg.sender, i, amount);
-                }
-                totalPayout += amount;
+                liquidityPool.payWinner(address(this), marketId, msg.sender, payout, netExp);
+                emit Payout(marketId, msg.sender, i, payout);
+            } else if (core.state == MarketState.Cancelled) {
+                uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
+                uint256 refund = bet.amount;
+                uint256 potentialPayout = (refund * betOdds) / ODDS_PRECISION;
+                uint256 netExp = potentialPayout - refund;
+
+                bet.claimed = true;
+                _marketLiabilities[marketId]                  -= potentialPayout;
+                _selectionLiabilities[marketId][bet.selection] -= potentialPayout;
+                _marketNetExposure[marketId]                  -= netExp;
+                _selectionNetExposures[marketId][bet.selection] -= netExp;
+
+                liquidityPool.payRefund(address(this), marketId, msg.sender, refund, netExp);
+                emit Refund(marketId, msg.sender, i, refund);
             }
         }
-
-        if (totalPayout > 0) {
-            _disburse(msg.sender, totalPayout);
-        }
     }
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // VIEW FUNCTIONS
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Get current odds for a market
-     */
-    function getCurrentOdds(uint256 marketId) external view validMarket(marketId) returns (uint32) {
-        return _getCurrentOdds(marketId);
-    }
-    
-    /**
-     * @notice Get all odds ever used in a market
-     */
-    function getOddsHistory(uint256 marketId) external view validMarket(marketId) returns (uint32[] memory) {
-        return _oddsRegistries[marketId].values;
-    }
-    
-    /**
-     * @notice Get user's bets for a market
-     */
-    function getUserBets(uint256 marketId, address user) 
-        external 
-        view 
-        validMarket(marketId) 
-        returns (Bet[] memory) 
-    {
-        return _userBets[marketId][user];
-    }
-    
-    /**
-     * @notice Get specific bet details including odds value
-     */
-    function getBetDetails(uint256 marketId, address user, uint256 betIndex) 
-        external 
-        view 
-        validMarket(marketId) 
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function getCurrentOdds(uint256 marketId)
+        external view validMarket(marketId) returns (uint32)
+    { return _getCurrentOdds(marketId); }
+
+    function getOddsHistory(uint256 marketId)
+        external view validMarket(marketId) returns (uint32[] memory)
+    { return _oddsRegistries[marketId].values; }
+
+    function getUserBets(uint256 marketId, address user)
+        external view validMarket(marketId) returns (Bet[] memory)
+    { return _userBets[marketId][user]; }
+
+    function getBetDetails(uint256 marketId, address user, uint256 betIndex)
+        external
+        view
+        validMarket(marketId)
         returns (
             uint256 amount,
-            uint64 selection,
-            uint32 odds,
-            uint40 timestamp,
-            bool claimed,
+            uint64  selection,
+            uint32  odds,
+            uint40  timestamp,
+            bool    claimed,
             uint256 potentialPayout
-        ) 
+        )
     {
         Bet[] storage userBets = _userBets[marketId][user];
         if (betIndex >= userBets.length) revert BetNotFound(marketId, user, betIndex);
-        
         Bet storage bet = userBets[betIndex];
         uint32 betOdds = _getOddsByIndex(marketId, bet.oddsIndex);
-        
         return (
-            bet.amount,
-            bet.selection,
-            betOdds,
-            bet.timestamp,
-            bet.claimed,
+            bet.amount, bet.selection, betOdds, bet.timestamp, bet.claimed,
             (bet.amount * betOdds) / ODDS_PRECISION
         );
     }
-    
-    /**
-     * @notice Get market core information
-     */
-    function getMarketCore(uint256 marketId) 
-        external 
-        view 
-        validMarket(marketId) 
-        returns (MarketCore memory) 
-    {
-        return _marketCores[marketId];
-    }
 
-    /**
-     * @notice Get USDC treasury solvency information
-     * @return usdcBalance Current USDC balance held by contract
-     * @return liabilities Outstanding potential USDC payouts
-     * @return pool Total USDC deposited from bets
-     */
-    function getUSDCSolvency() external view returns (
-        uint256 usdcBalance,
-        uint256 liabilities,
-        uint256 pool
-    ) {
-        if (address(usdcToken) != address(0)) {
-            usdcBalance = usdcToken.balanceOf(address(this));
-        }
-        liabilities = totalUSDCLiabilities;
-        pool = totalUSDCPool;
-    }
+    function getMarketCore(uint256 marketId)
+        external view validMarket(marketId) returns (MarketCore memory)
+    { return _marketCores[marketId]; }
 
-    /**
-     * @notice Fund the contract with USDC to ensure treasury solvency for payouts
-     * @param amount USDC amount to deposit
-     * @dev Caller must approve this contract to spend `amount` USDC
-     */
-    function fundUSDCTreasury(uint256 amount) external onlyRole(TREASURY_ROLE) {
-        if (address(usdcToken) == address(0)) revert USDCNotConfigured();
-        SafeERC20.safeTransferFrom(usdcToken, msg.sender, address(this), amount);
-        emit USDCTreasuryFunded(msg.sender, amount);
-    }
+    /// @notice Per-market potential payout for all open winning-side bets.
+    function getMarketLiability(uint256 marketId)
+        external view validMarket(marketId) returns (uint256)
+    { return _marketLiabilities[marketId]; }
 
-    /**
-     * @notice Get the USDC funding deficit for this match contract
-     * @return deficit How much additional USDC is needed (from escrow or treasury)
-     *                 to cover all outstanding liabilities. 0 if fully funded.
-     */
-    function getFundingDeficit() external view returns (uint256 deficit) {
-        if (address(usdcToken) == address(0)) return 0;
-        uint256 balance = usdcToken.balanceOf(address(this));
-        if (balance >= totalUSDCLiabilities) return 0;
-        return totalUSDCLiabilities - balance;
-    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // ADMIN
+    // ═══════════════════════════════════════════════════════════════════════
 
-    // --------------------------------------------------------------------------------------------------
-    // ADMIN FUNCTIONS
-    // --------------------------------------------------------------------------------------------------
-    
-    function emergencyPause() external onlyRole(PAUSER_ROLE) {
-        _pause();
-    }
-    
-    function unpause() external onlyRole(ADMIN_ROLE) {
-        _unpause();
-    }
-    
-    function emergencyWithdrawUSDC(uint256 amount) external onlyRole(TREASURY_ROLE) {
-        if (!paused()) revert ContractNotPaused();
-        if (address(usdcToken) == address(0)) revert USDCNotConfigured();
-        uint256 usdcBalance = usdcToken.balanceOf(address(this));
-        if (amount > usdcBalance) {
-            revert InsufficientUSDCBalance(amount, usdcBalance);
-        }
-        SafeERC20.safeTransfer(usdcToken, msg.sender, amount);
-        emit EmergencyUSDCWithdrawn(msg.sender, amount);
-    }
+    function emergencyPause() external onlyRole(PAUSER_ROLE) { _pause(); }
+    function unpause()        external onlyRole(ADMIN_ROLE)  { _unpause(); }
 
-    /**
-     * @notice Manually reconcile totalUSDCLiabilities after an emergency withdrawal.
-     * @dev After emergencyWithdrawUSDC the on-chain liability counter remains stale
-     *      (too high), which would prevent new bets once the contract is unpaused.
-     *      Call this while still paused to set the correct value before unpausing.
-     *      Only callable while paused to prevent accidental misconfiguration during
-     *      normal operation.
-     * @param newValue The corrected liabilities value (must be <= current USDC balance)
-     */
-    function resetLiabilities(uint256 newValue) external onlyRole(ADMIN_ROLE) {
-        if (!paused()) revert ContractNotPaused();
-        totalUSDCLiabilities = newValue;
-    }
-    
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    // --------------------------------------------------------------------------------------------------
-    // ABSTRACT FUNCTIONS (Sport-specific implementation)
-    // --------------------------------------------------------------------------------------------------
-    
-    /**
-     * @notice Validate that selection is valid for the market type
-     * @dev Override in sport-specific contracts
-     */
+    // ═══════════════════════════════════════════════════════════════════════
+    // ABSTRACT (sport-specific)
+    // ═══════════════════════════════════════════════════════════════════════
+
     function _validateSelection(uint256 marketId, uint64 selection) internal view virtual;
-    
-    /**
-     * @notice Create a new market (sport-specific)
-     * @param marketType Market type identifier
-     * @param initialOdds Initial odds (x10000)
-     * @param line Line value (e.g., 25 = 2.5 goals, 0 = no line)
-     */
+
     function addMarketWithLine(bytes32 marketType, uint32 initialOdds, int16 line) external virtual;
-    
-    /**
-     * @notice Get market type information (sport-specific)
-     */
+
     function getMarketInfo(uint256 marketId) external view virtual returns (
         bytes32 marketType,
         MarketState state,
@@ -993,10 +710,23 @@ abstract contract BettingMatch is
         uint256 totalPool
     );
 
-    // --------------------------------------------------------------------------------------------------
+    // ═══════════════════════════════════════════════════════════════════════
     // STORAGE GAP
-    // --------------------------------------------------------------------------------------------------
-    
-    // 12 named slots used above + 38 gap = 50 total (OZ upgradeable convention)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Named slots above:
+    //   1. matchName
+    //   2. sportType
+    //   3. marketCount
+    //   4. _oddsRegistries (mapping)
+    //   5. _userBets (mapping)
+    //   6. _marketCores (mapping)
+    //   7. usdcToken
+    //   8. liquidityPool
+    //   9. _marketLiabilities (mapping)
+    //  10. _selectionLiabilities (mapping)
+    //  11. _marketNetExposure (mapping)
+    //  12. _selectionNetExposures (mapping)
+    // 12 named slots + 38 gap = 50 total (OZ upgradeable convention).
     uint256[38] private __gap;
 }

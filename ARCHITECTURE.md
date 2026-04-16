@@ -12,12 +12,11 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - **Dynamic Odds**: Real-time odds set by ODDS_SETTER_ROLE (x10000 precision)
 - **Role-Based Access Control**: ADMIN_ROLE, RESOLVER_ROLE, PAUSER_ROLE, TREASURY_ROLE, ODDS_SETTER_ROLE, SWAP_ROUTER_ROLE
 
-### 2. Streaming Wallet System (Beacon Proxy Pattern)
-- **StreamBeaconRegistry**: Manages UpgradeableBeacon for atomic upgrades
-- **StreamWalletFactory**: Deploys BeaconProxy instances for streamers
-- **StreamWallet**: Implementation contract with subscription & donation logic
+### 2. Streaming Wallet System (UUPS Proxy Pattern, factory-gated upgrades)
+- **StreamWalletFactory**: Deploys `ERC1967Proxy` instances for streamers and holds the current implementation pointer
+- **StreamWallet**: UUPS upgradeable implementation with subscription & donation logic
 - **USDC Settlement**: All donations and subscriptions settled in USDC
-- **Upgradeability**: All streamer wallets upgrade simultaneously via beacon
+- **Upgradeability**: Each streamer wallet is an independent UUPS proxy. `StreamWallet._authorizeUpgrade()` is locked to the factory, so only the factory owner (via `StreamWalletFactory.upgradeWallet(streamer, newImpl)`) can upgrade a wallet. Streamers cannot self-upgrade. Upgrading many wallets is an **O(N) operation** — one transaction per wallet — not atomic. There is no `StreamBeaconRegistry`; it was designed but not built.
 
 ### 3. Unified Swap Router
 - **ChilizSwapRouter** (`src/swap/ChilizSwapRouter.sol`): Single swap adapter for the entire platform
@@ -223,173 +222,116 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    title ChilizTV Streaming System - Complete Lifecycle (Beacon Proxy)
-    
+    title ChilizTV Streaming System - Complete Lifecycle (UUPS Proxy, factory-gated)
+
     actor Admin as System Admin
     actor Streamer as Streamer
     actor Viewer as Viewer/Donor
-    
-    participant Registry as StreamBeaconRegistry
-    participant Beacon as UpgradeableBeacon
+
     participant Impl as StreamWallet Logic
     participant Factory as StreamWalletFactory
-    participant Wallet as StreamWallet Proxy
+    participant Router as ChilizSwapRouter
+    participant Wallet as StreamWallet Proxy (ERC1967)
     participant Treasury as Treasury Multisig
 
     rect rgb(200, 220, 255)
         Note over Admin,Treasury: PHASE 1: STREAMING SYSTEM DEPLOYMENT
-        
-        Admin->>Impl: Deploy StreamWallet.sol
-        activate Impl
-        Impl-->>Admin: Implementation deployed
-        deactivate Impl
-        
-        Admin->>Registry: Deploy StreamBeaconRegistry(admin)
-        activate Registry
-        Registry-->>Admin: Registry deployed
-        deactivate Registry
-        
-        Admin->>Registry: createBeacon(streamWalletImpl)
-        activate Registry
-        Registry->>Beacon: Deploy UpgradeableBeacon(impl, registry)
-        activate Beacon
-        Beacon-->>Registry: Beacon created
-        deactivate Beacon
-        Registry-->>Admin: emit BeaconCreated(beacon, impl)
-        deactivate Registry
-        
-        Admin->>Factory: Deploy StreamWalletFactory(registry, treasury)
+
+        Admin->>Factory: Deploy StreamWalletFactory(treasury, defaultFeeBps, kayenRouter, usdc)
         activate Factory
-        Factory-->>Admin: Factory deployed âœ“
+        Factory->>Impl: new StreamWallet()   (implementation deployed inside constructor)
+        activate Impl
+        Impl-->>Factory: impl address
+        deactivate Impl
+        Factory-->>Admin: Factory deployed, implementation pinned
         deactivate Factory
-        
-        Note right of Factory: System ready to create streamer wallets
+
+        Note right of Factory: Implementation is mutable on the factory<br/>(setImplementation) — used for NEW proxies only.<br/>Existing proxies are upgraded individually<br/>via factory.upgradeWallet(streamer, newImpl).
     end
 
     rect rgb(230, 255, 230)
         Note over Admin,Treasury: PHASE 2: STREAMER WALLET CREATION
-        
-        Streamer->>Factory: createStreamWallet()
+
+        Viewer->>Factory: subscribeToStream(streamer, duration, amount, ...) {token or CHZ}
         activate Factory
-        
-        Factory->>Registry: getBeacon()
-        activate Registry
-        Registry-->>Factory: return beacon address
-        deactivate Registry
-        
-        Factory->>Wallet: Deploy BeaconProxy(beacon, initData)
+        Note right of Factory: If streamer has no wallet yet,<br/>factory lazily deploys ERC1967Proxy,<br/>then forwards the call.
+
+        Factory->>Wallet: new ERC1967Proxy(impl, initData)
         activate Wallet
-        
-        Wallet->>Beacon: implementation()
-        activate Beacon
-        Beacon-->>Wallet: return streamWalletImpl
-        deactivate Beacon
-        
-        Wallet->>Impl: delegatecall initialize(streamer, treasury)
+        Wallet->>Impl: delegatecall initialize(streamer, treasury, feeBps, kayenRouter, usdc)
         activate Impl
-        Note right of Impl: Set streamer as owner<br/>Store treasury address<br/>Initialize subscription system
-        Impl-->>Wallet: Initialized âœ“
+        Note right of Impl: streamer = beneficiary<br/>factory = upgrade authority<br/>treasury = fee recipient
+        Impl-->>Wallet: Initialized ✓
         deactivate Impl
-        
-        Wallet-->>Factory: Proxy deployed at 0xSTREAM...
-        Factory-->>Streamer: emit WalletCreated(0xSTREAM..., streamer)
+        Wallet-->>Factory: proxy address
         deactivate Wallet
+
+        Factory-->>Viewer: emit StreamWalletCreated(streamer, wallet)
         deactivate Factory
-        
-        Note over Wallet: Streamer wallet now operational<br/>All wallets upgrade atomically via beacon
     end
 
     rect rgb(255, 240, 220)
-        Note over Admin,Treasury: PHASE 3: SUBSCRIPTIONS & DONATIONS
-        
-        Note over Viewer: Viewer pays via ChilizSwapRouter<br/>Any token â†’ USDC â†’ streamer wallet
-        
-        Viewer->>Wallet: subscribeWithUSDC(streamer, duration, 100e6)
+        Note over Admin,Treasury: PHASE 3: SUBSCRIPTIONS & DONATIONS (all settle in USDC)
+
+        Note over Viewer: Preferred path — all entrypoints live on ChilizSwapRouter<br/>Any token / CHZ / USDC → swap → USDC → split → wallet
+
+        Viewer->>Router: donateWithCHZ(streamer, message, minOut, deadline) {value: 50 CHZ}
+        activate Router
+        Note right of Router: Swap CHZ → USDC via Kayen (masterRouter)<br/>Split: fee = usdc × feeBps / 10_000<br/>streamerAmount = usdc - fee
+        Router->>Treasury: USDC fee transfer
+        Router->>Wallet: USDC streamer-amount transfer
+        Router->>Wallet: recordDonationByRouter(donor, usdc, message)
         activate Wallet
-        Wallet->>Impl: delegatecall subscribe()
-        activate Impl
-        
-        Note right of Impl: Calculate USDC split:<br/>platformFee = 100 Ã— 5% = 5 USDC<br/>streamerAmount = 95 USDC<br/><br/>Update subscription:<br/>subscriptions[viewer] = block.timestamp + 30 days
-        
-        Impl->>Treasury: transfer(5 USDC)
-        activate Treasury
-        Treasury-->>Impl: Fee received âœ“
-        deactivate Treasury
-        
-        Note right of Impl: streamerBalance += 95 USDC
-        Impl-->>Wallet: emit Subscribed(viewer, duration, 100e6)
-        deactivate Impl
-        Wallet-->>Viewer: Subscription active âœ“
+        Wallet-->>Router: state updated (lifetimeDonations, totalRevenue)
         deactivate Wallet
-        
-        Viewer->>Wallet: donateWithCHZ(streamer, message, minOut, deadline) {value: 50 CHZ}
+        Router-->>Viewer: emit DonationWithCHZ(...)
+        deactivate Router
+
+        Viewer->>Router: subscribeWithUSDC(streamer, duration, 100e6)
+        activate Router
+        Router->>Wallet: USDC split transfers (fee → treasury, rest → wallet)
+        Router->>Wallet: recordSubscriptionByRouter(subscriber, usdc, duration)
         activate Wallet
-        Note right of Wallet: ChilizSwapRouter<br/>swaps CHZ â†’ USDC<br/>via Kayen DEX
-        Wallet->>Impl: delegatecall donate()
-        activate Impl
-        
-        Note right of Impl: Calculate USDC split:<br/>platformFee = swapped Ã— 5%<br/>streamerAmount = swapped Ã— 95%
-        
-        Impl->>Treasury: transfer(fee USDC)
-        activate Treasury
-        Treasury-->>Impl: Fee received âœ“
-        deactivate Treasury
-        
-        Note right of Impl: streamerBalance += streamerAmount USDC
-        Impl-->>Wallet: emit Donated(viewer, amount)
-        deactivate Impl
-        Wallet-->>Viewer: Donation recorded âœ“
+        Note right of Wallet: Update subscriptions[viewer]:<br/>if active & not expired → extend from expiry<br/>else → start from block.timestamp
+        Wallet-->>Router: state updated
         deactivate Wallet
+        Router-->>Viewer: emit SubscriptionWithUSDCEvent(...)
+        deactivate Router
+
+        Note over Viewer,Factory: Legacy direct-from-factory path (fan-token only):<br/>Factory.subscribeToStream / donateToStream pulls the token,<br/>approves the wallet, then calls wallet.recordSubscription / donateFor —<br/>the wallet itself swaps via IKayenRouter.
     end
 
     rect rgb(255, 230, 230)
         Note over Admin,Treasury: PHASE 4: STREAMER WITHDRAWAL
-        
-        Streamer->>Wallet: withdraw(amount=100e6)
+
+        Streamer->>Wallet: withdrawRevenue()
         activate Wallet
-        Wallet->>Impl: delegatecall withdraw()
-        activate Impl
-        
-        Note right of Impl: Check USDC balance:<br/>streamerBalance = 142.5 USDC<br/>requested = 100 USDC<br/>âœ“ sufficient balance
-        
-        Note right of Impl: Update state:<br/>streamerBalance -= 100 USDC<br/>new balance = 42.5 USDC
-        
-        Impl->>Streamer: transfer(100 USDC)
-        activate Streamer
-        Streamer-->>Impl: Withdrawal received âœ“
-        deactivate Streamer
-        
-        Impl-->>Wallet: emit Withdrawn(streamer, 100e6)
-        deactivate Impl
-        Wallet-->>Streamer: Withdrawal complete âœ“
+        Note right of Wallet: Drains full USDC balance of the wallet<br/>to the streamer (no amount parameter).<br/>totalWithdrawn accounting updated.
+        Wallet->>Streamer: safeTransfer(usdc, balance)
+        Wallet-->>Streamer: emit RevenueWithdrawn(streamer, amount)
         deactivate Wallet
     end
 
     rect rgb(240, 240, 255)
-        Note over Admin,Treasury: PHASE 5: ATOMIC UPGRADE (ALL WALLETS)
-        
-        Admin->>Impl: Deploy StreamWalletV2.sol (new features)
+        Note over Admin,Treasury: PHASE 5: PER-WALLET UPGRADE (NOT ATOMIC)
+
+        Admin->>Impl: Deploy StreamWalletV2.sol
         activate Impl
-        Impl-->>Admin: New implementation deployed at 0xV2...
+        Impl-->>Admin: new impl at 0xV2...
         deactivate Impl
-        
-        Admin->>Registry: upgradeBeacon(0xV2...)
-        activate Registry
-        Registry->>Beacon: upgradeTo(0xV2...)
-        activate Beacon
-        Note right of Beacon: Update implementation pointer<br/>All existing BeaconProxies<br/>now use V2 logic
-        Beacon-->>Registry: Upgrade complete
-        deactivate Beacon
-        Registry-->>Admin: emit BeaconUpgraded(0xV2...)
-        deactivate Registry
-        
-        Note over Wallet: All streamer wallets upgraded instantly<br/>No individual proxy updates needed<br/>âœ“ Atomic upgrade via beacon pattern
+
+        Admin->>Factory: setImplementation(0xV2...)
+        Note right of Factory: Only changes the impl used for<br/>NEW proxies. Existing wallets untouched.
+
+        Admin->>Factory: upgradeWallet(streamer, 0xV2...)
+        Factory->>Wallet: upgradeToAndCall(0xV2...)
+        Note right of Wallet: StreamWallet._authorizeUpgrade<br/>enforces msg.sender == factory.<br/>Repeat once PER wallet — there is no beacon,<br/>so upgrading N wallets is N transactions.
     end
 
     rect rgb(240, 240, 240)
         Note over Admin,Treasury: FINAL STATE SUMMARY
-        
-        Note over Wallet: Streamer Wallet State:<br/>âœ“ Total received: ~150 USDC (settled in USDC)<br/>âœ“ Platform fees: ~7.5 USDC to Treasury<br/>âœ“ Streamer earnings: ~142.5 USDC<br/>âœ“ Withdrawn: 100 USDC<br/>âœ“ Remaining balance: ~42.5 USDC<br/>âœ“ Active subscription: 1 viewer<br/><br/>Payment Paths Supported:<br/>âœ“ Native CHZ â†’ USDC via ChilizSwapRouter<br/>âœ“ Fan tokens (ERC20) â†’ USDC via ChilizSwapRouter<br/>âœ“ USDC direct (no swap)<br/><br/>Beacon Upgrade:<br/>âœ“ All wallets using V2 logic<br/>âœ“ Zero downtime upgrade
+
+        Note over Wallet: Streamer Wallet State:<br/>✓ Revenue settled in USDC (6 decimals)<br/>✓ Platform fees sent to Treasury on every payment<br/>✓ Streamer share accumulates in wallet; withdrawRevenue() drains it<br/><br/>Payment Paths Supported (via ChilizSwapRouter):<br/>✓ Native CHZ → USDC<br/>✓ Any ERC20 / Fan Token → USDC<br/>✓ USDC direct (no swap)<br/><br/>Upgrade Model:<br/>✓ Per-wallet UUPS, factory-gated<br/>✗ NOT atomic — no beacon, no StreamBeaconRegistry<br/>✓ Streamer cannot self-upgrade (factory-only authorize)
     end
 ```
 
@@ -438,10 +380,10 @@ graph TD
   - Requires `DEFAULT_ADMIN_ROLE` to authorize upgrades
   - Storage layout preserved via `@openzeppelin/contracts-upgradeable`
 
-- **Streaming System**: Beacon Proxy
-  - All streamer wallets upgrade atomically
-  - Single beacon upgrade affects all instances
-  - Managed by `StreamBeaconRegistry` owner (multisig recommended)
+- **Streaming System**: UUPS per wallet, factory-gated
+  - Each streamer wallet is an independent ERC1967 proxy
+  - `_authorizeUpgrade` is locked to the `StreamWalletFactory`
+  - Upgrades are applied one wallet at a time via `StreamWalletFactory.upgradeWallet(streamer, newImpl)` (multisig recommended as factory owner). **Not atomic** across wallets.
 
 ### 2. Reentrancy Protection
 - `ReentrancyGuardUpgradeable` on all state-changing functions
@@ -495,13 +437,31 @@ forge script script/DeployStreaming.s.sol \
 ```
 
 ### Post-Deployment
-1. âœ… Verify all contracts on block explorer
-2. âœ… Transfer factory ownership to multisig
-3. âœ… Test match creation flow
-4. âœ… Test streamer wallet creation flow
-5. âœ… Verify role assignments
-6. âœ… Test emergency pause/unpause
-7. âœ… Monitor first production bets/subscriptions
+
+**Generic checks**
+1. Verify all contracts on block explorer
+2. Transfer factory ownerships (Betting + Stream) to the multisig
+3. Verify role assignments
+4. Test emergency pause/unpause
+5. Monitor first production bets/subscriptions
+
+**⚠ Required wiring — every new BettingMatch proxy**
+These calls are NOT done by the factory and, if skipped, will silently break bets or claims:
+
+| # | Call | Who | Consequence if skipped |
+|---|------|-----|------------------------|
+| 1 | `match.setUSDCToken(usdc)` | `ADMIN_ROLE` | `placeBetUSDC` reverts `USDCNotConfigured` |
+| 2 | `match.setPayoutEscrow(escrow)` | `ADMIN_ROLE` | `_disburse` reverts `InsufficientUSDCBalance` once local balance is exhausted |
+| 3 | `escrow.authorizeMatch(match, cap)` | escrow owner (Safe) | Escrow refuses `disburseTo` → same symptom as (2) |
+| 4 | `match.grantRole(RESOLVER_ROLE, oracle)` | `DEFAULT_ADMIN_ROLE` | `resolveMarket` reverts (RESOLVER is **not** auto-granted at init by design; see Role-Based Access Control) |
+| 5 | `match.grantRole(SWAP_ROUTER_ROLE, ChilizSwapRouter)` | `DEFAULT_ADMIN_ROLE` | Any `placeBetWith*` through the router reverts |
+| 6 | (optional M-02) `ChilizSwapRouter.setMatchFactory(bettingFactory)` | router owner | Router will forward USDC to any address, not only factory-registered matches |
+
+**⚠ Required wiring — ChilizSwapRouter ↔ StreamWalletFactory**
+The router verifies that the factory knows about it before accepting the registration. Correct order:
+
+1. `StreamWalletFactory.setSwapRouter(chilizSwapRouter)`
+2. `ChilizSwapRouter.setStreamWalletFactory(streamWalletFactory)` — this reverts `RouterNotConfiguredOnFactory` if step 1 was skipped.
 
 ---
 
@@ -514,7 +474,6 @@ forge script script/DeployStreaming.s.sol \
 | BettingMatchFactory | TBD | Chiliz Spicy Testnet |
 | ChilizSwapRouter | TBD | Chiliz Spicy Testnet |
 | StreamWallet Implementation | TBD | Chiliz Spicy Testnet |
-| StreamBeaconRegistry | TBD | Chiliz Spicy Testnet |
 | StreamWalletFactory | TBD | Chiliz Spicy Testnet |
 | USDC Token | TBD | Chiliz Spicy Testnet |
 | PayoutEscrow | TBD | Chiliz Spicy Testnet |
@@ -535,9 +494,8 @@ src/
 â”œâ”€â”€ swap/
 â”‚   â””â”€â”€ ChilizSwapRouter.sol       # Unified CHZ / Token / USDC swap router (betting + streaming)
 â”œâ”€â”€ streamer/
-â”‚   â”œâ”€â”€ StreamWallet.sol           # Subscription & donation logic (USDC)
-â”‚   â”œâ”€â”€ StreamBeaconRegistry.sol   # Manages UpgradeableBeacon
-â”‚   â””â”€â”€ StreamWalletFactory.sol    # Factory for BeaconProxy deployment
+â”‚   â”œâ”€â”€ StreamWallet.sol           # Subscription & donation logic, UUPS (USDC-denominated)
+â”‚   â””â”€â”€ StreamWalletFactory.sol    # Factory for ERC1967Proxy deployment + per-wallet upgrades
 â”œâ”€â”€ interfaces/
 â”‚   â”œâ”€â”€ IKayenMasterRouterV2.sol   # Kayen DEX native CHZ swap interface
 â”‚   â”œâ”€â”€ IKayenRouter.sol           # Kayen DEX ERC20-to-ERC20 swap interface
@@ -556,8 +514,8 @@ test/
 â”œâ”€â”€ BettingMatchTest.t.sol         # Core USDC betting + dynamic odds tests
 â”œâ”€â”€ BasketballMatchTest.t.sol      # Basketball lifecycle tests
 â”œâ”€â”€ PayoutEscrowTest.t.sol         # PayoutEscrow funding, disbursement, whitelist
-â”œâ”€â”€ StreamBeaconRegistryTest.t.sol  # Streaming system tests
-â”œâ”€â”€ StreamSwapRouterTest.t.sol     # ChilizSwapRouter streaming payment paths
+â”œâ”€â”€ StreamWalletTest.t.sol         # StreamWallet + StreamWalletFactory UUPS upgrade tests
+â”œâ”€â”€ ChilizSwapRouterTest.t.sol     # ChilizSwapRouter betting + streaming payment paths
 â”œâ”€â”€ SwapIntegrationTest.t.sol      # ChilizSwapRouter betting integration tests
 â””â”€â”€ mocks/
     â””â”€â”€ MockUSDC.sol               # Mock USDC token for testing
@@ -577,15 +535,23 @@ FootballMatch proxy = FootballMatch(payable(matchProxyAddress));
 proxy.upgradeToAndCall(address(newImpl), "");
 ```
 
-### Beacon Upgrade (StreamWallet)
+### UUPS Upgrade (StreamWallet — per-wallet, factory-gated)
 ```solidity
 // 1. Deploy new implementation
 StreamWalletV2 newImpl = new StreamWalletV2();
 
-// 2. Upgrade beacon (upgrades ALL streamer wallets atomically)
-StreamBeaconRegistry registry = StreamBeaconRegistry(registryAddress);
-registry.upgradeBeacon(address(newImpl));
+// 2. (Optional) Point the factory at it for FUTURE wallet deployments
+StreamWalletFactory factory = StreamWalletFactory(factoryAddress);
+factory.setImplementation(address(newImpl));
+
+// 3. Upgrade each existing streamer wallet individually
+//    `_authorizeUpgrade` on StreamWallet is locked to the factory, so this
+//    MUST go through the factory. Upgrading N wallets = N transactions.
+for (address streamer : existingStreamers) {
+    factory.upgradeWallet(streamer, address(newImpl));
+}
 ```
+> **Not a beacon.** There is no `StreamBeaconRegistry` and no `UpgradeableBeacon`. A Beacon-based atomic-upgrade model was considered but not implemented — upgrades are per-wallet by design so that an individual streamer can be rolled back if needed.
 
 ---
 

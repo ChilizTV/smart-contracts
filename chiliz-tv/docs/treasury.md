@@ -1,5 +1,7 @@
 # Treasury & Gnosis Safe Operations
 
+> **Roadmap note (2026-04-16).** The current treasury model is a **static, Safe-funded `PayoutEscrow`** — described in this doc. A **liquidity-pool model** (LPs deposit to back payouts and earn yield from the house edge priced into fixed odds) was agreed on 2026-04-15 as the future direction. No LP contract exists in the current codebase. When the LP-pool work starts, this document — and the escrow auth/fund flow described below — will need to be superseded or augmented. Until then, `PayoutEscrow` is the live, authoritative solvency mechanism.
+
 ## Architecture
 
 Each network has **one Gnosis Safe** that serves as the treasury. The Safe:
@@ -34,8 +36,12 @@ For every match contract that needs payout support, the Safe executes:
 
 ```
 Target:   PayoutEscrow
-Function: authorizeMatch(address matchContract)
+Function: authorizeMatch(address matchContract, uint256 cap)
+Params:   matchContract = <BettingMatch proxy>
+          cap           = max cumulative USDC this match may pull from escrow
 ```
+The `cap` is added to `totalAllocated`, reserving that much of the escrow's
+balance for this match. Use `updateMatchCap` to adjust it later.
 
 ### 2. Set Escrow on Each Match
 
@@ -149,8 +155,8 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
   {
     "to": "<PayoutEscrow>",
     "value": "0",
-    "data": "authorizeMatch(address)",
-    "params": ["<match1>"]
+    "data": "authorizeMatch(address,uint256)",
+    "params": ["<match1>", "<cap in 6-decimal USDC>"]
   },
   {
     "to": "<USDC>",
