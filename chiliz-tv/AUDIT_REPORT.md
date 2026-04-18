@@ -15,7 +15,7 @@ The codebase is **well-structured and functional**. All core payment paths are i
 - ✅ Fan token→USDC swap betting via ChilizSwapRouter
 - ✅ Fan token donations/subscriptions via StreamWallet
 - ✅ CHZ→USDC streaming donations via ChilizSwapRouter
-- ✅ PayoutEscrow for Safe-funded shortfall payouts
+- ✅ LiquidityPool (ERC-4626) as single source of bet liquidity
 
 **No critical security vulnerabilities found.** Minor improvements recommended for documentation and future extensibility.
 
@@ -31,13 +31,13 @@ The codebase is **well-structured and functional**. All core payment paths are i
 | **Betting** | FootballMatch | [src/betting/FootballMatch.sol](src/betting/FootballMatch.sol) | Football markets (WINNER, GOALS_TOTAL, etc.) |
 | **Betting** | BasketballMatch | [src/betting/BasketballMatch.sol](src/betting/BasketballMatch.sol) | Basketball markets (spreads, quarters) |
 | **Betting** | BettingMatchFactory | [src/betting/BettingMatchFactory.sol](src/betting/BettingMatchFactory.sol) | Factory for UUPS proxies |
-| **Betting** | PayoutEscrow | [src/betting/PayoutEscrow.sol](src/betting/PayoutEscrow.sol) | Shared USDC escrow for shortfall payouts |
+| **Liquidity** | LiquidityPool | [src/liquidity/LiquidityPool.sol](src/liquidity/LiquidityPool.sol) | ERC-4626 vault: single source of bet liquidity |
 | **Swap** | ChilizSwapRouter | [src/swap/ChilizSwapRouter.sol](src/swap/ChilizSwapRouter.sol) | Unified swap router: CHZ/Token/USDC → USDC for betting + streaming |
 | **Streaming** | StreamWallet | [src/streamer/StreamWallet.sol](src/streamer/StreamWallet.sol) | Per-streamer revenue wallet |
 | **Streaming** | StreamWalletFactory | [src/streamer/StreamWalletFactory.sol](src/streamer/StreamWalletFactory.sol) | Wallet deployment + entry points |
 | **Interface** | IKayenMasterRouterV2 | [src/interfaces/IKayenMasterRouterV2.sol](src/interfaces/IKayenMasterRouterV2.sol) | Kayen native CHZ swaps |
 | **Interface** | IKayenRouter | [src/interfaces/IKayenRouter.sol](src/interfaces/IKayenRouter.sol) | Kayen token-to-token swaps |
-| **Interface** | IPayoutEscrow | [src/interfaces/IPayoutEscrow.sol](src/interfaces/IPayoutEscrow.sol) | PayoutEscrow disbursement interface |
+| **Interface** | ILiquidityPool | [src/interfaces/ILiquidityPool.sol](src/interfaces/ILiquidityPool.sol) | LiquidityPool betting-facing interface |
 
 ### 1.2 Role Hierarchy
 
@@ -230,7 +230,7 @@ sequenceDiagram
 | 3 | Fan token → donation | ✅ IMPLEMENTED | `StreamWallet.donate` | Swaps to USDC |
 | 4 | CHZ → USDC → donation | ✅ IMPLEMENTED | `ChilizSwapRouter.donateWithCHZ` | Direct to streamer |
 | 5 | Pull payment claims | ✅ IMPLEMENTED | `BettingMatch.claim`, `claimAll` | Reentrancy protected |
-| 6 | Treasury solvency | ✅ IMPLEMENTED | `totalUSDCLiabilities` tracking + PayoutEscrow | Checked on bet placement; escrow fallback for shortfalls |
+| 6 | Treasury solvency | ✅ IMPLEMENTED | `totalLiabilities` + per-market/match caps in LiquidityPool | Checked on `recordBet`; bets rejected if pool cannot cover |
 | 7 | Fan token → bet | ✅ IMPLEMENTED | `ChilizSwapRouter.placeBetWithToken` | Via unified swap router |
 
 ---

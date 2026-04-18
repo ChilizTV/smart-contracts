@@ -1,131 +1,120 @@
 # Treasury & Gnosis Safe Operations
 
-> **Roadmap note (2026-04-16).** The current treasury model is a **static, Safe-funded `PayoutEscrow`** — described in this doc. A **liquidity-pool model** (LPs deposit to back payouts and earn yield from the house edge priced into fixed odds) was agreed on 2026-04-15 as the future direction. No LP contract exists in the current codebase. When the LP-pool work starts, this document — and the escrow auth/fund flow described below — will need to be superseded or augmented. Until then, `PayoutEscrow` is the live, authoritative solvency mechanism.
-
 ## Architecture
 
 Each network has **one Gnosis Safe** that serves as the treasury. The Safe:
-- Owns the `PayoutEscrow` contract
-- Funds it with USDC to back betting payouts
-- Controls authorization of BettingMatch proxies
-- Can pause/unpause the escrow in emergencies
+- Holds `DEFAULT_ADMIN_ROLE` on the `LiquidityPool` (authorizes matches, sets parameters, upgrades)
+- Is the `treasury` address on `LiquidityPool` (receives protocol fees skimmed from stakes)
+- Optionally holds admin roles on `BettingMatchFactory`, `StreamWalletFactory`, `ChilizSwapRouter`
 
 ```
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚  Gnosis Safe     â”‚
-â”‚  (Treasury)      â”‚
-â”‚                  â”‚
-â”‚  Owns:           â”‚
-â”‚  - PayoutEscrow  â”‚
-â”‚  - BettingMatchFactory (optional) â”‚
-â”‚  - ChilizSwapRouter (optional)    â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-         â”‚ fund() / authorizeMatch() / pause()
-         â–¼
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚  PayoutEscrow    â”‚â—„â”€â”€â”€â”€â”€â”€ BettingMatch proxies call disburseTo()
-â”‚  (USDC Reserve)  â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+┌──────────────────────────────┐
+│  Gnosis Safe (Treasury)      │
+│                              │
+│  DEFAULT_ADMIN_ROLE on:      │
+│  - LiquidityPool             │
+│  - BettingMatchFactory       │
+│  - ChilizSwapRouter          │
+└──────────────┬───────────────┘
+               │ authorizeMatch() / setProtocolFeeBps() / pause() / upgrade
+               ▼
+┌──────────────────────────────┐
+│  LiquidityPool (ERC-4626)    │◄──── BettingMatch proxies call:
+│  Single USDC vault           │      recordBet / payWinner / payRefund / settleMarket
+│  treasury = Safe address     │
+└──────────────────────────────┘
+               ▲
+               │ deposit USDC → receive ctvLP shares
+┌──────────────────────────────┐
+│  Liquidity Providers (LPs)   │
+└──────────────────────────────┘
 ```
 
 ## Initial Setup (After Deployment)
 
 ### 1. Authorize Each BettingMatch Proxy
 
-For every match contract that needs payout support, the Safe executes:
+For every match contract, the Safe executes:
 
 ```
-Target:   PayoutEscrow
-Function: authorizeMatch(address matchContract, uint256 cap)
-Params:   matchContract = <BettingMatch proxy>
-          cap           = max cumulative USDC this match may pull from escrow
-```
-The `cap` is added to `totalAllocated`, reserving that much of the escrow's
-balance for this match. Use `updateMatchCap` to adjust it later.
-
-### 2. Set Escrow on Each Match
-
-The match admin (or Safe if it holds ADMIN_ROLE) calls:
-
-```
-Target:   <BettingMatch proxy>
-Function: setPayoutEscrow(address escrow)
-Param:    <PayoutEscrow address>
+Target:   LiquidityPool
+Function: authorizeMatch(address matchContract)
+Params:   matchContract = <BettingMatch proxy address>
+Effect:   Grants MATCH_ROLE to the proxy
 ```
 
-### 3. Fund the Escrow
+### 2. Configure Liability Caps (Optional — has sane defaults)
 
-The Safe executes two transactions (can be batched):
+```
+Target:   LiquidityPool
+Function: setMaxLiabilityPerMarketBps(uint16 bps)
+Params:   bps = max per-market exposure as bps of totalAssets() (e.g. 500 = 5%)
 
-**Transaction 1 â€” Approve USDC:**
+Target:   LiquidityPool
+Function: setMaxLiabilityPerMatchBps(uint16 bps)
+Params:   bps = max per-match exposure as bps of totalAssets() (e.g. 2000 = 20%)
+```
+
+### 3. Seed Initial Liquidity (Safe can act as first LP)
+
+The Safe (or any LP) deposits USDC directly:
+
 ```
 Target:   <USDC token address>
 Function: approve(address spender, uint256 amount)
-Params:   spender = <PayoutEscrow address>
-          amount  = <funding amount in 6-decimal USDC>
-```
+Params:   spender = <LiquidityPool address>
+          amount  = <deposit amount in 6-decimal USDC>
 
-**Transaction 2 â€” Deposit:**
-```
-Target:   <PayoutEscrow address>
-Function: fund(uint256 amount)
-Param:    amount = <same funding amount>
+Target:   <LiquidityPool address>
+Function: deposit(uint256 assets, address receiver)
+Params:   assets   = <same deposit amount>
+          receiver = <Safe address or LP address>
 ```
 
 ## Operational Runbook
 
-### Monitoring Escrow Health
+### Monitoring Pool Health
 
 Query these view functions periodically (e.g., every hour):
 
 | Check | Call | Healthy When |
 |-------|------|--------------|
-| Escrow balance | `escrow.availableBalance()` | > sum of all match deficits |
-| Per-match deficit | `match.getFundingDeficit()` | 0 (fully funded) or small |
-| Total liabilities | `match.totalUSDCLiabilities()` | Decreasing after claims |
-| Total disbursed | `escrow.totalDisbursed()` | Growing slowly |
+| Free balance | `pool.freeBalance()` | > 0; ideally > projected max payout |
+| Total liabilities | `pool.totalLiabilities()` | Decreasing after settlement windows |
+| NAV per share | `pool.convertToAssets(1e18)` | Stable or growing (house edge compounding) |
+| Per-match liability | `pool.matchLiability(matchAddr)` | < `maxLiabilityPerMatchBps × totalAssets / 10_000` |
 
-**Alert threshold**: `escrow.availableBalance() < 2 Ã— Î£ match.getFundingDeficit()`
+**Alert threshold**: `pool.freeBalance() < 10% of pool.totalAssets()` — new bets approaching cap.
 
-### Replenishing the Escrow
-
-When the escrow balance drops below the alert threshold:
-
-1. Calculate total deficit across all active matches
-2. Add a safety buffer (e.g., 2Ã— deficit)
-3. Execute Safe transaction: `approve` + `fund`
-
-### Emergency: Pause Escrow
+### Emergency: Pause Pool
 
 If suspicious activity is detected:
 
 ```
-Target:   PayoutEscrow
+Target:   LiquidityPool
 Function: pause()
-Effect:   All disburseTo() calls will revert â†’ claims from escrow blocked
-          Claims from contract balance still work
+Effect:   All deposits, withdrawals, and match operations (recordBet, payWinner, etc.) blocked
 ```
 
-To resume: `escrow.unpause()`
-
-### Emergency: Withdraw from Escrow
-
-If funds need to be recovered:
-
-```
-Target:   PayoutEscrow
-Function: withdraw(uint256 amount)
-Effect:   USDC transferred from escrow to Safe
-```
+To resume: `pool.unpause()` (requires `DEFAULT_ADMIN_ROLE`)
 
 ### Revoking a Match
 
 If a match contract is compromised or decommissioned:
 
 ```
-Target:   PayoutEscrow
+Target:   LiquidityPool
 Function: revokeMatch(address matchContract)
-Effect:   Match can no longer pull from escrow
+Effect:   Revokes MATCH_ROLE — match can no longer record bets or trigger payouts
+```
+
+### Adjusting Protocol Fee
+
+```
+Target:   LiquidityPool
+Function: setProtocolFeeBps(uint16 newBps)
+Params:   newBps <= 1000 (10% maximum)
+Effect:   New fee applied on subsequent bets; accrues to treasury address
 ```
 
 ## Network Configuration
@@ -138,7 +127,7 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
   "rpcUrl": "https://spicy-rpc.chiliz.com",
   "safeAddress": "0x...",
   "usdc": "0x...",
-  "payoutEscrow": "0x...",
+  "liquidityPool": "0x...",
   "matches": [
     "0x...",
     "0x..."
@@ -148,51 +137,50 @@ Treasury addresses and contract addresses are stored in `config/<network>.json`:
 
 ## Safe Transaction Templates
 
-### Batch: Authorize + Fund (for new deployment)
+### Batch: Authorize New Match + Set Caps
 
 ```json
 [
   {
-    "to": "<PayoutEscrow>",
+    "to": "<LiquidityPool>",
     "value": "0",
-    "data": "authorizeMatch(address,uint256)",
-    "params": ["<match1>", "<cap in 6-decimal USDC>"]
+    "data": "authorizeMatch(address)",
+    "params": ["<newMatchProxy>"]
   },
   {
-    "to": "<USDC>",
+    "to": "<LiquidityPool>",
     "value": "0",
-    "data": "approve(address,uint256)",
-    "params": ["<PayoutEscrow>", "1000000000"]
-  },
-  {
-    "to": "<PayoutEscrow>",
-    "value": "0",
-    "data": "fund(uint256)",
-    "params": ["1000000000"]
+    "data": "setMaxLiabilityPerMatchBps(uint16)",
+    "params": ["2000"]
   }
 ]
 ```
 
-### Batch: Authorize New Match
+### Batch: Seed Liquidity
 
 ```json
 [
   {
-    "to": "<PayoutEscrow>",
+    "to": "<USDC>",
     "value": "0",
-    "data": "authorizeMatch(address)",
-    "params": ["<newMatchProxy>"]
+    "data": "approve(address,uint256)",
+    "params": ["<LiquidityPool>", "10000000000"]
+  },
+  {
+    "to": "<LiquidityPool>",
+    "value": "0",
+    "data": "deposit(uint256,address)",
+    "params": ["10000000000", "<Safe address>"]
   }
 ]
-``` 
+```
 
 ## Cost Estimates
 
 | Operation | Approx. Gas |
 |-----------|-------------|
-| `escrow.fund()` | ~60,000 |
-| `escrow.authorizeMatch()` | ~45,000 |
-| `escrow.withdraw()` | ~55,000 |
-| `claim()` (contract pays) | ~85,000 |
-| `claim()` (escrow fallback) | ~130,000 |
-| `claimAll()` (N bets) | ~60,000 + NÃ—45,000 |
+| `pool.authorizeMatch()` | ~50,000 |
+| `pool.deposit()` | ~90,000 |
+| `pool.withdraw()` | ~95,000 |
+| `claim()` (pool pays winner) | ~100,000 |
+| `claimAll()` (N bets) | ~70,000 + N×50,000 |

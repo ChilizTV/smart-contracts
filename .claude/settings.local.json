@@ -4,7 +4,9 @@
       "Bash(forge build:*)",
       "Bash(~/.foundry/bin/forge build:*)",
       "Bash(~/.foundry/bin/forge test:*)",
-      "Bash(forge test:*)"
+      "Bash(forge test:*)",
+      "Bash(python3 -c ' *)",
+      "Bash(node -e ' *)"
     ]
   }
 }

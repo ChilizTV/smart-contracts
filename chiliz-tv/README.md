@@ -451,8 +451,7 @@ router with the streaming factory.
 | # | Call | Caller (role) | If skipped |
 |---|------|---------------|------------|
 | 1 | `match.setUSDCToken(usdc)` | `ADMIN_ROLE` | `placeBetUSDC` reverts `USDCNotConfigured` |
-| 2 | `match.setPayoutEscrow(escrow)` | `ADMIN_ROLE` | `_disburse` reverts `InsufficientUSDCBalance` once the match's own USDC is exhausted |
-| 3 | `escrow.authorizeMatch(match, cap)` | escrow owner (Safe) | Escrow refuses to disburse — same symptom as (2) |
+| 2 | `pool.authorizeMatch(match)` | `DEFAULT_ADMIN_ROLE` (Safe on pool) | Pool refuses `recordBet` / `payWinner` → reverts `MatchNotAuthorized` |
 | 4 | `match.grantRole(RESOLVER_ROLE, oracle)` | `DEFAULT_ADMIN_ROLE` | `resolveMarket` reverts. **RESOLVER is deliberately NOT granted at init** to separate the resolver key from the admin key. |
 | 5 | `match.grantRole(SWAP_ROUTER_ROLE, ChilizSwapRouter)` | `DEFAULT_ADMIN_ROLE` | Any `placeBetWith*` routed through the swap router reverts |
 
@@ -466,8 +465,8 @@ Order matters — the router asserts the factory knows about it:
 **Optional but recommended**
 
 - `ChilizSwapRouter.setMatchFactory(bettingMatchFactory)` — without this, the router will forward USDC to any `bettingMatch` argument, not just factory-registered ones (M-02 hardening).
-- Transfer ownership of `BettingMatchFactory`, `StreamWalletFactory`, `ChilizSwapRouter`, and `PayoutEscrow` to the Safe multisig.
-- Fund the `PayoutEscrow` via `fund(amount)` (requires USDC approval first).
+- Transfer `DEFAULT_ADMIN_ROLE` on `LiquidityPool`, `BettingMatchFactory`, `StreamWalletFactory`, and `ChilizSwapRouter` to the Safe multisig.
+- Seed the `LiquidityPool` via `deposit(amount, receiver)` (requires USDC approval first).
 
 ---
 

@@ -25,18 +25,22 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - Ownable + ReentrancyGuard; platform fee + treasury config for streaming flows
 - Requires SWAP_ROUTER_ROLE on each BettingMatch proxy
 
-### 4. Payout Escrow System
-- **PayoutEscrow**: Shared USDC escrow contract funded by Gnosis Safe treasury
-- Whitelisted BettingMatch proxies call `disburseTo()` for shortfall payouts
-- Owner-controlled whitelist (`authorizeMatch` / `revokeMatch`)
-- Pausable + ReentrancyGuard + SafeERC20
+### 4. Liquidity Pool System
+- **LiquidityPool**: Single ERC-4626 vault that backs all bet payouts. LPs deposit USDC and receive transferable `ctvLP` shares that auto-compound the house edge priced into fixed odds.
+- **BettingMatch proxies hold no USDC** — all stake enters the pool; all payouts leave the pool.
+- NAV model: `totalAssets() = USDC.balanceOf(pool) - totalLiabilities`
+- Roles: `DEFAULT_ADMIN_ROLE` (Safe multisig), `MATCH_ROLE` (one per authorized match proxy), `ROUTER_ROLE` (ChilizSwapRouter), `PAUSER_ROLE` (emergency stop)
+- Match-facing API: `recordBet()`, `settleMarket()`, `payWinner()`, `payRefund()`
+- Withdrawal gated on `freeBalance` (unreserved USDC) and per-depositor cooldown to prevent flash-NAV manipulation
+- Per-market and per-match liability caps (in bps of `totalAssets()`) enforce solvency at bet time
+- **Safe** acts as `treasury` (receives protocol fees) and as `DEFAULT_ADMIN_ROLE` (authorizes matches, upgrades, parameters)
 
 ### Deployment Scripts
 - `script/DeployAll.s.sol`: Complete system deployment (betting + streaming + swap router)
 - `script/DeployBetting.s.sol`: Betting system only
 - `script/DeployStreaming.s.sol`: Streaming system only
 - `script/DeploySwap.s.sol`: Unified ChilizSwapRouter (Kayen DEX integration)
-- `script/DeployPayout.s.sol`: PayoutEscrow deployment + configuration
+- `script/DeployLiquidityPool.s.sol`: LiquidityPool deployment + configuration
 
 ---
 
@@ -191,19 +195,17 @@ sequenceDiagram
         Proxy->>FImpl: delegatecall claim()
         activate FImpl
         
-        Note right of FImpl: Dynamic odds payout:<br/>stake = 500 USDC<br/>lockedOdds = 2.20x (22000)<br/>payout = 500 Ã— 22000 / 10000<br/>= 1100 USDC
+        Note right of FImpl: Dynamic odds payout:<br/>stake = 500 USDC<br/>lockedOdds = 2.20x (22000)<br/>payout = 500 x 22000 / 10000<br/>= 1100 USDC<br/>netExposure = payout - stake = 600 USDC
         
         Note right of FImpl: Update state (CEI pattern):<br/>bets[user1][0].claimed = true
+        
+        FImpl->>FImpl: pool.payWinner(match, 0, user1, 1100e6, 600e6)
+        Note right of FImpl: Pool releases 600 USDC from liabilities<br/>Pool transfers 1100 USDC directly to User1<br/>LP NAV drops by 500 USDC (realised loss = stake)
         
         FImpl-->>Proxy: emit BetClaimed(0, user1, 1100e6)
         deactivate FImpl
         
-        Proxy->>User1: Transfer USDC payout (1100 USDC)
-        activate User1
-        User1-->>Proxy: Payout received âœ“
-        deactivate User1
-        
-        Proxy-->>User1: Claim complete âœ“
+        Proxy-->>User1: Claim complete ✓
         deactivate Proxy
         
         Note over User2,User3: User2 and User3 bet on losing outcomes<br/>âŒ claim() would revert: NotWinner()
@@ -451,8 +453,7 @@ These calls are NOT done by the factory and, if skipped, will silently break bet
 | # | Call | Who | Consequence if skipped |
 |---|------|-----|------------------------|
 | 1 | `match.setUSDCToken(usdc)` | `ADMIN_ROLE` | `placeBetUSDC` reverts `USDCNotConfigured` |
-| 2 | `match.setPayoutEscrow(escrow)` | `ADMIN_ROLE` | `_disburse` reverts `InsufficientUSDCBalance` once local balance is exhausted |
-| 3 | `escrow.authorizeMatch(match, cap)` | escrow owner (Safe) | Escrow refuses `disburseTo` → same symptom as (2) |
+| 2 | `pool.authorizeMatch(match)` | `DEFAULT_ADMIN_ROLE` (Safe on pool) | Pool refuses `recordBet` / `payWinner` → reverts `MatchNotAuthorized` |
 | 4 | `match.grantRole(RESOLVER_ROLE, oracle)` | `DEFAULT_ADMIN_ROLE` | `resolveMarket` reverts (RESOLVER is **not** auto-granted at init by design; see Role-Based Access Control) |
 | 5 | `match.grantRole(SWAP_ROUTER_ROLE, ChilizSwapRouter)` | `DEFAULT_ADMIN_ROLE` | Any `placeBetWith*` through the router reverts |
 | 6 | (optional M-02) `ChilizSwapRouter.setMatchFactory(bettingFactory)` | router owner | Router will forward USDC to any address, not only factory-registered matches |
@@ -476,7 +477,7 @@ The router verifies that the factory knows about it before accepting the registr
 | StreamWallet Implementation | TBD | Chiliz Spicy Testnet |
 | StreamWalletFactory | TBD | Chiliz Spicy Testnet |
 | USDC Token | TBD | Chiliz Spicy Testnet |
-| PayoutEscrow | TBD | Chiliz Spicy Testnet |
+| LiquidityPool | TBD | Chiliz Spicy Testnet |
 | Treasury Multisig | TBD | Chiliz Spicy Testnet |
 
 ---
@@ -490,7 +491,6 @@ src/
 â”‚   â”œâ”€â”€ FootballMatch.sol          # Football-specific implementation
 â”‚   â”œâ”€â”€ BasketballMatch.sol        # Basketball-specific implementation
 â”‚   â”œâ”€â”€ BettingMatchFactory.sol    # Factory for ERC1967Proxy deployment
-â”‚   â””â”€â”€ PayoutEscrow.sol           # Shared USDC escrow funded by Gnosis Safe treasury
 â”œâ”€â”€ swap/
 â”‚   â””â”€â”€ ChilizSwapRouter.sol       # Unified CHZ / Token / USDC swap router (betting + streaming)
 â”œâ”€â”€ streamer/
@@ -499,21 +499,20 @@ src/
 â”œâ”€â”€ interfaces/
 â”‚   â”œâ”€â”€ IKayenMasterRouterV2.sol   # Kayen DEX native CHZ swap interface
 â”‚   â”œâ”€â”€ IKayenRouter.sol           # Kayen DEX ERC20-to-ERC20 swap interface
-â”‚   â”œâ”€â”€ IPayoutEscrow.sol          # PayoutEscrow disbursement interface
-â”‚   â””â”€â”€ IStreamWalletInit.sol      # StreamWallet initialization interface
+â”‚   â”œâ”€â”€ â”‚   â””â”€â”€ IStreamWalletInit.sol      # StreamWallet initialization interface
 
 
 script/
 â”œâ”€â”€ DeployAll.s.sol                # Complete system deployment
 â”œâ”€â”€ DeployBetting.s.sol            # Betting system deployment
-â”œâ”€â”€ DeployPayout.s.sol             # PayoutEscrow deployment
+├── DeployLiquidityPool.s.sol      # LiquidityPool deployment + authorization
 â”œâ”€â”€ DeployStreaming.s.sol          # Streaming system deployment
 â””â”€â”€ DeploySwap.s.sol               # ChilizSwapRouter deployment
 
 test/
 â”œâ”€â”€ BettingMatchTest.t.sol         # Core USDC betting + dynamic odds tests
 â”œâ”€â”€ BasketballMatchTest.t.sol      # Basketball lifecycle tests
-â”œâ”€â”€ PayoutEscrowTest.t.sol         # PayoutEscrow funding, disbursement, whitelist
+├── LiquidityPoolTest.t.sol        # LiquidityPool deposit/withdraw, bet lifecycle, solvency caps
 â”œâ”€â”€ StreamWalletTest.t.sol         # StreamWallet + StreamWalletFactory UUPS upgrade tests
 â”œâ”€â”€ ChilizSwapRouterTest.t.sol     # ChilizSwapRouter betting + streaming payment paths
 â”œâ”€â”€ SwapIntegrationTest.t.sol      # ChilizSwapRouter betting integration tests
@@ -567,7 +566,7 @@ for (address streamer : existingStreamers) {
 
 ## Dead Code Identified
 
-No dead code identified. All contracts, functions, and interfaces are actively used in deployment scripts and/or test suites. Five write-only accounting variables (`totalUSDCPool`, `totalUSDCLiabilities`, `_marketLiabilities`, `_selectionLiabilities`, `totalBetsPlaced`) serve off-chain monitoring via events and are not dead code.
+No dead code identified. All contracts, functions, and interfaces are actively used in deployment scripts and/or test suites. LiquidityPool tracking mappings (`totalLiabilities`, `matchLiability`, `marketLiability`) serve both on-chain solvency enforcement and off-chain monitoring. All are actively read.
 
 ---
 
@@ -598,5 +597,5 @@ forge coverage
 ---
 
 **Last Updated**: 2026-06-17  
-**Version**: 4.0 (USDC-only settlement + Swap Routers + Dynamic Odds + PayoutEscrow)  
+**Version**: 5.0 (USDC-only settlement + Swap Routers + Dynamic Odds + LiquidityPool)  
 **Author**: ChilizTV Development Team

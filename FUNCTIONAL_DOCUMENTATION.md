@@ -69,7 +69,7 @@ The Chiliz Chain is purpose-built for sports and entertainment. It hosts **40+ o
 | **Football & Basketball** | Bet on match winner, total goals/points, halftime results, correct score, first scorer, and more |
 | **Dynamic odds** | Odds update in real time — your bet locks the odds at the moment you place it |
 | **Pay with any token** | Use CHZ, any fan token, or USDC — automatic conversion behind the scenes |
-| **Guaranteed payouts** | The system verifies it can cover every bet before accepting it. A shared reserve backs all matches |
+| **Guaranteed payouts** | The system verifies it can cover every bet before accepting it. A shared liquidity pool (ERC-4626) backs all matches |
 | **Full refunds on cancellations** | If a match is cancelled, every bettor gets their stake back automatically |
 
 ### 3.2 Streaming & Creator Monetization
@@ -100,7 +100,7 @@ Users never need to manually swap tokens. Whether betting or tipping a streamer,
 │  Football bets   │  Donations        │  Automatic token      │
 │  Basketball bets │  Subscriptions    │  conversion via       │
 │  Dynamic odds    │  Streamer wallets │  Kayen DEX            │
-│  Payout escrow   │  Revenue tracking │                       │
+│  Liquidity pool  │  Revenue tracking │                       │
 └──────────────────┴───────────────────┴───────────────────────┘
                             │
                    Chiliz Chain (L1)
@@ -131,7 +131,7 @@ flowchart LR
 
 ### Payout Safety Net
 
-Every match is backed by a **shared reserve fund** (PayoutEscrow). If a match's own pool isn't enough to pay winners, the reserve automatically covers the difference. This reserve is managed by a **multi-signature wallet** — no single person can access the funds.
+Every match is backed by a **shared liquidity pool** (LiquidityPool). All bets flow into this ERC-4626 vault; all payouts flow out of it. BettingMatch proxies hold no USDC. The pool is managed by a **Gnosis Safe** — no single person can access the funds. Liquidity providers deposit USDC and earn yield from the house edge priced into fixed odds.
 
 ---
 
@@ -168,7 +168,7 @@ All bettors receive a **full refund** of their original stake — automatically,
 | **Solvency guaranteed** | The system rejects any bet it can't fully cover. No IOUs |
 | **Multi-signature treasury** | Platform funds require multiple approvals to move — no single point of failure |
 | **Match isolation** | Each match runs independently. A problem in one match cannot affect others |
-| **Payout reserve** | A shared escrow ensures winners always get paid, even during high-variance periods |
+| **Payout reserve** | A shared liquidity pool ensures winners always get paid. LP capital backs all matches; house edge auto-compounds LP shares |
 | **Emergency controls** | The platform can be paused instantly in case of any issue |
 | **Upgradeable without downtime** | The system can be improved without moving funds or disrupting users |
 | **Audited** | Internal security audit found no critical vulnerabilities. Built on industry-standard security libraries |
@@ -286,7 +286,7 @@ Every bet, every payout, every fee is recorded on the public blockchain. Solvenc
 - **Battle-tested foundations**: Built on OpenZeppelin, the industry standard for secure smart contract libraries.
 - **Multi-signature treasury**: Platform funds require multiple approvals to move, eliminating single points of failure.
 - **Per-match isolation**: Each match is an independent contract. A problem in one match cannot cascade to others.
-- **Escrow safety net**: A treasury-backed escrow ensures winners always get paid, even if a single match is temporarily underfunded.
+- **Liquidity pool safety net**: A single ERC-4626 vault backs all matches. LP capital covers payouts; caps per market and per match enforce solvency before accepting any bet.
 - **Audited codebase**: Internal security audit found no critical vulnerabilities.
 
 ### Scalability
@@ -322,18 +322,18 @@ ChilizTV is not just another betting platform. It is:
 
 ### 11.1 Treasury Seed Funding — 10,000 to 50,000 USDC Grant
 
-ChilizTV's betting system uses a **per-match escrow model**: each match contract holds its own USDC reserve to guarantee payouts to winners. This is what makes the platform trustworthy — bettors can verify on-chain that funds exist to cover every accepted bet.
+ChilizTV's betting system uses a **shared liquidity pool model**: a single ERC-4626 vault holds all USDC. Match contracts hold no funds of their own. This is what makes the platform trustworthy — bettors can verify on-chain that the pool can cover every accepted bet before the bet is recorded.
 
 However, variance is inherent to sports betting. In any given week, bettors may win more than expected. The industry standard for bookmaker margin (also called "overround" or "vig") is **4% to 14% of the total betting pool per match** — meaning for every $100 wagered across all outcomes, the operator expects to retain $8–$11 on average. But this is a *statistical average* over time. Individual matches can swing heavily toward bettors, especially in early stages with lower volumes.
 
 **What we need:**
 
-A **10,000 USDC to **50,000 USDC grant** to seed the PayoutEscrow — the shared treasury safety net that backstops individual match contracts when payout obligations temporarily exceed deposits.
+A **10,000 USDC to 50,000 USDC grant** to seed the LiquidityPool — the shared ERC-4626 vault that backs all match payouts. LP capital earns yield from the house edge, making the pool self-sustaining over time.
 
 | Detail | Value |
 |--------|-------|
 | **Amount requested** | 10,000 USDC minimum |
-| **Purpose** | Seed the PayoutEscrow contract to guarantee payouts during the launch phase |
+| **Purpose** | Seed the LiquidityPool to guarantee payouts during the launch phase |
 | **Why it's needed** | Low initial volume means higher variance — a few large wins could exceed a single match's pool |
 | **Industry context** | Bookmakers target 4-11% margin per match pool, but early-stage platforms need buffer capital to absorb short-term swings |
 | **How it's managed** | Held in a Gnosis Safe multisig — no single party can withdraw. Fully auditable on-chain |

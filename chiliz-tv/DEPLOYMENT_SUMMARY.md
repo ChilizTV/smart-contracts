@@ -26,8 +26,8 @@ This PR adds comprehensive deployment scripts for all Chiliz-TV smart contracts 
    - BettingMatchFactory
    - Multi-sport support
 
-4. **script/DeployPayout.s.sol**
-   - PayoutEscrow deployment
+4. **script/DeployLiquidityPool.s.sol**
+   - LiquidityPool deployment
    - Configures USDC token and owner
    - Can also be deployed via `deploy.sh --payout`
 
@@ -106,7 +106,7 @@ All scripts follow this streamlined order:
 2. **Transfer Ownership** (to Safe multisig)
    - BettingMatchFactory â†’ Safe (controls who gets new matches + implementation pointer)
    - StreamWalletFactory â†’ Safe (controls per-wallet upgrades)
-   - PayoutEscrow â†’ Safe (controls match whitelist, caps, funding, free-balance withdraw)
+   - LiquidityPool → Safe (DEFAULT_ADMIN_ROLE: controls match whitelist, caps, fees, upgrade)
    - ChilizSwapRouter â†’ Safe (controls treasury, platformFeeBps, registered factories)
 
 **Gas Optimization:**

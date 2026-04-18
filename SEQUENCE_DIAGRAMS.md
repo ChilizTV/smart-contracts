@@ -1,6 +1,6 @@
 # ChilizTV â€” Complete Sequence Diagrams
 
-> All flows derived from contract source code. Covers **deployment**, **betting**, **streaming (donations & subscriptions)**, **payout/escrow**, and **failure routes**.
+> All flows derived from contract source code. Covers **deployment**, **betting**, **streaming (donations & subscriptions)**, **payout/liquidity pool**, and **failure routes**.
 
 ---
 
@@ -35,7 +35,7 @@ sequenceDiagram
     participant FImpl as FootballMatch (impl)
     participant BImpl as BasketballMatch (impl)
     participant Factory as BettingMatchFactory
-    participant Escrow as PayoutEscrow
+    participant Pool as LiquidityPool
     participant SWImpl as StreamWallet (impl)
     participant SWFactory as StreamWalletFactory
     participant KayenMR as KayenMasterRouterV2
@@ -60,7 +60,7 @@ sequenceDiagram
     rect rgb(230, 255, 230)
         Note over Deployer,Safe: PHASE 2: PAYOUT ESCROW
 
-        Deployer->>Escrow: deploy PayoutEscrow(usdc, safeAddress)
+        Deployer->>Pool: deploy LiquidityPool(usdc, safe, treasury, feeBps, maxMarketBps, maxMatchBps, cooldown)
         activate Escrow
         Note right of Escrow: Ownable(_owner = Safe)<br/>usdc = immutable USDC<br/>ReentrancyGuard + Pausable
         Escrow-->>Deployer: Escrow deployed âœ“
@@ -100,9 +100,9 @@ sequenceDiagram
         Deployer->>SwapRouter: setStreamWalletFactory(SWFactory)
         SwapRouter-->>Deployer: âœ“
 
-        Note right of Deployer: Per new BettingMatch proxy:<br/>1. match.setUSDCToken(usdc)<br/>2. match.setPayoutEscrow(Escrow)<br/>3. Escrow.authorizeMatch(match, cap)  // Safe<br/>4. match.grantRole(RESOLVER_ROLE, oracle)<br/>5. match.grantRole(SWAP_ROUTER_ROLE, SwapRouter)
+        Note right of Deployer: Per new BettingMatch proxy:<br/>1. match.setUSDCToken(usdc)<br/>2. pool.authorizeMatch(match)  // Safe (DEFAULT_ADMIN_ROLE)<br/>3. match.grantRole(RESOLVER_ROLE, oracle)<br/>4. match.grantRole(SWAP_ROUTER_ROLE, SwapRouter)
 
-        Note over Deployer,Safe: Fund PayoutEscrow via Gnosis Safe
+        Note over Deployer,Safe: Seed LiquidityPool via LP deposits
         Safe->>USDC: approve(Escrow, amount)
         Safe->>Escrow: fund(amount)
         Escrow-->>Safe: emit Funded âœ“
@@ -111,7 +111,7 @@ sequenceDiagram
     rect rgb(240, 240, 240)
         Note over Deployer,Safe: DEPLOYMENT COMPLETE
         Note over Factory: BettingMatchFactory ready<br/>FootballMatch + BasketballMatch impls
-        Note over Escrow: PayoutEscrow funded by Safe<br/>Awaiting match authorizations
+        Note over Pool: LiquidityPool seeded by LPs<br/>Matches authorized by Safe
         Note over SWFactory: StreamWalletFactory ready<br/>with SwapRouter wired
         Note over SwapRouter: ChilizSwapRouter ready<br/>Betting + Streaming + Kayen DEX
     end
@@ -138,7 +138,7 @@ sequenceDiagram
     participant Proxy as Match Proxy (ERC1967)
     participant FImpl as FootballMatch Logic
     participant USDC as USDC Token
-    participant Escrow as PayoutEscrow
+    participant Pool as LiquidityPool
 
     rect rgb(200, 220, 255)
         Note over Admin,Escrow: STEP 1: CREATE MATCH
@@ -161,8 +161,8 @@ sequenceDiagram
         Admin->>Proxy: setUSDCToken(usdcAddress)
         Note right of Proxy: onlyRole(ADMIN_ROLE)<br/>emit USDCTokenSet
 
-        Admin->>Proxy: setPayoutEscrow(escrowAddress)
-        Note right of Proxy: onlyRole(ADMIN_ROLE)<br/>emit PayoutEscrowSet
+        Admin->>Pool: authorizeMatch(matchProxy)
+        Note right of Pool: onlyRole(DEFAULT_ADMIN_ROLE)<br/>emit MatchAuthorized
 
         Admin->>Proxy: grantRole(SWAP_ROUTER_ROLE, swapRouter)
         Note right of Proxy: onlyRole(DEFAULT_ADMIN_ROLE)<br/>Allows ChilizSwapRouter to call placeBetUSDCFor
@@ -265,7 +265,7 @@ sequenceDiagram
 
     participant Proxy as Match Proxy
     participant USDC as USDC Token
-    participant Escrow as PayoutEscrow
+    participant Pool as LiquidityPool
 
     rect rgb(255, 220, 220)
         Note over User,Escrow: âŒ BET PLACEMENT FAILURES
@@ -313,8 +313,8 @@ sequenceDiagram
         User->>Proxy: claim(0, 0) [bet lost]
         Proxy-->>User: REVERT BetLost(0, user, 0)<br/>bet.selection != core.result
 
-        User->>Proxy: claim(0, 0) [contract underfunded, no escrow]
-        Proxy-->>User: REVERT InsufficientUSDCBalance(1100, 200)<br/>balance < payout and no escrow set
+        User->>Proxy: claim(0, 0) [pool freeBalance exhausted]
+        Proxy-->>User: REVERT InsufficientFreeBalance<br/>pool.freeBalance() < payout (all USDC reserved for open positions)
 
         User->>Proxy: claimRefund(0, 0) [not cancelled]
         Proxy-->>User: REVERT InvalidMarketState(0, Open, Cancelled)
@@ -350,18 +350,18 @@ sequenceDiagram
 
 ## 4. Payout & Escrow
 
-Happy path with escrow fallback + all escrow failure routes.
+Happy path via LiquidityPool + all pool failure routes.
 
 ```mermaid
 sequenceDiagram
-    title PayoutEscrow â€” Happy Path + Failures
+    title LiquidityPool – Happy Path + Failures
 
     actor Safe as Gnosis Safe (Owner)
     actor Winner as Winner
 
     participant Proxy as BettingMatch Proxy
     participant USDC as USDC Token
-    participant Escrow as PayoutEscrow
+    participant Pool as LiquidityPool
 
     rect rgb(230, 255, 230)
         Note over Safe,Escrow: âœ… HAPPY: Direct Payout (no escrow needed)
@@ -394,7 +394,7 @@ sequenceDiagram
 
         Winner->>Proxy: claim(marketId, betIndex)
         Proxy->>Proxy: contractBalance(400) < 1100
-        Note right of Proxy: payoutEscrow == address(0)
+        Note right of Proxy: MATCH_ROLE not granted on pool
         Proxy-->>Winner: REVERT InsufficientUSDCBalance(1100, 400)
     end
 
@@ -406,7 +406,7 @@ sequenceDiagram
         Note right of Escrow: balance(200) < 700
         Escrow-->>Proxy: REVERT InsufficientEscrowBalance(700, 200)
         Proxy-->>Winner: REVERT (entire tx rolled back)
-        Note over Winner: Retry after Safe tops up escrow
+        Note over Winner: Retry after LPs deposit more USDC or open positions settle
     end
 
     rect rgb(255, 240, 220)
@@ -433,7 +433,7 @@ sequenceDiagram
         Note over Safe,Escrow: ESCROW MANAGEMENT
 
         Safe->>Escrow: fund(5000e6)
-        Note right of Escrow: safeTransferFrom(safe, escrow, 5000)<br/>emit Funded(safe, 5000)
+        Note right of Pool: LP deposit: pool.deposit(5000e6, safe)<br/>emit Deposit(safe, safe, 5000e6, shares)
 
         Safe->>Escrow: withdraw(2000e6)
         Note right of Escrow: onlyOwner, balance check<br/>safeTransfer(safe, 2000)<br/>emit Withdrawn(safe, 2000)
@@ -859,7 +859,7 @@ sequenceDiagram
 |---|---|---|
 | **BettingMatchFactory** | Ownable | Owner deploys, anyone creates matches |
 | **FootballMatch / BasketballMatch** | UUPS Proxy + AccessControl | ADMIN, RESOLVER, ODDS_SETTER, PAUSER, TREASURY, SWAP_ROUTER |
-| **PayoutEscrow** | Ownable + Pausable + ReentrancyGuard | Owner (Safe) manages whitelist & funds |
+| **LiquidityPool** | ERC-4626 + AccessControl + Pausable + ReentrancyGuard + UUPS | DEFAULT_ADMIN_ROLE (Safe) manages matches, caps, fees, upgrade |
 | **StreamWalletFactory** | Ownable + ReentrancyGuard | Owner configures; deploys UUPS proxies |
 | **StreamWallet** | UUPS Proxy + Ownable | Streamer withdraws; Factory/SwapRouter record |
 | **ChilizSwapRouter** | Ownable + ReentrancyGuard | Owner sets treasury/fees; immutable DEX config |
@@ -880,8 +880,8 @@ sequenceDiagram
 | `BetLost` | BettingMatch | Wrong selection |
 | `BetNotFound` | BettingMatch | Invalid bet index |
 | `ContractNotPaused` | BettingMatch | emergencyWithdraw when active |
-| `InsufficientEscrowBalance` | PayoutEscrow | Escrow can't cover deficit |
-| `UnauthorizedMatch` | PayoutEscrow | Match not whitelisted |
+| `InsufficientFreeBalance` | LiquidityPool | Pool freeBalance cannot cover new bet exposure |
+| `MatchNotAuthorized` | LiquidityPool | Match not granted MATCH_ROLE |
 | `ZeroValue` | ChilizSwapRouter | 0 amount / 0 CHZ sent |
 | `ZeroAddress` | ChilizSwapRouter | address(0) parameter |
 | `DeadlinePassed` | ChilizSwapRouter | block.timestamp > deadline |
