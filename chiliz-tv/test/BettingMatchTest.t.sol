@@ -7,6 +7,7 @@ import {FootballMatch} from "../src/betting/FootballMatch.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {LiquidityPool} from "../src/liquidity/LiquidityPool.sol";
 
 /**
  * @title BettingMatchTest
@@ -23,6 +24,7 @@ contract BettingMatchTest is Test {
     FootballMatch public implementation;
     FootballMatch public footballMatch;
     MockUSDC public usdc;
+    LiquidityPool public pool;
     
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -71,8 +73,23 @@ contract BettingMatchTest is Test {
         usdc.mint(bob, 100_000e6);
         usdc.mint(charlie, 100_000e6);
         
-        // Fund contract for payouts (1,000,000 USDC treasury)
-        usdc.mint(address(footballMatch), 1_000_000e6);
+        // Deploy LiquidityPool (0 fee, 50% market cap, 90% match cap, 0 cooldown)
+        LiquidityPool poolImpl = new LiquidityPool();
+        bytes memory poolInitData = abi.encodeWithSelector(
+            LiquidityPool.initialize.selector,
+            address(usdc), owner, owner,
+            uint16(0), uint16(5000), uint16(9000), uint48(0)
+        );
+        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
+        pool = LiquidityPool(address(poolProxy));
+
+        vm.startPrank(owner);
+        footballMatch.setLiquidityPool(address(pool));
+        pool.authorizeMatch(address(footballMatch));
+        vm.stopPrank();
+
+        // Fund LiquidityPool for payouts (replaces minting directly to match)
+        usdc.mint(address(pool), 1_000_000e6);
     }
     
     // Helper: approve and place USDC bet
@@ -578,7 +595,7 @@ contract BettingMatchTest is Test {
         footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
-        usdc.mint(address(footballMatch), 200e6);
+        usdc.mint(address(pool), 200e6);
         _placeBet(alice, 0, 0, 100e6);
 
         // MarketState: Open=1, Resolved=4
@@ -595,7 +612,7 @@ contract BettingMatchTest is Test {
         footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
-        usdc.mint(address(footballMatch), 200e6);
+        usdc.mint(address(pool), 200e6);
         _placeBet(alice, 0, 0, 100e6);
         vm.prank(owner);
         footballMatch.closeMarket(0);
@@ -614,7 +631,7 @@ contract BettingMatchTest is Test {
         footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
         vm.prank(owner);
         footballMatch.openMarket(0);
-        usdc.mint(address(footballMatch), 200e6);
+        usdc.mint(address(pool), 200e6);
         _placeBet(alice, 0, 0, 100e6);
 
         // MarketState: Open=1, Resolved=4
@@ -626,45 +643,6 @@ contract BettingMatchTest is Test {
         footballMatch.claimRange(0, 0, 1);
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // M-01: resetLiabilities — post-emergency liability correction
-    // ══════════════════════════════════════════════════════════════════════════
-
-    function test_M01_ResetLiabilities_RevertsWhenNotPaused() public {
-        vm.prank(owner);
-        vm.expectRevert(BettingMatch.ContractNotPaused.selector);
-        footballMatch.resetLiabilities(0);
-    }
-
-    function test_M01_ResetLiabilities_UpdatesValue() public {
-        // Set up a liability
-        vm.prank(owner);
-        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
-        vm.prank(owner);
-        footballMatch.openMarket(0);
-        usdc.mint(address(footballMatch), 200e6);
-        _placeBet(alice, 0, 0, 100e6); // liability = 200e6
-
-        assertEq(footballMatch.totalUSDCLiabilities(), 200e6);
-
-        // Pause and correct the liability to 0
-        vm.prank(owner);
-        footballMatch.emergencyPause();
-        vm.prank(owner);
-        footballMatch.resetLiabilities(0);
-
-        assertEq(footballMatch.totalUSDCLiabilities(), 0);
-    }
-
-    function test_M01_ResetLiabilities_OnlyAdmin() public {
-        vm.prank(owner);
-        footballMatch.emergencyPause();
-
-        // alice has no ADMIN_ROLE
-        vm.prank(alice);
-        vm.expectRevert();
-        footballMatch.resetLiabilities(0);
-    }
 }
 
 /**
@@ -675,7 +653,8 @@ contract BettingMatchGasTest is Test {
     FootballMatch public implementation;
     FootballMatch public footballMatch;
     MockUSDC public usdc;
-    
+    LiquidityPool public pool;
+
     address public owner = address(0x1);
     
     // Cached market type constant
@@ -698,12 +677,27 @@ contract BettingMatchGasTest is Test {
         // Configure USDC
         vm.prank(owner);
         footballMatch.setUSDCToken(address(usdc));
-        
-        // Fund this test contract and the match with USDC
+
+        // Deploy and wire LiquidityPool
+        LiquidityPool poolImpl = new LiquidityPool();
+        bytes memory poolInitData = abi.encodeWithSelector(
+            LiquidityPool.initialize.selector,
+            address(usdc), owner, owner,
+            uint16(0), uint16(5000), uint16(9000), uint48(0)
+        );
+        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
+        pool = LiquidityPool(address(poolProxy));
+
+        vm.startPrank(owner);
+        footballMatch.setLiquidityPool(address(pool));
+        pool.authorizeMatch(address(footballMatch));
+        vm.stopPrank();
+
+        // Fund this test contract and the pool with USDC
         usdc.mint(address(this), 1_000_000e6);
-        usdc.mint(address(footballMatch), 10_000_000e6);
+        usdc.mint(address(pool), 10_000_000e6);
     }
-    
+
     function test_GasBenchmark_PlaceBetNewOdds() public {
         vm.prank(owner);
         footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
