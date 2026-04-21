@@ -10,6 +10,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {MockKayenRouter} from "./mocks/MockKayenRouter.sol";
+import {LiquidityPool} from "../src/liquidity/LiquidityPool.sol";
 
 /// @dev Simple mock fan token for ERC20 swap tests
 contract MockFanTokenSwap is ERC20 {
@@ -35,6 +36,7 @@ contract SwapIntegrationTest is Test {
     MockKayenRouter public mockRouter;
     MockFanTokenSwap public fanToken;
     ChilizSwapRouter public swapRouter;
+    LiquidityPool public pool;
 
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -108,8 +110,23 @@ contract SwapIntegrationTest is Test {
         fanToken.mint(alice, 1000 ether);
         fanToken.mint(bob, 1000 ether);
 
-        // Fund contract with USDC for payouts (treasury solvency)
-        usdc.mint(address(footballMatch), 10000e6);
+        // Deploy and wire LiquidityPool
+        LiquidityPool poolImpl = new LiquidityPool();
+        bytes memory poolInitData = abi.encodeWithSelector(
+            LiquidityPool.initialize.selector,
+            address(usdc), owner, owner,
+            uint16(0), uint16(5000), uint16(9000), uint48(0)
+        );
+        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
+        pool = LiquidityPool(address(poolProxy));
+
+        vm.startPrank(owner);
+        footballMatch.setLiquidityPool(address(pool));
+        pool.authorizeMatch(address(footballMatch));
+        vm.stopPrank();
+
+        // Fund LiquidityPool with USDC for payouts
+        usdc.mint(address(pool), 10000e6);
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -302,125 +319,6 @@ contract SwapIntegrationTest is Test {
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // TREASURY SOLVENCY TESTS
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
-    function test_SolvencyTracking() public {
-        vm.prank(owner);
-        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0); // 2.00x
-
-        vm.prank(owner);
-        footballMatch.openMarket(0);
-
-        // Place USDC bet: 100 USDC at 2.00x = 200 USDC liability
-        vm.startPrank(alice);
-        usdc.approve(address(footballMatch), 100e6);
-        footballMatch.placeBetUSDC(0, 0, 100e6);
-        vm.stopPrank();
-
-        (uint256 balance, uint256 liabilities, uint256 pool) = footballMatch.getUSDCSolvency();
-        assertEq(liabilities, 200e6, "Liabilities should be 200 USDC");
-        assertEq(pool, 100e6, "Pool should be 100 USDC");
-        assertTrue(balance >= liabilities, "Balance should cover liabilities");
-    }
-
-    function test_SolvencyReducedOnClaim() public {
-        vm.prank(owner);
-        footballMatch.addMarketWithLine(MARKET_WINNER, 20000, 0);
-        vm.prank(owner);
-        footballMatch.openMarket(0);
-
-        vm.startPrank(alice);
-        usdc.approve(address(footballMatch), 100e6);
-        footballMatch.placeBetUSDC(0, 0, 100e6);
-        vm.stopPrank();
-
-        vm.prank(owner);
-        footballMatch.closeMarket(0);
-        vm.prank(resolver);
-        footballMatch.resolveMarket(0, 0);
-
-        // Before claim
-        (, uint256 liabilitiesBefore,) = footballMatch.getUSDCSolvency();
-        assertEq(liabilitiesBefore, 200e6);
-
-        // Claim
-        vm.prank(alice);
-        footballMatch.claim(0, 0);
-
-        // After claim
-        (, uint256 liabilitiesAfter,) = footballMatch.getUSDCSolvency();
-        assertEq(liabilitiesAfter, 0, "Liabilities should be 0 after claim");
-    }
-
-    function test_SolvencyExceededReverts() public {
-        // Deploy a fresh contract with no pre-funded USDC
-        FootballMatch impl2 = new FootballMatch();
-        bytes memory initData = abi.encodeWithSelector(
-            FootballMatch.initialize.selector,
-            "Test Match 2",
-            owner
-        );
-        ERC1967Proxy proxy2 = new ERC1967Proxy(address(impl2), initData);
-        FootballMatch match2 = FootballMatch(payable(address(proxy2)));
-
-        vm.startPrank(owner);
-        match2.setUSDCToken(address(usdc));
-        match2.addMarketWithLine(MARKET_WINNER, 30000, 0); // 3.00x
-        match2.openMarket(0);
-        vm.stopPrank();
-
-        // Alice has 100 USDC, bet at 3x means 300 USDC liability
-        // Contract only has the 100 USDC from Alice's deposit = insufficient
-        vm.startPrank(alice);
-        usdc.approve(address(match2), 100e6);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                BettingMatch.USDCSolvencyExceeded.selector,
-                300e6,  // newLiability
-                100e6   // available (alice's deposit)
-            )
-        );
-        match2.placeBetUSDC(0, 0, 100e6);
-        vm.stopPrank();
-    }
-
-    function test_FundTreasuryEnablesBetting() public {
-        // Deploy fresh contract
-        FootballMatch impl2 = new FootballMatch();
-        bytes memory initData = abi.encodeWithSelector(
-            FootballMatch.initialize.selector,
-            "Test Match 3",
-            owner
-        );
-        ERC1967Proxy proxy2 = new ERC1967Proxy(address(impl2), initData);
-        FootballMatch match2 = FootballMatch(payable(address(proxy2)));
-
-        vm.startPrank(owner);
-        match2.setUSDCToken(address(usdc));
-        match2.addMarketWithLine(MARKET_WINNER, 30000, 0); // 3.00x
-        match2.openMarket(0);
-        vm.stopPrank();
-
-        // Fund treasury with enough USDC first
-        usdc.mint(owner, 500e6);
-        vm.startPrank(owner);
-        usdc.approve(address(match2), 500e6);
-        match2.fundUSDCTreasury(500e6);
-        vm.stopPrank();
-
-        // Now Alice can bet: 100 USDC at 3x = 300 liability, 600 available (500+100)
-        vm.startPrank(alice);
-        usdc.approve(address(match2), 100e6);
-        match2.placeBetUSDC(0, 0, 100e6);
-        vm.stopPrank();
-
-        BettingMatch.Bet[] memory bets = match2.getUserBets(0, alice);
-        assertEq(bets.length, 1);
-        assertEq(bets[0].amount, 100e6);
-    }
-
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // USDC NOT CONFIGURED TESTS
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -441,7 +339,7 @@ contract SwapIntegrationTest is Test {
         vm.stopPrank();
 
         vm.prank(alice);
-        vm.expectRevert(BettingMatch.USDCNotConfigured.selector);
+        vm.expectRevert(BettingMatch.LiquidityPoolNotConfigured.selector);
         match2.placeBetUSDC(0, 0, 100e6);
     }
 

@@ -12,10 +12,10 @@ Chiliz-TV uses two different proxy patterns:
 - Each match is independently upgradeable by its admin
 - Dynamic odds system with x10000 precision
 
-### Streaming System (Beacon Proxy Pattern)
-- **StreamWalletFactory** deploys BeaconProxy instances for streamers
-- All streamer wallets share the same implementation via UpgradeableBeacon
-- Atomic upgrades: upgrading beacon upgrades all proxies at once
+### Streaming System (UUPS per wallet, factory-gated)
+- **StreamWalletFactory** deploys `ERC1967Proxy` instances for streamers (one per streamer)
+- All wallets share the same implementation via the factory's implementation pointer
+- Upgrades are per-wallet — `StreamWalletFactory.upgradeWallet(streamer, newImpl)`, **not atomic**. No `StreamBeaconRegistry` / `UpgradeableBeacon`.
 
 ## Available Scripts
 
@@ -263,24 +263,31 @@ cast send $STREAM_FACTORY \
   --private-key $PRIVATE_KEY
 ```
 
-### Subscribe to Stream
+### Subscribe to Stream (fan-token/ERC20 path via the factory)
 
 ```bash
+# subscribeToStream(streamer, duration, amount, amountOutMin, deadline, token)
+# Requires: token approve on the factory first, OR pass CHZ as msg.value with token = address(0)
 cast send $STREAM_FACTORY \
-  "subscribeToStream(address)" \
-  $STREAMER_ADDRESS \
-  --value 10ether \
+  "subscribeToStream(address,uint256,uint256,uint256,uint256,address)" \
+  $STREAMER_ADDRESS $DURATION $AMOUNT 0 $(date -d '+5 min' +%s) $TOKEN \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY
+
+# Or — preferred — subscribe with CHZ via the ChilizSwapRouter (no factory call needed)
+cast send $SWAP_ROUTER \
+  "subscribeWithCHZ(address,uint256,uint256,uint256)" \
+  $STREAMER_ADDRESS $DURATION 0 $(date -d '+5 min' +%s) \
+  --value 10ether --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 ### Donate to Streamer
 
 ```bash
+# donateToStream(streamer, message, amount, amountOutMin, deadline, token)
 cast send $STREAM_FACTORY \
-  "donateToStream(address)" \
-  $STREAMER_ADDRESS \
-  --value 1ether \
+  "donateToStream(address,string,uint256,uint256,uint256,address)" \
+  $STREAMER_ADDRESS "gg!" $AMOUNT 0 $(date -d '+5 min' +%s) $TOKEN \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY
 ```
@@ -339,13 +346,25 @@ cast send $MATCH_ADDRESS \
   --private-key $PRIVATE_KEY
 ```
 
-### Streaming System (Beacon - All At Once)
+### Streaming System (UUPS - Per Wallet, Factory-Gated)
 
-All streamer wallets upgrade atomically via the registry (owned by Safe multisig):
+Each streamer wallet upgrades individually via the factory. **No atomic
+multi-wallet upgrade exists** — `StreamWallet._authorizeUpgrade` is locked to
+the factory so the factory owner (ideally a Safe multisig) drives each upgrade.
 
 ```bash
-# Via Gnosis Safe UI, call:
-# streamRegistry.setImplementation(newImplementationAddress)
+# 1. Deploy new implementation
+forge create src/streamer/StreamWalletV2.sol:StreamWalletV2 \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# 2. Point the factory at it for FUTURE wallets (optional)
+cast send $STREAM_FACTORY "setImplementation(address)" $NEW_IMPL \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# 3. Upgrade each existing wallet — repeat per streamer
+cast send $STREAM_FACTORY \
+  "upgradeWallet(address,address)" $STREAMER_ADDRESS $NEW_IMPL \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 ## Troubleshooting

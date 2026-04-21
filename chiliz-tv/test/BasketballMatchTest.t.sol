@@ -6,6 +6,7 @@ import {BettingMatch} from "../src/betting/BettingMatch.sol";
 import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {LiquidityPool} from "../src/liquidity/LiquidityPool.sol";
 
 /**
  * @title BasketballMatchTest
@@ -15,6 +16,7 @@ contract BasketballMatchTest is Test {
     BasketballMatch public implementation;
     BasketballMatch public match_;
     MockUSDC public usdc;
+    LiquidityPool public pool;
 
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -45,18 +47,30 @@ contract BasketballMatchTest is Test {
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
         match_ = BasketballMatch(payable(address(proxy)));
 
+        // Deploy and wire LiquidityPool
+        LiquidityPool poolImpl = new LiquidityPool();
+        bytes memory poolInitData = abi.encodeWithSelector(
+            LiquidityPool.initialize.selector,
+            address(usdc), owner, owner,
+            uint16(0), uint16(5000), uint16(9000), uint48(0)
+        );
+        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
+        pool = LiquidityPool(address(poolProxy));
+
         vm.startPrank(owner);
         match_.grantRole(ODDS_SETTER_ROLE, oddsSetter);
         match_.grantRole(RESOLVER_ROLE, resolver);
         match_.setUSDCToken(address(usdc));
+        match_.setLiquidityPool(address(pool));
+        pool.authorizeMatch(address(match_));
         vm.stopPrank();
 
         // Fund users with USDC
         usdc.mint(alice, 100_000e6);
         usdc.mint(bob, 100_000e6);
 
-        // Fund contract for payouts
-        usdc.mint(address(match_), 500_000e6);
+        // Fund LiquidityPool for payouts
+        usdc.mint(address(pool), 500_000e6);
     }
 
     // Helper: approve and place USDC bet

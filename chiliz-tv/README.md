@@ -10,7 +10,7 @@
 ChilizTV provides a decentralized platform with two main systems:
 
 1. **Betting System** — UUPS-based match betting with multiple markets, settled entirely in USDC
-2. **Streaming System** — Beacon-based streamer wallets with subscriptions and donations
+2. **Streaming System** — UUPS streamer wallets (one per streamer, factory-gated upgrades) with subscriptions and donations
 3. **Unified Swap Router** — Single `ChilizSwapRouter` that accepts CHZ, WCHZ, fan tokens, or any ERC20, swaps to USDC via Kayen DEX, and forwards to the target (betting match or streamer/treasury)
 
 All settlements happen in **USDC**. Users can pay with any token — the swap router handles conversion automatically.
@@ -76,8 +76,9 @@ flowchart LR
   - WINNER, TOTAL_POINTS, SPREAD, QUARTER_WINNER, FIRST_TO_SCORE, HIGHEST_QUARTER
   
 - **BettingMatchFactory** (`src/betting/BettingMatchFactory.sol`): Factory for sport-specific proxies
-  - Deploys implementations internally (immutable)
-  - `createFootballMatch()` / `createBasketballMatch()`
+  - Deploys the initial Football / Basketball implementations in its constructor
+  - Implementation pointers are **mutable** (`setFootballImplementation` / `setBasketballImplementation`, `onlyOwner`) and affect ONLY future proxy deployments. Existing proxies are not auto-upgraded.
+  - `createFootballMatch(name, owner)` / `createBasketballMatch(name, owner)` — grants `DEFAULT_ADMIN_ROLE` on the proxy to `owner`. **Prefer a multisig here** (see §6.1).
   - Tracks all deployed matches by sport type
 
 - **ChilizSwapRouter** (`src/swap/ChilizSwapRouter.sol`): Unified swap router for the entire platform
@@ -106,71 +107,65 @@ flowchart LR
 
 ---
 
-### 2.2 Streaming System (Beacon Pattern)
+### 2.2 Streaming System (UUPS Pattern, factory-gated upgrades)
 
 ```mermaid
 flowchart LR
-    subgraph Registry
-        SBR[StreamBeaconRegistry]
-        BEACON[UpgradeableBeacon]
-    end
-    
     subgraph Factory
-        SWF[StreamWalletFactory]
+        SWF[StreamWalletFactory<br/>holds impl pointer + upgrade authority]
     end
-    
+
     subgraph SwapRouter
         CSR[ChilizSwapRouter]
     end
-    
+
     subgraph Implementation
-        SW[StreamWallet]
+        SW[StreamWallet impl]
     end
-    
+
     subgraph Proxies
-        W1[Streamer Wallet 1]
-        W2[Streamer Wallet 2]
-        W3[Streamer Wallet N...]
+        W1[ERC1967Proxy — Streamer 1]
+        W2[ERC1967Proxy — Streamer 2]
+        W3[ERC1967Proxy — Streamer N...]
     end
-    
+
     subgraph Users
         FANS[Fans/Subscribers]
     end
-    
-    SBR -->|manages| BEACON
-    BEACON -->|points to| SW
-    
-    SWF -->|queries beacon| SBR
-    SWF -->|creates BeaconProxy| W1
-    SWF -->|creates BeaconProxy| W2
-    SWF -->|creates BeaconProxy| W3
-    
-    W1 -.->|delegates via beacon to| SW
-    W2 -.->|delegates via beacon to| SW
-    W3 -.->|delegates via beacon to| SW
-    
-    FANS -->|CHZ / Fan Token| CSR
+
+    SWF -->|sets impl for NEW proxies| SW
+    SWF -->|deploys ERC1967Proxy| W1
+    SWF -->|deploys ERC1967Proxy| W2
+    SWF -->|deploys ERC1967Proxy| W3
+    SWF -.->|upgradeWallet one at a time| W1
+
+    W1 -.->|delegates to| SW
+    W2 -.->|delegates to| SW
+    W3 -.->|delegates to| SW
+
+    FANS -->|CHZ / Fan Token / USDC| CSR
     CSR -->|swap to USDC via Kayen| CSR
-    CSR -->|USDC to streamer/treasury| W1
+    CSR -->|USDC split fee/streamer + recordByRouter| W1
     FANS -->|USDC direct via CSR| W2
     FANS -->|Fan Token via Factory| W1
 ```
 
+> **No beacon.** Each proxy is independent; upgrades happen one wallet at a time via `StreamWalletFactory.upgradeWallet(streamer, newImpl)`.
+
 **Components:**
-- **StreamWallet** (`src/streamer/StreamWallet.sol`): Beacon-upgradeable wallet for streamers
-  - Receives subscriptions and donations
-  - Splits platform fee to treasury
-  - Streamer can withdraw their balance anytime
-  
-- **StreamBeaconRegistry** (`src/streamer/StreamBeaconRegistry.sol`): Manages UpgradeableBeacon
-  - Stores beacon pointing to StreamWallet implementation
-  - Owned by Safe multisig for secure upgrades
-  - All streamer wallets upgrade atomically when implementation changes
-  
-- **StreamWalletFactory** (`src/streamer/StreamWalletFactory.sol`): Factory for deploying streamer wallets
-  - Creates BeaconProxy instances for each streamer
-  - Handles subscriptions and donations on behalf of streamers
-  - Enforces platform fee split
+- **StreamWallet** (`src/streamer/StreamWallet.sol`): UUPS-upgradeable wallet for streamers
+  - Receives subscriptions and donations (denominated in USDC)
+  - Splits platform fee to treasury, remainder accumulates in the wallet
+  - Streamer drains their full USDC balance via `withdrawRevenue()` (no amount argument)
+  - Upgrade authority is locked to the factory — streamers cannot self-upgrade
+
+- **StreamWalletFactory** (`src/streamer/StreamWalletFactory.sol`): Factory for deploying & upgrading streamer wallets
+  - Deploys `ERC1967Proxy` instances (one per streamer, created lazily on first subscribe/donate)
+  - Holds the current implementation pointer (`setImplementation` — affects NEW deployments only)
+  - Upgrades existing wallets one at a time via `upgradeWallet(streamer, newImpl)` — **not atomic across wallets**
+  - Handles fan-token subscriptions/donations on behalf of streamers and enforces the platform fee split
+
+> There is **no `StreamBeaconRegistry`** and no `UpgradeableBeacon` in the code. The streaming system uses per-wallet UUPS, not a beacon. Earlier docs described a beacon design that was never shipped.
 
 - **StreamSwapRouter** — **Removed** (merged into ChilizSwapRouter)
   - All streaming payment functions (donateWithCHZ/Token/USDC, subscribeWithCHZ/Token/USDC) are now on `ChilizSwapRouter`
@@ -325,34 +320,74 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
 
 #### StreamWallet.sol
 ```solidity
-// Beacon-upgradeable wallet for streamers
+// UUPS-upgradeable wallet for streamers. Upgrade authority is locked to the factory.
 contract StreamWallet {
-    function initialize(address _streamer, address _treasury, uint16 _feeBps) external;
-    function recordSubscription(address _subscriber, uint256 _amount) external payable;
-    function donate(address _donor, uint256 _amount) external payable;
-    function withdraw() external;
+    // Initialize — called once by the factory via the proxy constructor.
+    function initialize(
+        address streamer_,
+        address treasury_,
+        uint16  platformFeeBps_,
+        address kayenRouter_,
+        address usdc_
+    ) external;
+
+    // Fan-token direct path (factory-only). Pulls tokens, swaps to USDC, splits.
+    function recordSubscription(
+        address subscriber,
+        uint256 amount,
+        uint256 duration,
+        uint256 amountOutMin,
+        uint256 deadline,
+        address token
+    ) external;
+
+    // Swap-router path. State-only bookkeeping; USDC already transferred in.
+    function recordSubscriptionByRouter(address subscriber, uint256 totalUsdcAmount, uint256 duration) external;
+    function recordDonationByRouter(address donor, uint256 totalUsdcAmount, string calldata message) external;
+
+    // Donation paths (direct + factory-initiated)
+    function donate(uint256 amount, string calldata message, uint256 amountOutMin, uint256 deadline, address token) external;
+    function donateFor(address donor, uint256 amount, string calldata message, uint256 amountOutMin, uint256 deadline, address token) external;
+
+    // Streamer drains full USDC balance.
+    function withdrawRevenue() external;
 }
 ```
 
 #### StreamWalletFactory.sol
 ```solidity
-// Factory for creating streamer wallets
+// Factory for creating streamer wallets (ERC1967 proxies) and driving per-wallet upgrades.
 contract StreamWalletFactory {
-    function createStreamWallet(address _streamer) external returns (address);
-    function subscribeToStream(address _streamer) external payable;
-    function donateToStream(address _streamer) external payable;
-}
-```
+    // Explicit wallet creation (normally unnecessary — wallets are created lazily
+    // on first subscribeToStream / donateToStream).
+    function deployWalletFor(address streamer) external returns (address);
 
-#### StreamBeaconRegistry.sol
-```solidity
-// Registry managing beacon for upgrades
-contract StreamBeaconRegistry {
-    function setImplementation(address newImplementation) external onlyOwner;
-    function beacon() external view returns (address);
-    function implementation() external view returns (address);
+    // Pulls `amount` of `token` (or takes native CHZ via ChilizSwapRouter) from msg.sender
+    // and forwards the subscription to the streamer's wallet.
+    function subscribeToStream(
+        address streamer,
+        uint256 duration,
+        uint256 amount,
+        uint256 amountOutMin,
+        uint256 deadline,
+        address token
+    ) external payable nonReentrant;
+
+    function donateToStream(
+        address streamer,
+        string  calldata message,
+        uint256 amount,
+        uint256 amountOutMin,
+        uint256 deadline,
+        address token
+    ) external payable nonReentrant;
+
+    // Upgrade management — owner only.
+    function setImplementation(address newImpl) external; // affects NEW wallets
+    function upgradeWallet(address streamer, address newImpl) external; // per-wallet, not atomic
 }
 ```
+> **No `StreamBeaconRegistry`.** The streaming system has no beacon contract. Earlier docs described one; it was never implemented. Per-wallet UUPS via the factory is the only upgrade path.
 
 ---
 
@@ -391,8 +426,7 @@ forge script script/DeployStreaming.s.sol \
 
 **Deploys:**
 - StreamWallet implementation
-- StreamBeaconRegistry (transfers ownership to Safe)
-- StreamWalletFactory
+- StreamWalletFactory (transfer ownership to Safe after deploy)
 
 ### 4.4 Deploy Complete System
 
@@ -404,6 +438,35 @@ forge script script/DeployAll.s.sol \
 ```
 
 **Deploys both betting and streaming systems.**
+
+### 4.5 Post-Deploy Wiring — **DO NOT SKIP**
+
+`DeployAll` creates the contracts; several runtime links are left to you. Miss
+any of these and bets/claims/resolutions will silently revert. Re-check each
+time you deploy a **new match proxy**, and also when you register the swap
+router with the streaming factory.
+
+**Per new BettingMatch proxy**
+
+| # | Call | Caller (role) | If skipped |
+|---|------|---------------|------------|
+| 1 | `match.setUSDCToken(usdc)` | `ADMIN_ROLE` | `placeBetUSDC` reverts `USDCNotConfigured` |
+| 2 | `pool.authorizeMatch(match)` | `DEFAULT_ADMIN_ROLE` (Safe on pool) | Pool refuses `recordBet` / `payWinner` → reverts `MatchNotAuthorized` |
+| 4 | `match.grantRole(RESOLVER_ROLE, oracle)` | `DEFAULT_ADMIN_ROLE` | `resolveMarket` reverts. **RESOLVER is deliberately NOT granted at init** to separate the resolver key from the admin key. |
+| 5 | `match.grantRole(SWAP_ROUTER_ROLE, ChilizSwapRouter)` | `DEFAULT_ADMIN_ROLE` | Any `placeBetWith*` routed through the swap router reverts |
+
+**Swap router ↔ streaming factory (one-time)**
+
+Order matters — the router asserts the factory knows about it:
+
+1. `StreamWalletFactory.setSwapRouter(ChilizSwapRouter)`
+2. `ChilizSwapRouter.setStreamWalletFactory(streamWalletFactory)` — reverts `RouterNotConfiguredOnFactory` if (1) was skipped.
+
+**Optional but recommended**
+
+- `ChilizSwapRouter.setMatchFactory(bettingMatchFactory)` — without this, the router will forward USDC to any `bettingMatch` argument, not just factory-registered ones (M-02 hardening).
+- Transfer `DEFAULT_ADMIN_ROLE` on `LiquidityPool`, `BettingMatchFactory`, `StreamWalletFactory`, and `ChilizSwapRouter` to the Safe multisig.
+- Seed the `LiquidityPool` via `deposit(amount, receiver)` (requires USDC approval first).
 
 ---
 
@@ -513,25 +576,40 @@ cast send $MATCH_ADDRESS \
   --private-key $PRIVATE_KEY
 ```
 
-### 5.8 Create Streamer Wallet
+### 5.8 Create Streamer Wallet (optional — wallets are created lazily)
+
+Wallets are normally deployed the first time someone subscribes or donates. If
+you need to front-run that for a known streamer (e.g. to hand them the address
+in advance), use:
 
 ```bash
 cast send $STREAM_FACTORY \
-  "createStreamWallet(address)" \
+  "deployWalletFor(address)" \
   $STREAMER_ADDRESS \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY
 ```
 
-### 5.9 Subscribe to Stream
+### 5.9 Subscribe / Donate to a Stream
+
+All payment paths (CHZ, any ERC20, USDC direct) are on **ChilizSwapRouter**, not the
+factory. Use the factory directly only for fan-token paths that don't need a swap.
 
 ```bash
-cast send $STREAM_FACTORY \
-  "subscribeToStream(address)" \
-  $STREAMER_ADDRESS \
+# Preferred: subscribe with CHZ via the swap router (swaps to USDC, splits, records)
+cast send $SWAP_ROUTER \
+  "subscribeWithCHZ(address,uint256,uint256,uint256)" \
+  $STREAMER_ADDRESS 2592000 0 $(date -d '+5 min' +%s) \
   --value 10ether \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# Direct USDC path via the factory (fan-token path uses the same function
+# with token = fan-token address; on-the-fly swap happens inside the wallet):
+#   subscribeToStream(streamer, duration, amount, minOut, deadline, token)
+cast send $STREAM_FACTORY \
+  "subscribeToStream(address,uint256,uint256,uint256,uint256,address)" \
+  $STREAMER_ADDRESS 2592000 100000000 0 $(date -d '+5 min' +%s) $USDC \
+  --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 ---
@@ -545,15 +623,14 @@ cast send $STREAM_FACTORY \
 - **PAUSER_ROLE**: Emergency pause/unpause
 - **TREASURY_ROLE**: Fund USDC treasury, emergency USDC withdrawal
 - **SWAP_ROUTER_ROLE**: Allows ChilizSwapRouter to call `placeBetUSDCFor`
-- **Factory Owner**: No upgrade capability (implementations are immutable)
-- **UUPS**: Each match can be upgraded individually by its DEFAULT_ADMIN
+- **Factory Owner**: Can point the factory at a new implementation for FUTURE match deployments via `setFootballImplementation` / `setBasketballImplementation`. Existing proxies are NOT auto-upgraded.
+- **UUPS**: Each match can be upgraded individually by its own `DEFAULT_ADMIN_ROLE` holder. **`DEFAULT_ADMIN_ROLE` is granted to the `_owner` passed into `createFootballMatch` / `createBasketballMatch`** — set this to a multisig unless you fully trust the key, because a DEFAULT_ADMIN holder can also self-grant `RESOLVER_ROLE` and resolve markets.
+- **RESOLVER_ROLE is NOT auto-granted at init.** You must `grantRole(RESOLVER_ROLE, oracle)` on every new match before any resolution will succeed. This is deliberate — it separates the key that resolves markets from the key that administers them.
 
 ### 6.2 Streaming System
-- **StreamWallet Owner (Streamer)**: Can withdraw their balance
-- **Factory Owner**: Can create wallets and update fee parameters
-- **Registry Owner (Safe Multisig)**: Can upgrade StreamWallet implementation
-  - All streamer wallets upgrade atomically
-  - Controlled by Safe multisig for security
+- **Streamer (StreamWallet beneficiary)**: Can call `withdrawRevenue()` to drain the wallet's USDC balance.
+- **StreamWalletFactory Owner**: Can create wallets, set fee/treasury/router parameters, and **upgrade each streamer wallet individually** via `upgradeWallet(streamer, newImpl)`. `StreamWallet._authorizeUpgrade` is locked to the factory, so this is the only upgrade path.
+- **No atomic upgrades.** There is no beacon and no `StreamBeaconRegistry`. Upgrading N wallets = N transactions. Put the factory behind a Safe multisig.
 
 ### 6.3 Treasury
 - **Safe Multisig**: Receives platform fees from streaming system
@@ -571,7 +648,7 @@ forge test -vvv
 Run specific test:
 ```bash
 forge test --match-contract BettingMatchTest -vvv
-forge test --match-contract StreamBeaconRegistryTest -vvv
+forge test --match-contract StreamWalletTest -vvv
 ```
 
 ---
@@ -584,11 +661,11 @@ forge test --match-contract StreamBeaconRegistryTest -vvv
 ✅ Low gas costs for proxy deployment  
 ✅ Match owners have full control over their matches  
 
-### 8.2 Streaming System (Beacon)
-✅ All streamers upgrade atomically  
-✅ Safe multisig controls upgrades  
-✅ Platform can fix bugs for all streamers at once  
-✅ Streamers don't need to worry about upgrades  
+### 8.2 Streaming System (UUPS per wallet, factory-gated)
+✅ Each wallet upgrades independently — lets you roll out (or roll back) to one streamer at a time
+✅ Safe multisig controls upgrades (put it on the factory owner)
+✅ Streamers cannot self-upgrade — `_authorizeUpgrade` is locked to the factory
+⚠ Upgrading many wallets is O(N) transactions — **not atomic**. If cross-wallet atomicity ever becomes a requirement, the streaming system will need a Beacon refactor. No `StreamBeaconRegistry` exists today.
 
 ---
 
@@ -603,7 +680,6 @@ forge test --match-contract StreamBeaconRegistryTest -vvv
 
 **Streaming System:**
 - StreamWallet Implementation: `TBD`
-- StreamBeaconRegistry: `TBD`
 - StreamWalletFactory: `TBD`
 
 ---
