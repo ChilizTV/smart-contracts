@@ -16,7 +16,8 @@ interface ILiquidityPool {
     /// @notice Record a bet that has already been funded to the pool.
     /// @dev    Caller MUST have transferred `netStake` USDC to the pool
     ///         before calling. Caller must hold `MATCH_ROLE` or `ROUTER_ROLE`.
-    ///         Reverts on cap breach or insufficient free balance.
+    ///         Reverts on cap breach, insufficient free balance, or breach
+    ///         of the pool-wide `maxBetAmount` (if set).
     function recordBet(
         address bettingMatch,
         uint256 marketId,
@@ -25,12 +26,18 @@ interface ILiquidityPool {
         uint256 netExposure
     ) external;
 
-    /// @notice Release losing-side liability when a market resolves.
+    /// @notice Release losing-side liability AND accrue the treasury's share
+    ///         of the losing stakes at market resolution.
     /// @dev    Called by the match contract during `resolveMarket`.
+    ///         `losingNetStake` is the sum of post-fee stakes on all losing
+    ///         selections. 50% of this amount (`TREASURY_SHARE_BPS`) accrues
+    ///         as a pull-based claim for the treasury; the remaining 50%
+    ///         stays in the pool and compounds into LP NAV.
     function settleMarket(
         address bettingMatch,
         uint256 marketId,
-        uint256 losingLiabilityToRelease
+        uint256 losingLiabilityToRelease,
+        uint256 losingNetStake
     ) external;
 
     /// @notice Pay a winner. Transfers `payout` USDC and releases the bet's
@@ -59,18 +66,71 @@ interface ILiquidityPool {
     ) external;
 
     // -----------------------------------------------------------------------
-    // Governance / view
+    // Treasury rotation (2-step) and withdrawal (pull-based)
+    // -----------------------------------------------------------------------
+
+    /// @notice Propose a new treasury address. Only callable by the current
+    ///         treasury. Rotation completes when the pending address calls
+    ///         `acceptTreasury()`.
+    function proposeTreasury(address newTreasury) external;
+
+    /// @notice Cancel a pending treasury proposal. Only callable by the
+    ///         current treasury.
+    function cancelTreasuryProposal() external;
+
+    /// @notice Accept the pending treasury role. Must be called from the
+    ///         address set via `proposeTreasury`. Completes the rotation.
+    function acceptTreasury() external;
+
+    /// @notice Withdraw `amount` of accrued treasury balance in USDC.
+    /// @dev    Only callable by the current treasury. Funds always go to
+    ///         `treasury`. Reverts if `amount` exceeds either the accrued
+    ///         balance or the pool's free (non-bet-liability) balance.
+    function withdrawTreasury(uint256 amount) external;
+
+    // -----------------------------------------------------------------------
+    // Admin (DEFAULT_ADMIN_ROLE-gated)
+    // -----------------------------------------------------------------------
+
+    /// @notice Set a pool-wide maximum per-bet netStake. 0 = disabled.
+    function setMaxBetAmount(uint256 newMax) external;
+
+    // -----------------------------------------------------------------------
+    // Views
     // -----------------------------------------------------------------------
 
     /// @notice Configured protocol fee in basis points (stake skim at placement).
     function protocolFeeBps() external view returns (uint16);
 
-    /// @notice Address receiving protocol fees (NOT LP capital).
+    /// @notice Address receiving protocol fees and holding withdrawal rights
+    ///         over accrued treasury balance.
     function treasury() external view returns (address);
 
-    /// @notice USDC not currently reserved for potential winners.
+    /// @notice Pending treasury in a 2-step rotation (0 = none pending).
+    function pendingTreasury() external view returns (address);
+
+    /// @notice Treasury's accrued USDC claim against the pool. Physically
+    ///         held inside the pool contract; withdrawable via
+    ///         `withdrawTreasury`.
+    function accruedTreasury() external view returns (uint256);
+
+    /// @notice Amount of USDC the treasury can withdraw RIGHT NOW. Equal to
+    ///         `min(accruedTreasury, USDC.balance - totalLiabilities)` —
+    ///         i.e. capped so a withdrawal can never starve live bet payouts.
+    function treasuryWithdrawable() external view returns (uint256);
+
+    /// @notice USDC not currently reserved for potential winners or treasury
+    ///         accrual. Same value as ERC-4626 `totalAssets()`.
     function freeBalance() external view returns (uint256);
 
     /// @notice Global sum of reserved winning-side liabilities.
     function totalLiabilities() external view returns (uint256);
+
+    /// @notice Pool utilization in basis points:
+    ///         `totalLiabilities * 10_000 / totalAssets()`. Capped at
+    ///         `type(uint16).max` to avoid overflow when totalAssets → 0.
+    function utilization() external view returns (uint16);
+
+    /// @notice Pool-wide maximum per-bet netStake (0 = disabled).
+    function maxBetAmount() external view returns (uint256);
 }

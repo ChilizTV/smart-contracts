@@ -34,7 +34,11 @@ Create a `.env` file in the `chiliz-tv` directory:
 ```bash
 # Required for deployment
 PRIVATE_KEY=0x...           # Deployer private key
-SAFE_ADDRESS=0x...          # Gnosis Safe multisig (treasury)
+SAFE_ADDRESS=0x...          # Treasury Safe multisig — holds `treasury` on LiquidityPool.
+                            # Controls `withdrawTreasury` and 2-step treasury rotation.
+ADMIN_ADDRESS=0x...         # Admin key for LiquidityPool DEFAULT_ADMIN_ROLE.
+                            # MUST be distinct from SAFE_ADDRESS. Controls authorize/revoke
+                            # matches, fee/cap setters, pause, and UUPS upgrades.
 
 # Optional for match setup
 FACTORY_ADDRESS=0x...       # BettingMatchFactory address (for SetupFootballMatch)
@@ -136,15 +140,16 @@ cast send $MATCH_ADDRESS \
   $CHILIZ_SWAP_ROUTER \
   --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
-# 3. Fund USDC treasury (for paying out USDC wins)
+# 3. Seed LiquidityPool with USDC (backs bet payouts)
+# Note: the match contract no longer holds USDC. All bet custody is on LiquidityPool.
 cast send $USDC_ADDRESS \
   "approve(address,uint256)" \
-  $MATCH_ADDRESS $AMOUNT \
+  $LIQUIDITY_POOL $AMOUNT \
   --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
-cast send $MATCH_ADDRESS \
-  "fundUSDCTreasury(uint256)" \
-  $AMOUNT \
+cast send $LIQUIDITY_POOL \
+  "deposit(uint256,address)" \
+  $AMOUNT $SAFE_ADDRESS \
   --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
 # 4. Test a swap bet (send native CHZ, auto-swaps to USDC)
@@ -315,15 +320,28 @@ cast send $STREAM_FACTORY \
 
 ## Access Control Roles
 
+**On each BettingMatch:**
+
 | Role | Permissions |
 |------|-------------|
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke all roles, upgrade contract |
-| `ADMIN_ROLE` | Add markets, change market state |
+| `ADMIN_ROLE` | Add markets, change market state, `setMaxAllowedOdds`, `setUSDCToken`, `setLiquidityPool` |
 | `ODDS_SETTER_ROLE` | Update market odds |
 | `RESOLVER_ROLE` | Resolve markets with results |
 | `PAUSER_ROLE` | Pause/unpause contract |
-| `TREASURY_ROLE` | Emergency fund withdrawal |
 | `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users (ChilizSwapRouter) |
+
+> The match contract no longer holds USDC — all bet custody is on `LiquidityPool`. The old `TREASURY_ROLE` was removed with that migration.
+
+**On `LiquidityPool`:**
+
+| Role / authority | Who holds it | Permissions |
+|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | Admin key (EOA or ops multisig — NOT the treasury Safe) | Authorize/revoke matches, set fee / caps / cooldown / `maxBetAmount`, upgrade |
+| `PAUSER_ROLE` | Admin key | Emergency pause |
+| `MATCH_ROLE` | Each BettingMatch proxy | Call `recordBet` / `settleMarket` / `payWinner` / `payRefund` |
+| `ROUTER_ROLE` | ChilizSwapRouter | Call `recordBet` on behalf of users |
+| `treasury` (state var) | Treasury Safe | `proposeTreasury` / `cancelTreasuryProposal` / `acceptTreasury` / `withdrawTreasury` |
 
 ## Upgrading Contracts
 

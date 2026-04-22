@@ -6,7 +6,10 @@
       "Bash(~/.foundry/bin/forge test:*)",
       "Bash(forge test:*)",
       "Bash(python3 -c ' *)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(git submodule *)",
+      "Bash(awk '/^[^\\\\/].*\".*[^\\\\x00-\\\\x7F].*\"/' chiliz-tv/test/LiquidityPoolV2Test.t.sol)",
+      "Bash(git add *)"
     ]
   }
 }
