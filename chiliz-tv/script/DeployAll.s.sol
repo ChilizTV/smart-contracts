@@ -12,7 +12,12 @@ import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
 // Unified swap router
 import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 
-// PayoutEscrow is deployed per-match by BettingMatchFactory — no shared escrow
+// NOTE (2026-04-22): USDC custody lives in `LiquidityPool` (single shared
+// ERC-4626 vault). Deploy it separately via `script/DeployLiquidityPool.s.sol`
+// — it requires distinct admin and treasury addresses and is intentionally
+// kept out of this all-in-one script. After pool + factory are deployed,
+// wire each match via `pool.authorizeMatch(matchProxy)` from the admin key
+// and `match.setLiquidityPool(pool)` from the match admin.
 
 /**
  * @title DeployAll
@@ -172,7 +177,9 @@ contract DeployAll is Script {
         console.log("BettingMatchFactory:", address(bettingFactory));
         console.log("StreamWalletFactory:", address(streamFactory));
         console.log("ChilizSwapRouter:   ", address(swapRouter));
-        console.log("Note: PayoutEscrow is deployed per-match by BettingMatchFactory");
+        console.log("");
+        console.log("MISSING (deploy separately):");
+        console.log("  LiquidityPool    <- script/DeployLiquidityPool.s.sol");
         console.log("=========================================");
         console.log("");
     }
@@ -180,14 +187,20 @@ contract DeployAll is Script {
     function _printPostDeploymentSteps() internal view {
         console.log("POST-DEPLOYMENT STEPS:");
         console.log("======================");
-        console.log("1. For each BettingMatch (proxy + escrow deployed together by factory):");
+        console.log("0. Deploy LiquidityPool (separate script -- requires distinct");
+        console.log("   ADMIN_ADDRESS and SAFE_ADDRESS envs):");
+        console.log("   forge script script/DeployLiquidityPool.s.sol --rpc-url $RPC_URL --broadcast");
+        console.log("");
+        console.log("1. For each BettingMatch proxy created by the factory:");
         console.log("   a) cast send <MATCH> 'setUSDCToken(address)'", usdcAddress);
-        console.log("   b) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'SWAP_ROUTER_ROLE')", address(swapRouter));
-        console.log("   c) Escrow is wired at deploy time - no authorizeMatch needed");
-        console.log("2. Fund each match's dedicated escrow with USDC (from Safe):");
-        console.log("   Step A: cast send <USDC> 'approve(address,uint256)' <MATCH_ESCROW> <AMOUNT>");
-        console.log("   Step B: cast send <MATCH_ESCROW> 'fund(uint256)' <AMOUNT>");
-        console.log("   Note: get escrow address via BettingMatchFactory.getEscrow(<MATCH>)");
+        console.log("   b) cast send <MATCH> 'setLiquidityPool(address)' <LIQUIDITY_POOL>");
+        console.log("   c) cast send <LIQUIDITY_POOL> 'authorizeMatch(address)' <MATCH>   # from ADMIN_ADDRESS");
+        console.log("   d) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'SWAP_ROUTER_ROLE')", address(swapRouter));
+        console.log("   e) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'RESOLVER_ROLE') <ORACLE>");
+        console.log("   f) cast send <MATCH> 'setMaxAllowedOdds(uint32)' <cap>   # recommended");
+        console.log("2. Seed LiquidityPool with USDC:");
+        console.log("   Step A: cast send <USDC> 'approve(address,uint256)' <LIQUIDITY_POOL> <AMOUNT>");
+        console.log("   Step B: cast send <LIQUIDITY_POOL> 'deposit(uint256,address)' <AMOUNT> <RECEIVER>");
         console.log("=========================================");
     }
 }

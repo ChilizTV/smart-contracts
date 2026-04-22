@@ -131,6 +131,23 @@ abstract contract BettingMatch is
     ///         full potential payout.
     mapping(uint256 => mapping(uint64 => uint256)) internal _selectionNetExposures;
 
+    /// @notice Per-market TOTAL net stake (post-fee). Running sum across
+    ///         all bets on the market; used at resolution to compute the
+    ///         losing-side net-stake total passed to `LiquidityPool.settleMarket`
+    ///         for treasury accrual.
+    mapping(uint256 => uint256) internal _marketNetStake;
+
+    /// @notice Per-market/per-selection net stake (post-fee). Incremented
+    ///         on every bet; subtracted from `_marketNetStake` on resolution
+    ///         for the winning selection to isolate the losing total.
+    mapping(uint256 => mapping(uint64 => uint256)) internal _selectionNetStake;
+
+    /// @notice Per-match admin-configurable maximum odds (post-4-decimal, e.g.
+    ///         50000 = 5.00x). Softer cap than the hardcoded `MAX_ODDS`. 0 =
+    ///         disabled (uses `MAX_ODDS` as the cap). Gives operators a knob
+    ///         to tighten exposure per sport / per deployment without upgrade.
+    uint32 public maxAllowedOdds;
+
     // ═══════════════════════════════════════════════════════════════════════
     // EVENTS
     // ═══════════════════════════════════════════════════════════════════════
@@ -154,6 +171,7 @@ abstract contract BettingMatch is
     event Refund(uint256 indexed marketId, address indexed user, uint256 betIndex, uint256 amount);
     event USDCTokenSet(address indexed token);
     event LiquidityPoolSet(address indexed pool);
+    event MaxAllowedOddsSet(uint32 oldMax, uint32 newMax);
 
     // ═══════════════════════════════════════════════════════════════════════
     // CUSTOM ERRORS
@@ -289,10 +307,28 @@ abstract contract BettingMatch is
         return _oddsRegistries[marketId].values[oddsIndex - 1];
     }
 
-    function _validateOdds(uint32 odds) internal pure {
-        if (odds < MIN_ODDS || odds > MAX_ODDS) {
-            revert InvalidOddsValue(odds, MIN_ODDS, MAX_ODDS);
+    /// @dev Validates odds against (a) the hardcoded MIN/MAX boundary and
+    ///      (b) the softer admin-configurable `maxAllowedOdds` (when non-zero).
+    ///      Operational defence against fat-finger odds updates by the backend
+    ///      odds-setter key.
+    function _validateOdds(uint32 odds) internal view {
+        uint32 softCap = maxAllowedOdds;
+        uint32 effectiveMax = softCap == 0 ? MAX_ODDS : softCap;
+        if (odds < MIN_ODDS || odds > effectiveMax) {
+            revert InvalidOddsValue(odds, MIN_ODDS, effectiveMax);
         }
+    }
+
+    /// @notice Admin setter for the per-match soft odds cap.
+    /// @dev    Must be 0 (disabled) or within [MIN_ODDS, MAX_ODDS]. Takes
+    ///         effect for all future `setMarketOdds` calls; does NOT
+    ///         retroactively invalidate bets at odds > new cap.
+    function setMaxAllowedOdds(uint32 newMax) external onlyRole(ADMIN_ROLE) {
+        if (newMax != 0 && (newMax < MIN_ODDS || newMax > MAX_ODDS)) {
+            revert InvalidOddsValue(newMax, MIN_ODDS, MAX_ODDS);
+        }
+        emit MaxAllowedOddsSet(maxAllowedOdds, newMax);
+        maxAllowedOdds = newMax;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -444,6 +480,8 @@ abstract contract BettingMatch is
         _selectionLiabilities[marketId][selection]   += potentialPayout;
         _marketNetExposure[marketId]                 += netExposure;
         _selectionNetExposures[marketId][selection]  += netExposure;
+        _marketNetStake[marketId]                    += netStake;
+        _selectionNetStake[marketId][selection]      += netStake;
 
         // Pool-side bookkeeping + solvency / cap enforcement. Reverts here
         // cascade to the user; their USDC transfer is also reverted atomically.
@@ -462,9 +500,10 @@ abstract contract BettingMatch is
 
     /// @notice Resolve a market with the final result.
     /// @dev    Releases every losing selection's reserved net exposure on the
-    ///         pool. Winning-side reservations stay until each winner claims.
-    ///         Net-exposure bookkeeping parallels the payout bookkeeping but
-    ///         is what the pool actually tracks (= `payout - stake`).
+    ///         pool AND signals the losing net-stake total so the pool can
+    ///         accrue the treasury's 50% share. Winning-side reservations
+    ///         stay until each winner claims. Net-exposure bookkeeping
+    ///         parallels the payout bookkeeping (= `payout - stake`).
     function resolveMarket(uint256 marketId, uint64 result)
         external
         validMarket(marketId)
@@ -484,11 +523,18 @@ abstract contract BettingMatch is
             _marketNetExposure[marketId] - _selectionNetExposures[marketId][result];
         uint256 losingPayout =
             _marketLiabilities[marketId] - _selectionLiabilities[marketId][result];
+        uint256 losingNetStake =
+            _marketNetStake[marketId] - _selectionNetStake[marketId][result];
 
         _marketNetExposure[marketId] -= losingNetExposure;
         _marketLiabilities[marketId] -= losingPayout;
 
-        liquidityPool.settleMarket(address(this), marketId, losingNetExposure);
+        liquidityPool.settleMarket(
+            address(this),
+            marketId,
+            losingNetExposure,
+            losingNetStake
+        );
 
         emit MarketResolved(marketId, result, core.resolvedAt);
     }
@@ -727,6 +773,9 @@ abstract contract BettingMatch is
     //  10. _selectionLiabilities (mapping)
     //  11. _marketNetExposure (mapping)
     //  12. _selectionNetExposures (mapping)
-    // 12 named slots + 38 gap = 50 total (OZ upgradeable convention).
-    uint256[38] private __gap;
+    //  13. _marketNetStake (mapping)
+    //  14. _selectionNetStake (mapping)
+    //  15. maxAllowedOdds (uint32)
+    // 15 named slots + 35 gap = 50 total (OZ upgradeable convention).
+    uint256[35] private __gap;
 }

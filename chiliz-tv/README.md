@@ -451,9 +451,12 @@ router with the streaming factory.
 | # | Call | Caller (role) | If skipped |
 |---|------|---------------|------------|
 | 1 | `match.setUSDCToken(usdc)` | `ADMIN_ROLE` | `placeBetUSDC` reverts `USDCNotConfigured` |
-| 2 | `pool.authorizeMatch(match)` | `DEFAULT_ADMIN_ROLE` (Safe on pool) | Pool refuses `recordBet` / `payWinner` → reverts `MatchNotAuthorized` |
-| 4 | `match.grantRole(RESOLVER_ROLE, oracle)` | `DEFAULT_ADMIN_ROLE` | `resolveMarket` reverts. **RESOLVER is deliberately NOT granted at init** to separate the resolver key from the admin key. |
-| 5 | `match.grantRole(SWAP_ROUTER_ROLE, ChilizSwapRouter)` | `DEFAULT_ADMIN_ROLE` | Any `placeBetWith*` routed through the swap router reverts |
+| 2 | `match.setLiquidityPool(pool)` | `ADMIN_ROLE` | `placeBetUSDC` reverts `LiquidityPoolNotConfigured` |
+| 3 | `pool.authorizeMatch(match)` | `DEFAULT_ADMIN_ROLE` (admin key on pool — **NOT** the treasury Safe) | Pool refuses `recordBet` / `payWinner` → reverts `MatchNotAuthorized` |
+| 4 | `match.grantRole(RESOLVER_ROLE, oracle)` | `DEFAULT_ADMIN_ROLE` (match admin) | `resolveMarket` reverts. **RESOLVER is deliberately NOT granted at init** to separate the resolver key from the admin key. |
+| 5 | `match.grantRole(SWAP_ROUTER_ROLE, ChilizSwapRouter)` | `DEFAULT_ADMIN_ROLE` (match admin) | Any `placeBetWith*` routed through the swap router reverts |
+| 6 | `match.setMaxAllowedOdds(maxOdds)` *(recommended)* | `ADMIN_ROLE` | Falls back to hardcoded `MAX_ODDS = 100x` (1_000_000). Tighten per-sport to harden against odds-setter fat-fingers. |
+| 7 | `pool.setMaxBetAmount(cap)` *(recommended)* | `DEFAULT_ADMIN_ROLE` (pool admin) | 0 disables. Any single bet larger than this (post-fee netStake) reverts `BetAmountAboveCap`. |
 
 **Swap router ↔ streaming factory (one-time)**
 
@@ -465,8 +468,9 @@ Order matters — the router asserts the factory knows about it:
 **Optional but recommended**
 
 - `ChilizSwapRouter.setMatchFactory(bettingMatchFactory)` — without this, the router will forward USDC to any `bettingMatch` argument, not just factory-registered ones (M-02 hardening).
-- Transfer `DEFAULT_ADMIN_ROLE` on `LiquidityPool`, `BettingMatchFactory`, `StreamWalletFactory`, and `ChilizSwapRouter` to the Safe multisig.
-- Seed the `LiquidityPool` via `deposit(amount, receiver)` (requires USDC approval first).
+- **Role separation on `LiquidityPool` (critical):** the admin key (`DEFAULT_ADMIN_ROLE`) and the `treasury` state variable MUST be distinct addresses. Admin is typically a Safe or ops EOA for operational changes; the treasury is the Safe that pulls accrued funds. Deploying with the same address collapses the compartmentalisation and lets an admin compromise drain accrued treasury. See [docs/treasury.md](docs/treasury.md).
+- Transfer `DEFAULT_ADMIN_ROLE` on `BettingMatchFactory`, `StreamWalletFactory`, and `ChilizSwapRouter` to the Safe multisig (these are singleton admin keys for those contracts — separate from the pool's admin/treasury split).
+- Seed the `LiquidityPool` via `deposit(amount, receiver)` (requires USDC approval first). First deposit is safe against inflation attack (`_decimalsOffset = 6`).
 
 ---
 
@@ -617,24 +621,52 @@ cast send $STREAM_FACTORY \
 ## 6. Security & Access Control
 
 ### 6.1 Betting System
-- **ADMIN_ROLE**: Add markets, control market state (open/suspend/close/cancel)
+
+**Roles on each BettingMatch:**
+- **ADMIN_ROLE**: Add markets, control market state (open/suspend/close/cancel), `setMaxAllowedOdds`, `setUSDCToken`, `setLiquidityPool`
 - **ODDS_SETTER_ROLE**: Update market odds in real-time
 - **RESOLVER_ROLE**: Set final results for markets
 - **PAUSER_ROLE**: Emergency pause/unpause
-- **TREASURY_ROLE**: Fund USDC treasury, emergency USDC withdrawal
 - **SWAP_ROUTER_ROLE**: Allows ChilizSwapRouter to call `placeBetUSDCFor`
 - **Factory Owner**: Can point the factory at a new implementation for FUTURE match deployments via `setFootballImplementation` / `setBasketballImplementation`. Existing proxies are NOT auto-upgraded.
+
+> **Note:** the match contract no longer holds USDC. There is no `TREASURY_ROLE` — all USDC lives in `LiquidityPool`, which has its own admin/treasury separation (see §6.3).
+
+**Upgrade path:**
 - **UUPS**: Each match can be upgraded individually by its own `DEFAULT_ADMIN_ROLE` holder. **`DEFAULT_ADMIN_ROLE` is granted to the `_owner` passed into `createFootballMatch` / `createBasketballMatch`** — set this to a multisig unless you fully trust the key, because a DEFAULT_ADMIN holder can also self-grant `RESOLVER_ROLE` and resolve markets.
 - **RESOLVER_ROLE is NOT auto-granted at init.** You must `grantRole(RESOLVER_ROLE, oracle)` on every new match before any resolution will succeed. This is deliberate — it separates the key that resolves markets from the key that administers them.
+
+**Odds-setter hardening (operational defence):**
+- `BettingMatch.setMaxAllowedOdds(uint32)` — admin-settable per-match soft cap on odds (default 0 = use hardcoded `MAX_ODDS = 100x`). Tighten per sport: a fat-finger that accidentally sets 1000x instead of 10x is blocked at `setMarketOdds`.
+- `LiquidityPool.setMaxBetAmount(uint256)` — pool-wide max per-bet netStake (0 = disabled). Bounds damage per bet regardless of the attacker's capital.
+- Runtime `pause()` on the pool is the emergency kill-switch.
 
 ### 6.2 Streaming System
 - **Streamer (StreamWallet beneficiary)**: Can call `withdrawRevenue()` to drain the wallet's USDC balance.
 - **StreamWalletFactory Owner**: Can create wallets, set fee/treasury/router parameters, and **upgrade each streamer wallet individually** via `upgradeWallet(streamer, newImpl)`. `StreamWallet._authorizeUpgrade` is locked to the factory, so this is the only upgrade path.
 - **No atomic upgrades.** There is no beacon and no `StreamBeaconRegistry`. Upgrading N wallets = N transactions. Put the factory behind a Safe multisig.
 
-### 6.3 Treasury
-- **Safe Multisig**: Receives platform fees from streaming system
-- Controlled by multiple signers for security
+### 6.3 Treasury & LiquidityPool
+
+**Two distinct keys on `LiquidityPool`** — do NOT conflate them:
+
+| Key | On-chain authority | What it can do | What it CANNOT do |
+|---|---|---|---|
+| **Admin key** | `DEFAULT_ADMIN_ROLE` + `PAUSER_ROLE` | Authorize/revoke matches, `setProtocolFeeBps`, `setMaxLiabilityPerMarketBps`, `setMaxLiabilityPerMatchBps`, `setMaxBetAmount`, `setDepositCooldownSeconds`, `pause` / `unpause`, UUPS upgrades | Rotate `treasury`, touch `accruedTreasury`, withdraw USDC |
+| **Treasury Safe** | `treasury` state variable (NOT a role) | `proposeTreasury` / `cancelTreasuryProposal` / `acceptTreasury` / `withdrawTreasury` | Authorize matches, set fees, pause, upgrade |
+
+**Loss split (hardcoded 50/50):** every losing net-stake at settlement splits — half to `accruedTreasury` (pull-claim for the Safe), half compounded into LP NAV.
+
+**Treasury rotation is 2-step:** current Safe calls `proposeTreasury(newSafe)`; the incoming Safe must call `acceptTreasury()` from its own address. Protects against fat-finger rotations — only path for rotation, admin CANNOT rotate.
+
+**Pull, not push:** accrued balance sits as USDC inside the pool. The Safe pulls via `withdrawTreasury(amount)`. The call is bounded by `treasuryWithdrawable() = min(accruedTreasury, USDC.balance − totalLiabilities)` — bettors always have precedence.
+
+**Inflation-attack mitigated:** ctvLP uses OZ 5.x `_decimalsOffset = 6` (12 total decimals). First deposit is safe regardless of size.
+
+**Other treasury-adjacent:**
+- **Streaming platform fees**: forwarded directly to the Safe by `StreamWalletFactory` / `ChilizSwapRouter`. Admin on those factories rotates treasury via their own `setTreasury` (Ownable — unchanged, independent of the pool's 2-step pattern).
+
+See [docs/treasury.md](docs/treasury.md) for the operational runbook and [docs/liquidity-providers.md](docs/liquidity-providers.md) for the LP-facing explainer.
 
 ---
 
@@ -690,4 +722,4 @@ For technical questions or integration support, contact the ChilizTV development
 
 ---
 
-**Last Updated**: 2026-02-20
+**Last Updated**: 2026-04-22 — added LiquidityPool 50/50 loss split, pull-based treasury withdrawal, 2-step treasury rotation, admin/treasury role separation, ERC-4626 inflation mitigation, `maxBetAmount`, `maxAllowedOdds`, utilization views.

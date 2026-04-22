@@ -62,6 +62,8 @@ This PR adds comprehensive deployment scripts for all Chiliz-TV smart contracts 
 - Explained in comments and documentation
 - Different from deployer (Foundry limitation)
 
+> **Important — LiquidityPool admin/treasury split (2026-04-22 onwards):** on `LiquidityPool`, the admin key (`DEFAULT_ADMIN_ROLE`) and the `treasury` state variable MUST be distinct addresses. The admin key runs operational setters and upgrades; the treasury Safe is the ONLY address that can rotate treasury (via 2-step `proposeTreasury` / `acceptTreasury`) and pull accrued funds via `withdrawTreasury`. Deploying with a single Safe for both collapses the compartmentalisation. See [docs/treasury.md](docs/treasury.md).
+
 ### UUPS Proxy Pattern Explained
 
 Every deployment script follows the UUPS (Universal Upgradeable Proxy Standard) pattern:
@@ -104,10 +106,10 @@ All scripts follow this streamlined order:
    - Implementation pointers on both factories are **mutable** via `onlyOwner` setters (`setFootballImplementation` / `setBasketballImplementation` / `setImplementation`). They affect **new proxy deployments only** — existing proxies are NOT auto-upgraded and must be upgraded individually (UUPS on betting via `upgradeToAndCall`, UUPS on streaming via `StreamWalletFactory.upgradeWallet`).
 
 2. **Transfer Ownership** (to Safe multisig)
-   - BettingMatchFactory â†’ Safe (controls who gets new matches + implementation pointer)
-   - StreamWalletFactory â†’ Safe (controls per-wallet upgrades)
-   - LiquidityPool → Safe (DEFAULT_ADMIN_ROLE: controls match whitelist, caps, fees, upgrade)
-   - ChilizSwapRouter â†’ Safe (controls treasury, platformFeeBps, registered factories)
+   - BettingMatchFactory → Safe (controls who gets new matches + implementation pointer)
+   - StreamWalletFactory → Safe (controls per-wallet upgrades)
+   - LiquidityPool admin → **Admin key (EOA or dedicated ops multisig — NOT the treasury Safe)**. `DEFAULT_ADMIN_ROLE` controls match whitelist, caps, fees, pause, upgrades. Treasury Safe is passed as a **separate** `treasury_` parameter at `initialize()` and is the only address that can rotate treasury or withdraw accrued funds.
+   - ChilizSwapRouter → Safe (controls treasury, platformFeeBps, registered factories — Ownable, independent of the pool's admin/treasury split)
 
 **Gas Optimization:**
 - First proxy deployment: ~680K gas (factory constructor cost already paid separately — implementations sit on-chain ready to be reused)
