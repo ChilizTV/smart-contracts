@@ -22,8 +22,8 @@
     "BasketballMatch": "",
     "StreamWallet": ""
   },
-  "escrow": {
-    "note": "Single shared PayoutEscrow — deploy via DeployPayout.s.sol, then authorizeMatch() for each proxy.",
-    "PayoutEscrow": ""
+  "liquidityPool": {
+    "note": "Single shared ERC-4626 LiquidityPool — deploy via DeployLiquidityPool.s.sol (requires distinct ADMIN_ADDRESS and SAFE_ADDRESS), then authorizeMatch() for each proxy from ADMIN_ADDRESS.",
+    "LiquidityPool": ""
   }
 }

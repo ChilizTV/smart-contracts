@@ -1,30 +1,36 @@
 #!/bin/bash
-# 
+#
 # ChilizTV Deployment Script (Chiliz-only)
-# 
 #
 # Usage:
 #   ./deploy.sh --network chilizTestnet --all
 #   ./deploy.sh --network chilizTestnet --match
 #   ./deploy.sh --network chilizTestnet --stream
 #   ./deploy.sh --network chilizTestnet --swap
+#   ./deploy.sh --network chilizTestnet --pool
 #   ./deploy.sh --network chilizMainnet --all
 #
-# FUTURE WORK: Base chain support (postponed not included here)
-# 
+# IMPORTANT: ASCII-only. Do NOT add box-drawing, arrows, emojis, or any
+# non-ASCII character. The file has round-tripped through Windows before
+# and been corrupted by CP1252/UTF-8 mojibake. Keep it clean.
+#
+# FUTURE WORK: Base chain support (postponed, not included here).
+#
 
 set -e
 
-# Colors 
+# --- Colors ------------------------------------------------------------------
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Parse arguments 
+# --- Parse arguments ---------------------------------------------------------
 NETWORK=""
 DEPLOY_TYPE=""
+
+USAGE="Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--pool>"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -38,30 +44,41 @@ while [[ $# -gt 0 ]]; do
             DEPLOY_TYPE="stream"; shift ;;
         --swap)
             DEPLOY_TYPE="swap"; shift ;;
-        --payout)
-            DEPLOY_TYPE="payout"; shift ;;
+        --pool)
+            DEPLOY_TYPE="pool"; shift ;;
         *)
             echo -e "${RED}Unknown argument: $1${NC}"
-            echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--payout>"
+            echo "$USAGE"
             exit 1 ;;
     esac
 done
 
 if [ -z "$NETWORK" ] || [ -z "$DEPLOY_TYPE" ]; then
     echo -e "${RED}Missing required arguments.${NC}"
-    echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--payout>"
+    echo "$USAGE"
     exit 1
 fi
 
-#  Load .env 
-if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
-else
+# --- Load .env ---------------------------------------------------------------
+# Robust loader: strips BOM and CR, skips blank/comment lines, keeps values
+# that may contain '=' or spaces intact. Works regardless of whether the file
+# was saved on Windows (CRLF + BOM) or Unix (LF).
+if [ ! -f .env ]; then
     echo -e "${RED}Error: .env file not found${NC}"
     exit 1
 fi
 
-#  Validate common env vars 
+while IFS='=' read -r key value; do
+    # Skip blanks and comments
+    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+    # Strip surrounding whitespace and trailing CR from key/value
+    key="$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    value="${value%$'\r'}"
+    [[ -z "$key" ]] && continue
+    export "$key=$value"
+done < <(sed '1s/^\xef\xbb\xbf//; s/\r$//' .env)
+
+# --- Validate common env vars ------------------------------------------------
 if [ -z "$PRIVATE_KEY" ]; then
     echo -e "${RED}Error: PRIVATE_KEY not set in .env${NC}"
     exit 1
@@ -71,7 +88,7 @@ if [ -z "$SAFE_ADDRESS" ]; then
     exit 1
 fi
 
-# ── Load config from config/<network>.json 
+# --- Load config from config/<network>.json ----------------------------------
 CONFIG_FILE="config/${NETWORK}.json"
 if [ ! -f "$CONFIG_FILE" ]; then
     echo -e "${RED}Error: Config file not found: $CONFIG_FILE${NC}"
@@ -79,14 +96,14 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# Parse config JSON (requires jq)
 if ! command -v jq &> /dev/null; then
     echo -e "${RED}Error: 'jq' is required but not installed.${NC}"
-    echo "Install: sudo apt install jq (Linux) / brew install jq (Mac) / choco install jq (Windows)"
+    echo "Install: sudo apt install jq"
     exit 1
 fi
 
 CHAIN_ID=$(jq -r '.chainId' "$CONFIG_FILE")
+RPC_ALIAS=$(jq -r '.rpcAlias // empty' "$CONFIG_FILE")
 RPC_URL=$(jq -r '.rpcUrl' "$CONFIG_FILE")
 EXPLORER_URL=$(jq -r '.explorerUrl' "$CONFIG_FILE")
 VERIFIER_URL=$(jq -r '.verifierUrl' "$CONFIG_FILE")
@@ -95,9 +112,16 @@ CFG_WCHZ=$(jq -r '.wchz // empty' "$CONFIG_FILE")
 CFG_USDC=$(jq -r '.usdc // empty' "$CONFIG_FILE")
 FORGE_FLAGS=$(jq -r '.forgeFlags // empty' "$CONFIG_FILE")
 
-# ── Deploy type → script mapping ─────────────────────────────────────────────
+if [ -z "$RPC_ALIAS" ]; then
+    echo -e "${RED}Error: 'rpcAlias' missing in $CONFIG_FILE${NC}"
+    echo "Add it and make sure it matches an entry in foundry.toml [rpc_endpoints] and [etherscan]."
+    exit 1
+fi
+
+# --- Deploy type -> script mapping -------------------------------------------
 REQUIRES_KAYEN=false
 REQUIRES_USDC=false
+REQUIRES_ADMIN=false
 case "$DEPLOY_TYPE" in
     all)
         SCRIPT="script/DeployAll.s.sol"
@@ -111,12 +135,30 @@ case "$DEPLOY_TYPE" in
         SCRIPT="script/DeploySwap.s.sol"
         REQUIRES_KAYEN=true
         REQUIRES_USDC=true ;;
-    payout)
-        SCRIPT="script/DeployPayout.s.sol"
-        REQUIRES_USDC=true ;;
+    pool)
+        SCRIPT="script/DeployLiquidityPool.s.sol"
+        REQUIRES_USDC=true
+        REQUIRES_ADMIN=true ;;
 esac
 
-# ── Resolve USDC address (env overrides config) ─────────────────────────────
+# --- Pool-specific: ADMIN_ADDRESS must exist and differ from SAFE_ADDRESS ----
+if [ "$REQUIRES_ADMIN" = true ]; then
+    if [ -z "$ADMIN_ADDRESS" ]; then
+        echo -e "${RED}Error: ADMIN_ADDRESS not set in .env (required for --pool)${NC}"
+        echo "ADMIN_ADDRESS holds DEFAULT_ADMIN_ROLE + PAUSER_ROLE and MUST differ from SAFE_ADDRESS."
+        exit 1
+    fi
+    # Lowercase compare (portable; no bashism ${,,})
+    _admin_lc=$(echo "$ADMIN_ADDRESS" | tr '[:upper:]' '[:lower:]')
+    _safe_lc=$(echo "$SAFE_ADDRESS" | tr '[:upper:]' '[:lower:]')
+    if [ "$_admin_lc" = "$_safe_lc" ]; then
+        echo -e "${RED}Error: ADMIN_ADDRESS must be different from SAFE_ADDRESS${NC}"
+        exit 1
+    fi
+    export ADMIN_ADDRESS
+fi
+
+# --- Resolve USDC address (env overrides config) -----------------------------
 if [ "$REQUIRES_USDC" = true ]; then
     USDC_ADDRESS="${USDC_ADDRESS:-$CFG_USDC}"
     if [ -z "$USDC_ADDRESS" ]; then
@@ -126,24 +168,23 @@ if [ "$REQUIRES_USDC" = true ]; then
     export USDC_ADDRESS
 fi
 
-# ── Swap-specific: resolve Kayen addresses (env overrides config) ────────────
+# --- Swap-specific: resolve Kayen addresses (env overrides config) -----------
 if [ "$REQUIRES_KAYEN" = true ]; then
-    echo -e "${CYAN}Swap deployment -- resolving Kayen DEX addresses...${NC}"
+    echo -e "${CYAN}Resolving Kayen DEX addresses...${NC}"
 
-    # Env vars override config file
     KAYEN_ROUTER="${KAYEN_ROUTER:-$CFG_KAYEN_ROUTER}"
     WCHZ_ADDRESS="${WCHZ_ADDRESS:-$CFG_WCHZ}"
 
     MISSING=""
-    [ -z "$KAYEN_ROUTER" ] && MISSING="${MISSING}\n  - KAYEN_ROUTER (set in .env or config/${NETWORK}.json)"
-    [ -z "$WCHZ_ADDRESS" ] && MISSING="${MISSING}\n  - WCHZ_ADDRESS (set in .env or config/${NETWORK}.json)"
+    [ -z "$KAYEN_ROUTER" ] && MISSING="${MISSING}  - KAYEN_ROUTER (set in .env or config/${NETWORK}.json)"$'\n'
+    [ -z "$WCHZ_ADDRESS" ] && MISSING="${MISSING}  - WCHZ_ADDRESS (set in .env or config/${NETWORK}.json)"$'\n'
 
     if [ -n "$MISSING" ]; then
-        echo -e "${RED}Missing required swap addresses:${MISSING}${NC}"
+        echo -e "${RED}Missing required swap addresses:${NC}"
+        echo -e "$MISSING"
         exit 1
     fi
 
-    # Export for forge script
     export KAYEN_ROUTER WCHZ_ADDRESS
 
     echo -e "  KAYEN_ROUTER: ${YELLOW}$KAYEN_ROUTER${NC}"
@@ -152,33 +193,33 @@ if [ "$REQUIRES_KAYEN" = true ]; then
     echo ""
 fi
 
-# ── Mainnet safety warning ───────────────────────────────────────────────────
+# --- Mainnet safety warning --------------------------------------------------
 if [ "$NETWORK" = "chilizMainnet" ]; then
-    echo -e "${RED}╔══════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║        ⚠  MAINNET DEPLOYMENT WARNING  ⚠     ║${NC}"
-    echo -e "${RED}║  Real funds are at risk. Double-check:       ║${NC}"
-    echo -e "${RED}║  - All contract addresses are correct        ║${NC}"
-    echo -e "${RED}║  - Ownership will transfer to Safe multisig  ║${NC}"
-    echo -e "${RED}║  - Contracts are tested on testnet first     ║${NC}"
-    echo -e "${RED}╚══════════════════════════════════════════════╝${NC}"
+    echo -e "${RED}+-------------------------------------------+${NC}"
+    echo -e "${RED}|   !! MAINNET DEPLOYMENT WARNING !!        |${NC}"
+    echo -e "${RED}|   Real funds are at risk. Double-check:   |${NC}"
+    echo -e "${RED}|   - All contract addresses are correct    |${NC}"
+    echo -e "${RED}|   - Ownership will transfer to Safe       |${NC}"
+    echo -e "${RED}|   - Testnet deployment succeeded first    |${NC}"
+    echo -e "${RED}+-------------------------------------------+${NC}"
     echo ""
 fi
 
-# ── Display summary ──────────────────────────────────────────────────────────
+# --- Display summary ---------------------------------------------------------
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}ChilizTV Deployment${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "Network:      ${YELLOW}$NETWORK${NC} (Chain ID: $CHAIN_ID)"
 echo -e "Deploy Type:  ${YELLOW}$DEPLOY_TYPE${NC}"
 echo -e "Script:       ${YELLOW}$SCRIPT${NC}"
-echo -e "RPC URL:      ${YELLOW}$RPC_URL${NC}"
+echo -e "RPC Alias:    ${YELLOW}$RPC_ALIAS${NC} -> $RPC_URL"
 echo -e "Safe Address: ${YELLOW}$SAFE_ADDRESS${NC}"
 echo -e "Config:       ${YELLOW}$CONFIG_FILE${NC}"
 [ -n "$FORGE_FLAGS" ] && echo -e "Forge Flags:  ${YELLOW}$FORGE_FLAGS${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# ── Confirm ───────────────────────────────────────────────────────────────────
+# --- Confirm -----------------------------------------------------------------
 read -p "Deploy to $NETWORK? (yes/no): " CONFIRM
 if [ "$CONFIRM" != "yes" ]; then
     echo -e "${RED}Deployment cancelled${NC}"
@@ -189,17 +230,22 @@ echo ""
 echo -e "${GREEN}Starting deployment...${NC}"
 echo ""
 
-# ── Prepare output directory ─────────────────────────────────────────────────
+# --- Prepare output directory ------------------------------------------------
 DEPLOY_OUT="deployments/${NETWORK}.json"
 mkdir -p deployments
 
-# ── Run forge script ──────────────────────────────────────────────────────────
+# --- Run forge script --------------------------------------------------------
+# We pass --rpc-url and --chain as the alias defined in foundry.toml
+# ([rpc_endpoints] + [etherscan]). This registers the Chiliz chain with
+# forge's internal chain manager and avoids the alloy-chains
+# "Chain X not supported" error that fires when --chain-id is used with an
+# unregistered numeric id.
 FORGE_CMD="forge script $SCRIPT \
-    --rpc-url $RPC_URL \
+    --rpc-url $RPC_ALIAS \
+    --chain $RPC_ALIAS \
     --private-key $PRIVATE_KEY \
     --broadcast \
     --slow \
-    --chain-id $CHAIN_ID \
     $FORGE_FLAGS \
     -vvvv"
 
@@ -207,24 +253,21 @@ echo -e "${CYAN}$FORGE_CMD${NC}"
 echo ""
 eval $FORGE_CMD
 
-# ── Extract deployed addresses from broadcast ────────────────────────────────
-BROADCAST_DIR="broadcast/$(basename $SCRIPT)/${CHAIN_ID}"
+# --- Extract deployed addresses from broadcast -------------------------------
+BROADCAST_DIR="broadcast/$(basename "$SCRIPT")/${CHAIN_ID}"
 LATEST_RUN="${BROADCAST_DIR}/run-latest.json"
 
-if [ -f "$LATEST_RUN" ] && command -v jq &> /dev/null; then
+if [ -f "$LATEST_RUN" ]; then
     echo ""
     echo -e "${GREEN}Extracting deployed addresses...${NC}"
-    jq '{
-        network: "'$NETWORK'",
-        chainId: '$CHAIN_ID',
+    jq --arg network "$NETWORK" --argjson chainId "$CHAIN_ID" '{
+        network: $network,
+        chainId: $chainId,
         timestamp: (now | todate),
         contracts: [
             .transactions[]
             | select(.transactionType == "CREATE")
-            | {
-                name: .contractName,
-                address: .contractAddress
-            }
+            | { name: .contractName, address: .contractAddress }
         ]
     }' "$LATEST_RUN" > "$DEPLOY_OUT"
     echo -e "Saved to: ${YELLOW}$DEPLOY_OUT${NC}"
@@ -235,7 +278,7 @@ else
     echo "Check forge broadcast output above for deployed addresses."
 fi
 
-# ── Post-deployment output ───────────────────────────────────────────────────
+# --- Post-deployment output --------------------------------------------------
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Deployment Complete!${NC}"
@@ -248,9 +291,9 @@ echo "3. Verify contracts: $EXPLORER_URL"
 echo ""
 
 if [ "$DEPLOY_TYPE" = "swap" ]; then
-    echo -e "${YELLOW}────────────────────────────────────────${NC}"
+    echo -e "${YELLOW}----------------------------------------${NC}"
     echo -e "${YELLOW}Swap Router Post-Deployment Steps:${NC}"
-    echo -e "${YELLOW}────────────────────────────────────────${NC}"
+    echo -e "${YELLOW}----------------------------------------${NC}"
     echo ""
     echo "For EACH BettingMatch proxy that should accept CHZ swap bets:"
     echo ""
@@ -265,6 +308,6 @@ if [ "$DEPLOY_TYPE" = "swap" ]; then
     echo -e "     ${CYAN}cast send <MATCH> 'fundUSDCTreasury(uint256)' <AMOUNT> --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
     echo "  4) Test swap bet:"
-    echo -e "     ${CYAN}cast send <SWAP_ROUTER> 'placeBetWithCHZ(address,uint256,uint64,uint256,uint256)' <MATCH> 0 0 1 \$(date +%s --date '+1 hour') --value 10ether --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
+    echo -e "     ${CYAN}cast send <SWAP_ROUTER> 'placeBetWithCHZ(address,uint256,uint64,uint256,uint256)' <MATCH> 0 0 1 \$(date +%s -d '+1 hour') --value 10ether --rpc-url $RPC_URL --private-key \$PRIVATE_KEY${NC}"
     echo ""
 fi

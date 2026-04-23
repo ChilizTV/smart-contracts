@@ -1,5 +1,6 @@
 {
   "chainId": 88888,
+  "rpcAlias": "chiliz_mainnet",
   "rpcUrl": "https://rpc.chiliz.com",
   "explorerUrl": "https://chiliscan.com",
   "verifierUrl": "https://api.routescan.io/v2/network/mainnet/evm/88888/etherscan/api",

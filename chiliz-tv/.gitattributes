@@ -1,0 +1,7 @@
+# Force LF line endings and UTF-8 for shell scripts and config so WSL/Linux
+# bash can run them after they round-trip through Windows editors.
+*.sh        text eol=lf working-tree-encoding=UTF-8
+*.json      text eol=lf working-tree-encoding=UTF-8
+*.toml      text eol=lf working-tree-encoding=UTF-8
+*.sol       text eol=lf working-tree-encoding=UTF-8
+.env.example text eol=lf working-tree-encoding=UTF-8
