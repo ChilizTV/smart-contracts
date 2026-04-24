@@ -11,6 +11,7 @@ remappings = [
 optimizer = true
 optimizer_runs = 200
 solc_version = "0.8.24"
+evm_version = "shanghai"  # Chiliz Chain requirement — do not change
 
 # Etherscan API configuration for Chiliz chains
 [etherscan]

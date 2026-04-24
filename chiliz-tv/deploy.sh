@@ -1,28 +1,31 @@
 #!/bin/bash
-# 
+#
 # ChilizTV Deployment Script (Chiliz-only)
-# 
+#
+# All configuration is loaded from .env (see .env.example).
 #
 # Usage:
 #   ./deploy.sh --network chilizTestnet --all
 #   ./deploy.sh --network chilizTestnet --match
 #   ./deploy.sh --network chilizTestnet --stream
 #   ./deploy.sh --network chilizTestnet --swap
-#   ./deploy.sh --network chilizMainnet --all
+#   ./deploy.sh --network chilizMainnet  --all
 #
-# FUTURE WORK: Base chain support (postponed not included here)
-# 
+# The --network flag is a safety label only: it picks the mainnet warning
+# and is used for output paths (deployments/<network>.json). The actual
+# RPC_URL / CHAIN_ID / FORGE_FLAGS come from .env.
+#
 
 set -e
 
-# Colors 
+# ── Colors ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Parse arguments 
+# ── Parse arguments ──────────────────────────────────────────────────────────
 NETWORK=""
 DEPLOY_TYPE=""
 
@@ -53,47 +56,57 @@ if [ -z "$NETWORK" ] || [ -z "$DEPLOY_TYPE" ]; then
     exit 1
 fi
 
-#  Load .env 
-if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
-else
-    echo -e "${RED}Error: .env file not found${NC}"
+# ── Load .env ────────────────────────────────────────────────────────────────
+# Prefer .env.<network> when present, otherwise .env.
+ENV_FILE=".env"
+if [ -f ".env.${NETWORK}" ]; then
+    ENV_FILE=".env.${NETWORK}"
+fi
+
+if [ ! -f "$ENV_FILE" ]; then
+    echo -e "${RED}Error: $ENV_FILE not found.${NC}"
+    echo "Copy .env.example to .env and fill in values."
     exit 1
 fi
 
-#  Validate common env vars 
-if [ -z "$PRIVATE_KEY" ]; then
-    echo -e "${RED}Error: PRIVATE_KEY not set in .env${NC}"
-    exit 1
-fi
-if [ -z "$SAFE_ADDRESS" ]; then
-    echo -e "${RED}Error: SAFE_ADDRESS not set in .env${NC}"
+# set -a exports every variable assigned until `set +a`.
+# sed strips a leading UTF-8 BOM and any trailing CR — Windows editors
+# routinely add both, which would otherwise break `source`.
+set -a
+# shellcheck disable=SC1090
+source <(sed -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' "$ENV_FILE")
+set +a
+
+# ── Validate required env vars ───────────────────────────────────────────────
+REQUIRED="PRIVATE_KEY SAFE_ADDRESS RPC_URL CHAIN_ID"
+MISSING=""
+for VAR in $REQUIRED; do
+    if [ -z "${!VAR}" ]; then
+        MISSING="${MISSING}\n  - $VAR"
+    fi
+done
+if [ -n "$MISSING" ]; then
+    echo -e "${RED}Missing required env vars in $ENV_FILE:${MISSING}${NC}"
     exit 1
 fi
 
-# ── Load config from config/<network>.json 
-CONFIG_FILE="config/${NETWORK}.json"
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo -e "${RED}Error: Config file not found: $CONFIG_FILE${NC}"
-    echo "Create it first. See config/chilizTestnet.json for reference."
+# ── Sanity check: CHAIN_ID matches --network label ───────────────────────────
+case "$NETWORK" in
+    chilizTestnet)
+        EXPECTED_CHAIN_ID=88882 ;;
+    chilizMainnet)
+        EXPECTED_CHAIN_ID=88888 ;;
+    *)
+        echo -e "${YELLOW}Warning: unknown --network '$NETWORK' (skipping chain-id sanity check)${NC}"
+        EXPECTED_CHAIN_ID="" ;;
+esac
+if [ -n "$EXPECTED_CHAIN_ID" ] && [ "$CHAIN_ID" != "$EXPECTED_CHAIN_ID" ]; then
+    echo -e "${RED}Chain id mismatch:${NC}"
+    echo -e "  --network $NETWORK expects CHAIN_ID=$EXPECTED_CHAIN_ID"
+    echo -e "  but $ENV_FILE has CHAIN_ID=$CHAIN_ID"
+    echo -e "  Fix $ENV_FILE or pass the correct --network."
     exit 1
 fi
-
-# Parse config JSON (requires jq)
-if ! command -v jq &> /dev/null; then
-    echo -e "${RED}Error: 'jq' is required but not installed.${NC}"
-    echo "Install: sudo apt install jq (Linux) / brew install jq (Mac) / choco install jq (Windows)"
-    exit 1
-fi
-
-CHAIN_ID=$(jq -r '.chainId' "$CONFIG_FILE")
-RPC_URL=$(jq -r '.rpcUrl' "$CONFIG_FILE")
-EXPLORER_URL=$(jq -r '.explorerUrl' "$CONFIG_FILE")
-VERIFIER_URL=$(jq -r '.verifierUrl' "$CONFIG_FILE")
-CFG_KAYEN_ROUTER=$(jq -r '.kayenMasterRouter // empty' "$CONFIG_FILE")
-CFG_WCHZ=$(jq -r '.wchz // empty' "$CONFIG_FILE")
-CFG_USDC=$(jq -r '.usdc // empty' "$CONFIG_FILE")
-FORGE_FLAGS=$(jq -r '.forgeFlags // empty' "$CONFIG_FILE")
 
 # ── Deploy type → script mapping ─────────────────────────────────────────────
 REQUIRES_KAYEN=false
@@ -116,36 +129,21 @@ case "$DEPLOY_TYPE" in
         REQUIRES_USDC=true ;;
 esac
 
-# ── Resolve USDC address (env overrides config) ─────────────────────────────
-if [ "$REQUIRES_USDC" = true ]; then
-    USDC_ADDRESS="${USDC_ADDRESS:-$CFG_USDC}"
-    if [ -z "$USDC_ADDRESS" ]; then
-        echo -e "${RED}Missing USDC_ADDRESS (set in .env or config/${NETWORK}.json 'usdc' field)${NC}"
-        exit 1
-    fi
-    export USDC_ADDRESS
+# ── USDC / Kayen validation ──────────────────────────────────────────────────
+if [ "$REQUIRES_USDC" = true ] && [ -z "$USDC_ADDRESS" ]; then
+    echo -e "${RED}Missing USDC_ADDRESS in $ENV_FILE${NC}"
+    exit 1
 fi
 
-# ── Swap-specific: resolve Kayen addresses (env overrides config) ────────────
 if [ "$REQUIRES_KAYEN" = true ]; then
-    echo -e "${CYAN}Swap deployment -- resolving Kayen DEX addresses...${NC}"
-
-    # Env vars override config file
-    KAYEN_ROUTER="${KAYEN_ROUTER:-$CFG_KAYEN_ROUTER}"
-    WCHZ_ADDRESS="${WCHZ_ADDRESS:-$CFG_WCHZ}"
-
+    echo -e "${CYAN}Resolving Kayen DEX addresses...${NC}"
     MISSING=""
-    [ -z "$KAYEN_ROUTER" ] && MISSING="${MISSING}\n  - KAYEN_ROUTER (set in .env or config/${NETWORK}.json)"
-    [ -z "$WCHZ_ADDRESS" ] && MISSING="${MISSING}\n  - WCHZ_ADDRESS (set in .env or config/${NETWORK}.json)"
-
+    [ -z "$KAYEN_ROUTER" ] && MISSING="${MISSING}\n  - KAYEN_ROUTER"
+    [ -z "$WCHZ_ADDRESS" ] && MISSING="${MISSING}\n  - WCHZ_ADDRESS"
     if [ -n "$MISSING" ]; then
-        echo -e "${RED}Missing required swap addresses:${MISSING}${NC}"
+        echo -e "${RED}Missing in $ENV_FILE:${MISSING}${NC}"
         exit 1
     fi
-
-    # Export for forge script
-    export KAYEN_ROUTER WCHZ_ADDRESS
-
     echo -e "  KAYEN_ROUTER: ${YELLOW}$KAYEN_ROUTER${NC}"
     echo -e "  WCHZ_ADDRESS: ${YELLOW}$WCHZ_ADDRESS${NC}"
     echo -e "  USDC_ADDRESS: ${YELLOW}$USDC_ADDRESS${NC}"
@@ -173,12 +171,12 @@ echo -e "Deploy Type:  ${YELLOW}$DEPLOY_TYPE${NC}"
 echo -e "Script:       ${YELLOW}$SCRIPT${NC}"
 echo -e "RPC URL:      ${YELLOW}$RPC_URL${NC}"
 echo -e "Safe Address: ${YELLOW}$SAFE_ADDRESS${NC}"
-echo -e "Config:       ${YELLOW}$CONFIG_FILE${NC}"
+echo -e "Env File:     ${YELLOW}$ENV_FILE${NC}"
 [ -n "$FORGE_FLAGS" ] && echo -e "Forge Flags:  ${YELLOW}$FORGE_FLAGS${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# ── Confirm ───────────────────────────────────────────────────────────────────
+# ── Confirm ──────────────────────────────────────────────────────────────────
 read -p "Deploy to $NETWORK? (yes/no): " CONFIRM
 if [ "$CONFIRM" != "yes" ]; then
     echo -e "${RED}Deployment cancelled${NC}"
@@ -193,13 +191,15 @@ echo ""
 DEPLOY_OUT="deployments/${NETWORK}.json"
 mkdir -p deployments
 
-# ── Run forge script ──────────────────────────────────────────────────────────
+# ── Run forge script ─────────────────────────────────────────────────────────
+# NOTE: --chain-id intentionally omitted. Forge's NamedChain registry rejects
+# Chiliz IDs (88882 / 88888) with "Chain not supported". RPC URL is enough
+# to detect the chain, and --legacy signing does not require chain id.
 FORGE_CMD="forge script $SCRIPT \
     --rpc-url $RPC_URL \
     --private-key $PRIVATE_KEY \
     --broadcast \
     --slow \
-    --chain-id $CHAIN_ID \
     $FORGE_FLAGS \
     -vvvv"
 
@@ -231,8 +231,9 @@ if [ -f "$LATEST_RUN" ] && command -v jq &> /dev/null; then
     echo ""
     jq '.' "$DEPLOY_OUT"
 else
-    echo -e "${YELLOW}Note: Could not extract addresses automatically.${NC}"
-    echo "Check forge broadcast output above for deployed addresses."
+    echo -e "${YELLOW}Note: could not extract addresses automatically.${NC}"
+    echo "Broadcast file: $LATEST_RUN"
+    echo "Check forge output above for deployed addresses."
 fi
 
 # ── Post-deployment output ───────────────────────────────────────────────────
