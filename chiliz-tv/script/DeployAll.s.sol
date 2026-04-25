@@ -140,6 +140,11 @@ contract DeployAll is Script {
         console.log("StreamWalletFactory.setSwapRouter ->", address(swapRouter));
         swapRouter.setStreamWalletFactory(address(streamFactory));
         console.log("ChilizSwapRouter.setStreamWalletFactory ->", address(streamFactory));
+        // CRITICAL: register the BettingMatchFactory on the swap router. Without
+        // this call every `placeBetWith*` reverts with `BettingMatchFactoryNotSet`
+        // — the router never silently forwards USDC to an unvalidated match.
+        swapRouter.setMatchFactory(address(bettingFactory));
+        console.log("ChilizSwapRouter.setMatchFactory    ->", address(bettingFactory));
         console.log("");
     }
 
@@ -191,14 +196,22 @@ contract DeployAll is Script {
         console.log("   ADMIN_ADDRESS and SAFE_ADDRESS envs):");
         console.log("   forge script script/DeployLiquidityPool.s.sol --rpc-url $RPC_URL --broadcast");
         console.log("");
-        console.log("1. For each BettingMatch proxy created by the factory:");
-        console.log("   a) cast send <MATCH> 'setUSDCToken(address)'", usdcAddress);
-        console.log("   b) cast send <MATCH> 'setLiquidityPool(address)' <LIQUIDITY_POOL>");
-        console.log("   c) cast send <LIQUIDITY_POOL> 'authorizeMatch(address)' <MATCH>   # from ADMIN_ADDRESS");
-        console.log("   d) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'SWAP_ROUTER_ROLE')", address(swapRouter));
-        console.log("   e) cast send <MATCH> 'grantRole(bytes32,address)' $(cast keccak 'RESOLVER_ROLE') <ORACLE>");
-        console.log("   f) cast send <MATCH> 'setMaxAllowedOdds(uint32)' <cap>   # recommended");
-        console.log("2. Seed LiquidityPool with USDC:");
+        console.log("1. Wire the BettingMatchFactory (H-4 atomic wiring):");
+        console.log("   a) cast send <BETTING_FACTORY> 'setWiring(address,address,address)' \\");
+        console.log("        <LIQUIDITY_POOL>", usdcAddress, address(swapRouter));
+        console.log("      Factory owner only (deployer until ownership transfer).");
+        console.log("   b) cast send <LIQUIDITY_POOL> 'grantRole(bytes32,address)' \\");
+        console.log("        $(cast keccak 'MATCH_AUTHORIZER_ROLE') <BETTING_FACTORY>");
+        console.log("      From ADMIN_ADDRESS (pool DEFAULT_ADMIN_ROLE).");
+        console.log("   Once wired, `factory.createFootballMatch(name, owner, oracle)` does");
+        console.log("   all match-side setup + pool authorization in a single transaction.");
+        console.log("");
+        console.log("2. Create matches (after step 1):");
+        console.log("   cast send <BETTING_FACTORY> \\");
+        console.log("     'createFootballMatch(string,address,address)' <NAME> <MATCH_OWNER> <ORACLE>");
+        console.log("   cast send <MATCH> 'setMaxAllowedOdds(uint32)' <cap>   # optional, post-create");
+        console.log("");
+        console.log("3. Seed LiquidityPool with USDC:");
         console.log("   Step A: cast send <USDC> 'approve(address,uint256)' <LIQUIDITY_POOL> <AMOUNT>");
         console.log("   Step B: cast send <LIQUIDITY_POOL> 'deposit(uint256,address)' <AMOUNT> <RECEIVER>");
         console.log("=========================================");

@@ -741,8 +741,9 @@ contract StreamBeaconRegistryTest is Test {
         address walletAddr = factory.deployWalletFor(streamer1);
         StreamWallet wallet = StreamWallet(payable(walletAddr));
 
-        // streamer1 is the wallet owner — setting zero address must revert
-        vm.prank(streamer1);
+        // Only the factory can rotate the swap router (H-1). Factory passes a
+        // zero address → InvalidAddress.
+        vm.prank(address(factory));
         vm.expectRevert(StreamWallet.InvalidAddress.selector);
         wallet.setSwapRouter(address(0));
     }
@@ -757,19 +758,26 @@ contract StreamBeaconRegistryTest is Test {
         vm.expectEmit(true, true, false, false);
         emit StreamWallet.SwapRouterUpdated(address(0), newRouter);
 
-        vm.prank(streamer1);
+        // Factory-only after H-1 (previously streamer/owner could also call).
+        vm.prank(address(factory));
         wallet.setSwapRouter(newRouter);
 
         assertEq(wallet.swapRouter(), newRouter);
     }
 
-    function test_L03_SetSwapRouter_OnlyOwnerOrFactory() public {
+    function test_L03_SetSwapRouter_OnlyFactory() public {
         vm.prank(admin);
         address walletAddr = factory.deployWalletFor(streamer1);
         StreamWallet wallet = StreamWallet(payable(walletAddr));
 
-        // viewer1 is neither owner nor factory — must revert
+        // viewer1 is not the factory — must revert.
         vm.prank(viewer1);
+        vm.expectRevert(StreamWallet.OnlyAuthorized.selector);
+        wallet.setSwapRouter(address(0x1));
+
+        // H-1 regression: the streamer (wallet owner) must NOT be able to swap
+        // the router — that was the vector for fabricating revenue events.
+        vm.prank(streamer1);
         vm.expectRevert(StreamWallet.OnlyAuthorized.selector);
         wallet.setSwapRouter(address(0x1));
     }

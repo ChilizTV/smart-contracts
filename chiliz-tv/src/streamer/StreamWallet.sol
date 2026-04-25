@@ -156,11 +156,16 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Set the authorized swap router address
+     * @notice Set the authorized swap router address.
+     * @dev    Factory-only. Previously the streamer (owner) could also rotate
+     *         this, which let a rogue streamer redirect `recordDonationByRouter`
+     *         / `recordSubscriptionByRouter` to a contract they control and
+     *         fabricate revenue events. Router rotation is a protocol-wide
+     *         concern and must stay with the factory.
      * @param _swapRouter The ChilizSwapRouter address
      */
     function setSwapRouter(address _swapRouter) external {
-        if (msg.sender != factory && msg.sender != owner()) revert OnlyAuthorized();
+        if (msg.sender != factory) revert OnlyAuthorized();
         if (_swapRouter == address(0)) revert InvalidAddress();
         address old = swapRouter;
         swapRouter = _swapRouter;

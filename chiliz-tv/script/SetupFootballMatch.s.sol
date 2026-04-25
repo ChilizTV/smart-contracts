@@ -103,13 +103,21 @@ contract SetupFootballMatch is Script {
     function _createMatch() internal {
         console.log("STEP 1: Creating Football Match");
         console.log("================================");
-        
-        matchAddress = factory.createFootballMatch(MATCH_NAME, deployer);
+
+        // Oracle (RESOLVER_ROLE holder). Defaults to deployer when ORACLE_ADDRESS is unset,
+        // so this script remains runnable on local/test networks. In production, set
+        // ORACLE_ADDRESS to a dedicated oracle key — separating resolver from match admin.
+        address oracle;
+        try vm.envAddress("ORACLE_ADDRESS") returns (address o) { oracle = o; }
+        catch { oracle = deployer; }
+
+        matchAddress = factory.createFootballMatch(MATCH_NAME, deployer, oracle);
         match_ = FootballMatch(payable(matchAddress));
 
         console.log("Match Name:", MATCH_NAME);
         console.log("Match Address:", matchAddress);
         console.log("Owner:", deployer);
+        console.log("Oracle (RESOLVER_ROLE):", oracle);
         console.log("");
     }
     

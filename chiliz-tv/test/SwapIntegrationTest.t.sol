@@ -4,6 +4,7 @@ pragma solidity ^0.8.22;
 import {Test, console} from "forge-std/Test.sol";
 import {BettingMatch} from "../src/betting/BettingMatch.sol";
 import {FootballMatch} from "../src/betting/FootballMatch.sol";
+import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 import {ChilizSwapRouter} from "../src/swap/ChilizSwapRouter.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -37,6 +38,7 @@ contract SwapIntegrationTest is Test {
     MockFanTokenSwap public fanToken;
     ChilizSwapRouter public swapRouter;
     LiquidityPool public pool;
+    BettingMatchFactory public factory;
 
     address public owner = address(0x1);
     address public oddsSetter = address(0x2);
@@ -65,22 +67,15 @@ contract SwapIntegrationTest is Test {
         mockRouter = new MockKayenRouter(address(usdc));
         fanToken = new MockFanTokenSwap();
 
-        // Deploy betting implementation + proxy
-        implementation = new FootballMatch();
-        bytes memory initData = abi.encodeWithSelector(
-            FootballMatch.initialize.selector,
-            "Barcelona vs Real Madrid",
-            owner
+        // Deploy LiquidityPool first so the factory can wire matches to it.
+        LiquidityPool poolImpl = new LiquidityPool();
+        bytes memory poolInitData = abi.encodeWithSelector(
+            LiquidityPool.initialize.selector,
+            address(usdc), owner, owner,
+            uint16(0), uint16(5000), uint16(9000), uint48(0)
         );
-        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
-        footballMatch = FootballMatch(payable(address(proxy)));
-
-        // Setup roles
-        vm.startPrank(owner);
-        footballMatch.grantRole(ODDS_SETTER_ROLE, oddsSetter);
-        footballMatch.grantRole(RESOLVER_ROLE, resolver);
-        footballMatch.setUSDCToken(address(usdc));
-        vm.stopPrank();
+        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
+        pool = LiquidityPool(address(poolProxy));
 
         // Deploy swap router (unified: betting + streaming)
         swapRouter = new ChilizSwapRouter(
@@ -92,9 +87,35 @@ contract SwapIntegrationTest is Test {
             500              // 5% platform fee
         );
 
-        // Grant SWAP_ROUTER_ROLE to swapRouter
+        // Deploy factory and grant it MATCH_AUTHORIZER_ROLE on the pool so it can
+        // atomically register new matches on `createFootballMatch`.
+        factory = new BettingMatchFactory();
+        bytes32 authRole = pool.MATCH_AUTHORIZER_ROLE();
         vm.prank(owner);
-        footballMatch.grantRole(SWAP_ROUTER_ROLE, address(swapRouter));
+        pool.grantRole(authRole, address(factory));
+
+        // Wire the factory: new matches get USDC + pool + swapRouter set, and
+        // SWAP_ROUTER_ROLE granted to the swap router, all in one tx.
+        factory.setWiring(address(pool), address(usdc), address(swapRouter));
+
+        // Register the factory on the swap router so `placeBetWith*` validates
+        // every `bettingMatch` argument against the factory's registry.
+        swapRouter.setMatchFactory(address(factory));
+
+        // Create the match through the factory (atomic wiring). `resolver` gets
+        // RESOLVER_ROLE; `owner` becomes match admin. Implementation is read
+        // back from the factory for the ERC1967-slot assertion (if any).
+        address matchAddr = factory.createFootballMatch(
+            "Barcelona vs Real Madrid",
+            owner,
+            resolver
+        );
+        footballMatch = FootballMatch(payable(matchAddr));
+        implementation = FootballMatch(payable(factory.footballImplementation()));
+
+        // Additional role grant: legacy oddsSetter wiring.
+        vm.prank(owner);
+        footballMatch.grantRole(ODDS_SETTER_ROLE, oddsSetter);
 
         // Fund accounts
         vm.deal(alice, 100 ether);
@@ -109,21 +130,6 @@ contract SwapIntegrationTest is Test {
         // Mint fan tokens for ERC20 swap tests
         fanToken.mint(alice, 1000 ether);
         fanToken.mint(bob, 1000 ether);
-
-        // Deploy and wire LiquidityPool
-        LiquidityPool poolImpl = new LiquidityPool();
-        bytes memory poolInitData = abi.encodeWithSelector(
-            LiquidityPool.initialize.selector,
-            address(usdc), owner, owner,
-            uint16(0), uint16(5000), uint16(9000), uint48(0)
-        );
-        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
-        pool = LiquidityPool(address(poolProxy));
-
-        vm.startPrank(owner);
-        footballMatch.setLiquidityPool(address(pool));
-        pool.authorizeMatch(address(footballMatch));
-        vm.stopPrank();
 
         // Fund LiquidityPool with USDC for payouts
         usdc.mint(address(pool), 10000e6);

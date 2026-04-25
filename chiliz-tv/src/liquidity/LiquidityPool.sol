@@ -64,9 +64,14 @@ contract LiquidityPool is
     // ROLES
     // ═══════════════════════════════════════════════════════════════════════
 
-    bytes32 public constant MATCH_ROLE  = keccak256("MATCH_ROLE");
-    bytes32 public constant ROUTER_ROLE = keccak256("ROUTER_ROLE");
-    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 public constant MATCH_ROLE            = keccak256("MATCH_ROLE");
+    bytes32 public constant ROUTER_ROLE           = keccak256("ROUTER_ROLE");
+    bytes32 public constant PAUSER_ROLE           = keccak256("PAUSER_ROLE");
+    /// @notice Narrow role allowed to grant/revoke `MATCH_ROLE` on match proxies.
+    ///         Intended to be granted to the `BettingMatchFactory` so it can
+    ///         authorize a freshly-deployed match atomically with its creation.
+    ///         DEFAULT_ADMIN_ROLE retains the same authority as a superset.
+    bytes32 public constant MATCH_AUTHORIZER_ROLE = keccak256("MATCH_AUTHORIZER_ROLE");
 
     // ═══════════════════════════════════════════════════════════════════════
     // CONSTANTS
@@ -189,6 +194,7 @@ contract LiquidityPool is
     error ZeroAmount();
     error BpsOutOfRange(uint16 provided, uint16 max);
     error MatchNotAuthorized(address bettingMatch);
+    error NotMatchAuthorizer(address caller);
     error CooldownActive(address holder, uint48 unlocksAt);
     error InsufficientFreeBalance(uint256 requested, uint256 free);
     error MarketLiabilityCapExceeded(uint256 requested, uint256 cap);
@@ -551,10 +557,22 @@ contract LiquidityPool is
     // GOVERNANCE (DEFAULT_ADMIN_ROLE)
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// @dev Accepts either DEFAULT_ADMIN_ROLE (full admin) or the narrower
+    ///      MATCH_AUTHORIZER_ROLE (granted to the BettingMatchFactory). Lets a
+    ///      factory atomically register the match it just deployed without
+    ///      holding full pool admin.
+    modifier onlyMatchAuthorizer() {
+        if (
+            !hasRole(DEFAULT_ADMIN_ROLE, msg.sender) &&
+            !hasRole(MATCH_AUTHORIZER_ROLE, msg.sender)
+        ) revert NotMatchAuthorizer(msg.sender);
+        _;
+    }
+
     /// @notice Grants MATCH_ROLE to a match proxy.
     function authorizeMatch(address bettingMatch)
         external
-        onlyRole(DEFAULT_ADMIN_ROLE)
+        onlyMatchAuthorizer
     {
         if (bettingMatch == address(0)) revert ZeroAddress();
         _grantRole(MATCH_ROLE, bettingMatch);
@@ -564,7 +582,7 @@ contract LiquidityPool is
     /// @notice Revokes MATCH_ROLE from a match proxy.
     function revokeMatch(address bettingMatch)
         external
-        onlyRole(DEFAULT_ADMIN_ROLE)
+        onlyMatchAuthorizer
     {
         _revokeRole(MATCH_ROLE, bettingMatch);
         emit MatchRevoked(bettingMatch);
