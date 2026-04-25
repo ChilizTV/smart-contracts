@@ -5,6 +5,10 @@ import {Test} from "forge-std/Test.sol";
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 import {FootballMatch} from "../src/betting/FootballMatch.sol";
 import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
+import {LiquidityPool} from "../src/liquidity/LiquidityPool.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {MockUSDC} from "./mocks/MockUSDC.sol";
 
 /**
  * @title BettingMatchFactoryTest
@@ -24,8 +28,14 @@ import {BasketballMatch} from "../src/betting/BasketballMatch.sol";
  */
 contract BettingMatchFactoryTest is Test {
     BettingMatchFactory public factory;
+    LiquidityPool public pool;
+    MockUSDC public usdc;
 
+    address public poolAdmin = address(0x01);
+    address public poolTreasury = address(0x02);
+    address public swapRouter = address(0x03);
     address public matchOwner = address(0x10);
+    address public oracle     = address(0x20);
     address public nonOwner   = address(0x99);
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -34,6 +44,32 @@ contract BettingMatchFactoryTest is Test {
 
     function setUp() public {
         factory = new BettingMatchFactory();
+        usdc = new MockUSDC();
+
+        // Deploy a LiquidityPool proxy so matches have a valid wiring target.
+        LiquidityPool poolImpl = new LiquidityPool();
+        bytes memory poolInitData = abi.encodeWithSelector(
+            LiquidityPool.initialize.selector,
+            IERC20(address(usdc)),
+            poolAdmin,
+            poolTreasury,
+            uint16(0),     // protocolFeeBps
+            uint16(5000),  // maxMarketBps
+            uint16(9000),  // maxMatchBps
+            uint48(0)      // cooldown
+        );
+        ERC1967Proxy poolProxy = new ERC1967Proxy(address(poolImpl), poolInitData);
+        pool = LiquidityPool(address(poolProxy));
+
+        // Grant MATCH_AUTHORIZER_ROLE to factory so createXxxMatch can call
+        // pool.authorizeMatch atomically. Cache the role hash first — otherwise
+        // the view call consumes the prank.
+        bytes32 authRole = pool.MATCH_AUTHORIZER_ROLE();
+        vm.prank(poolAdmin);
+        pool.grantRole(authRole, address(factory));
+
+        // Configure factory wiring.
+        factory.setWiring(address(pool), address(usdc), swapRouter);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -104,7 +140,7 @@ contract BettingMatchFactoryTest is Test {
     // ══════════════════════════════════════════════════════════════════════════
 
     function test_CreateFootballMatch_Registered() public {
-        address proxy = factory.createFootballMatch("Test Match", matchOwner);
+        address proxy = factory.createFootballMatch("Test Match", matchOwner, oracle);
 
         assertTrue(factory.isMatch(proxy));
         assertEq(
@@ -116,7 +152,7 @@ contract BettingMatchFactoryTest is Test {
     }
 
     function test_CreateBasketballMatch_Registered() public {
-        address proxy = factory.createBasketballMatch("Test Match", matchOwner);
+        address proxy = factory.createBasketballMatch("Test Match", matchOwner, oracle);
 
         assertTrue(factory.isMatch(proxy));
         assertEq(
@@ -126,9 +162,9 @@ contract BettingMatchFactoryTest is Test {
     }
 
     function test_MultipleMatches_AllRegistered() public {
-        address fb1 = factory.createFootballMatch("FB1", matchOwner);
-        address fb2 = factory.createFootballMatch("FB2", matchOwner);
-        address bb1 = factory.createBasketballMatch("BB1", matchOwner);
+        address fb1 = factory.createFootballMatch("FB1", matchOwner, oracle);
+        address fb2 = factory.createFootballMatch("FB2", matchOwner, oracle);
+        address bb1 = factory.createBasketballMatch("BB1", matchOwner, oracle);
 
         assertEq(factory.getAllMatches().length, 3);
         assertTrue(factory.isMatch(fb1));
@@ -145,7 +181,7 @@ contract BettingMatchFactoryTest is Test {
         address newImpl = address(new FootballMatch());
         factory.setFootballImplementation(newImpl);
 
-        address proxy = factory.createFootballMatch("New Match", matchOwner);
+        address proxy = factory.createFootballMatch("New Match", matchOwner, oracle);
         assertTrue(factory.isMatch(proxy));
 
         // Verify the proxy's ERC1967 implementation slot points to newImpl
@@ -159,7 +195,7 @@ contract BettingMatchFactoryTest is Test {
     // ══════════════════════════════════════════════════════════════════════════
 
     function test_GetSportType_Football() public {
-        address proxy = factory.createFootballMatch("Match", matchOwner);
+        address proxy = factory.createFootballMatch("Match", matchOwner, oracle);
         assertEq(
             uint8(factory.getSportType(proxy)),
             uint8(BettingMatchFactory.SportType.FOOTBALL)
@@ -167,7 +203,7 @@ contract BettingMatchFactoryTest is Test {
     }
 
     function test_GetSportType_Basketball() public {
-        address proxy = factory.createBasketballMatch("Match", matchOwner);
+        address proxy = factory.createBasketballMatch("Match", matchOwner, oracle);
         assertEq(
             uint8(factory.getSportType(proxy)),
             uint8(BettingMatchFactory.SportType.BASKETBALL)

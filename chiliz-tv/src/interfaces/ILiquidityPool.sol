@@ -95,6 +95,17 @@ interface ILiquidityPool {
     /// @notice Set a pool-wide maximum per-bet netStake. 0 = disabled.
     function setMaxBetAmount(uint256 newMax) external;
 
+    /// @notice Grant `MATCH_ROLE` to a match proxy, allowing it to call
+    ///         `recordBet` / `settleMarket` / `payWinner` / `payRefund`.
+    /// @dev    Callable by holders of `DEFAULT_ADMIN_ROLE` or the narrower
+    ///         `MATCH_AUTHORIZER_ROLE` (granted to the `BettingMatchFactory`
+    ///         so it can register matches atomically with their creation).
+    function authorizeMatch(address bettingMatch) external;
+
+    /// @notice Revoke `MATCH_ROLE` from a match proxy.
+    /// @dev    Same access as `authorizeMatch`.
+    function revokeMatch(address bettingMatch) external;
+
     // -----------------------------------------------------------------------
     // Views
     // -----------------------------------------------------------------------

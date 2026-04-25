@@ -72,9 +72,10 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
     /// @notice StreamWalletFactory for wallet lookup/creation
     StreamWalletFactory public streamWalletFactory;
 
-    /// @notice BettingMatchFactory for validating that bettingMatch addresses are legitimate
-    /// @dev Optional: if unset, no validation is performed (backward-compatible).
-    ///      Should be set immediately after deployment.
+    /// @notice BettingMatchFactory for validating that bettingMatch addresses are legitimate.
+    /// @dev MUST be set before any `placeBetWith*` call — validation is always enforced.
+    ///      If unset, all betting entrypoints revert with `BettingMatchFactoryNotSet`.
+    ///      Deploy flow: deploy this router, deploy factory, call `setMatchFactory(factory)`.
     BettingMatchFactory public bettingMatchFactory;
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -181,10 +182,23 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
     error TokenIsUSDC();
     /// @notice Thrown when bettingMatch was not deployed by the registered factory
     error UnauthorizedBettingMatch(address bettingMatch);
+    /// @notice Thrown when a bet is attempted before the BettingMatchFactory has been
+    ///         registered via `setMatchFactory`. Prevents silent USDC theft through
+    ///         unvalidated `bettingMatch` addresses.
+    error BettingMatchFactoryNotSet();
     /// @notice Thrown when setStreamWalletFactory is called but the factory's swapRouter
     ///         is not this contract — prevents a misconfiguration that would silently
     ///         revert every streaming recording call.
     error RouterNotConfiguredOnFactory();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // EVENTS — ADMIN
+    // ══════════════════════════════════════════════════════════════════════════
+
+    event TreasurySet(address indexed oldTreasury, address indexed newTreasury);
+    event PlatformFeeBpsSet(uint16 oldFeeBps, uint16 newFeeBps);
+    event MatchFactorySet(address indexed oldFactory, address indexed newFactory);
+    event StreamWalletFactorySet(address indexed oldFactory, address indexed newFactory);
 
     // ══════════════════════════════════════════════════════════════════════════
     // CONSTRUCTOR
@@ -303,11 +317,13 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         if (token == address(usdc)) revert TokenIsUSDC();
         if (block.timestamp > deadline) revert DeadlinePassed();
 
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        uint256 usdcReceived = _swapTokensToUSDC(token, amount, amountOutMin, deadline);
+        // Measure the actual amount received to stay safe with fee-on-transfer
+        // / rebasing tokens — we swap what we *hold*, not what the user declared.
+        uint256 received = _pullToken(IERC20(token), msg.sender, amount);
+        uint256 usdcReceived = _swapTokensToUSDC(token, received, amountOutMin, deadline);
         _placeBetOnBehalf(bettingMatch, marketId, selection, usdcReceived);
 
-        emit BetPlacedViaToken(bettingMatch, msg.sender, token, amount, usdcReceived, marketId, selection);
+        emit BetPlacedViaToken(bettingMatch, msg.sender, token, received, usdcReceived, marketId, selection);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -424,14 +440,14 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         if (token == address(usdc)) revert TokenIsUSDC();
         if (block.timestamp > deadline) revert DeadlinePassed();
 
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        uint256 usdcReceived = _swapTokensToUSDC(token, amount, amountOutMin, deadline);
+        uint256 received = _pullToken(IERC20(token), msg.sender, amount);
+        uint256 usdcReceived = _swapTokensToUSDC(token, received, amountOutMin, deadline);
         (uint256 fee, uint256 streamerAmt) = _splitAndTransfer(streamer, usdcReceived);
 
         // Record donation in StreamWallet
         _recordDonation(streamer, msg.sender, usdcReceived, fee, streamerAmt, message);
 
-        emit DonationWithToken(msg.sender, streamer, token, amount, usdcReceived, fee, message);
+        emit DonationWithToken(msg.sender, streamer, token, received, usdcReceived, fee, message);
     }
 
     /**
@@ -451,14 +467,14 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         if (duration == 0) revert ZeroValue();
         if (block.timestamp > deadline) revert DeadlinePassed();
 
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        uint256 usdcReceived = _swapTokensToUSDC(token, amount, amountOutMin, deadline);
+        uint256 received = _pullToken(IERC20(token), msg.sender, amount);
+        uint256 usdcReceived = _swapTokensToUSDC(token, received, amountOutMin, deadline);
         (uint256 fee,) = _splitAndTransfer(streamer, usdcReceived);
 
         // Record subscription in StreamWallet
         _recordSubscription(streamer, msg.sender, usdcReceived, duration);
 
-        emit SubscriptionWithToken(msg.sender, streamer, token, amount, usdcReceived, fee, duration);
+        emit SubscriptionWithToken(msg.sender, streamer, token, received, usdcReceived, fee, duration);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -467,21 +483,28 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
 
     function setTreasury(address _treasury) external onlyOwner {
         if (_treasury == address(0)) revert ZeroAddress();
+        address old = treasury;
         treasury = _treasury;
+        emit TreasurySet(old, _treasury);
     }
 
     function setPlatformFeeBps(uint16 _feeBps) external onlyOwner {
         if (_feeBps > 10_000) revert InvalidFeeBps();
+        uint16 old = platformFeeBps;
         platformFeeBps = _feeBps;
+        emit PlatformFeeBpsSet(old, _feeBps);
     }
 
     /// @notice Register the BettingMatchFactory so that bettingMatch addresses are validated
     ///         before USDC is forwarded to them (M-02 fix).
-    /// @dev Set this immediately after deployment. Once set, placeBetWith* functions will
-    ///      reject any bettingMatch that was not deployed by this factory.
+    /// @dev MUST be set before any `placeBetWith*` call. Validation is ALWAYS enforced
+    ///      in `_placeBetOnBehalf`; pre-registration means every bet reverts with
+    ///      `BettingMatchFactoryNotSet`. No silent-forward path exists.
     function setMatchFactory(address _factory) external onlyOwner {
         if (_factory == address(0)) revert ZeroAddress();
+        address old = address(bettingMatchFactory);
         bettingMatchFactory = BettingMatchFactory(_factory);
+        emit MatchFactorySet(old, _factory);
     }
 
     /// @notice Register the StreamWalletFactory for wallet recording.
@@ -497,12 +520,32 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         if (StreamWalletFactory(_factory).swapRouter() != address(this)) {
             revert RouterNotConfiguredOnFactory();
         }
+        address old = address(streamWalletFactory);
         streamWalletFactory = StreamWalletFactory(_factory);
+        emit StreamWalletFactorySet(old, _factory);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
     // INTERNAL — SWAP HELPERS
     // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @dev Pull `declared` tokens from `from` to this contract and return the
+     *      *actual* amount received. Fee-on-transfer, rebasing, and other
+     *      non-conforming ERC20s deliver less than `declared`; we swap what we
+     *      actually hold, not what the user said they'd send.
+     */
+    function _pullToken(IERC20 token, address from, uint256 declared)
+        internal
+        returns (uint256 received)
+    {
+        uint256 balBefore = token.balanceOf(address(this));
+        token.safeTransferFrom(from, address(this), declared);
+        uint256 balAfter = token.balanceOf(address(this));
+        // Underflow-safe: balAfter >= balBefore or safeTransferFrom would have reverted.
+        received = balAfter - balBefore;
+        if (received == 0) revert ZeroValue();
+    }
 
     /**
      * @dev Swap exact native CHZ to USDC via Kayen master router
@@ -559,8 +602,10 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
 
     /**
      * @dev Transfer USDC to betting contract and place bet on behalf of user.
-     *      If bettingMatchFactory is configured, the target address is validated
-     *      against the factory registry before any funds are forwarded (M-02 fix).
+     *      Validation against the factory registry is ALWAYS enforced — USDC is
+     *      never forwarded to an address that the factory didn't deploy. If the
+     *      factory has not yet been registered, the call reverts (loud failure,
+     *      not silent fund loss).
      */
     function _placeBetOnBehalf(
         address bettingMatch,
@@ -569,13 +614,10 @@ contract ChilizSwapRouter is ReentrancyGuard, Ownable {
         uint256 amount
     ) internal {
         if (bettingMatch == address(0)) revert ZeroAddress();
-        // Validate against factory registry when available. This prevents USDC from
-        // being forwarded to arbitrary contracts that happen to implement placeBetUSDCFor.
-        if (address(bettingMatchFactory) != address(0)) {
-            if (!bettingMatchFactory.isMatch(bettingMatch)) {
-                revert UnauthorizedBettingMatch(bettingMatch);
-            }
-        }
+        BettingMatchFactory factory = bettingMatchFactory;
+        if (address(factory) == address(0)) revert BettingMatchFactoryNotSet();
+        if (!factory.isMatch(bettingMatch)) revert UnauthorizedBettingMatch(bettingMatch);
+
         usdc.safeTransfer(bettingMatch, amount);
         BettingMatch(payable(bettingMatch)).placeBetUSDCFor(msg.sender, marketId, selection, amount);
     }

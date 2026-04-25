@@ -1,172 +1,126 @@
-// forge script script/DeployAll.s.sol:DeployAll \
-//   --rpc-url https://spicy-rpc.chiliz.com \
-//   --private-key $PRIVATE_KEY \
-//   --broadcast \
-//   --verify \
-//   --verifier blockscout \
-//   --verifier-url https://api.routescan.io/v2/network/testnet/evm/88882/etherscan/api \
-//   --etherscan-api-key $ETHERSCAN_API_KEY \
-//   --with-gas-price 100000000000 \
-//   -vvvv// SPDX-License-Identifier: MIT
-
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
 import {Script, console} from "forge-std/Script.sol";
 
-// Import betting system factory (implementations deployed internally)
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
 
 /**
  * @title DeployBetting
  * @author ChilizTV
- * @notice Deployment script for the UUPS-based Multi-Sport Betting System
- * @dev Deploys FootballMatch and BasketballMatch implementations, plus BettingMatchFactory
- * 
- * ARCHITECTURE:
- * ============
- * - FootballMatch: UUPS upgradeable contract for football betting
- * - BasketballMatch: UUPS upgradeable contract for basketball betting
- * - BettingMatchFactory: Factory to deploy ERC1967 proxies for both sports
- * - Each proxy is an independent match with sport-specific markets
- * 
- * BETTING FLOW:
- * ============
- * 1. Factory creates a new football or basketball match proxy
- * 2. Match owner adds sport-specific markets
- * 3. Users bet CHZ on market selections
- * 4. Match owner resolves markets with actual results
- * 5. Winners claim payouts based on odds
- * 
+ * @notice Deployment script for the UUPS-based Multi-Sport Betting System.
+ *         Deploys the `BettingMatchFactory` (which itself deploys the initial
+ *         FootballMatch + BasketballMatch implementations in its constructor).
+ *
+ * POST-DEPLOY (required before any match is created):
+ * ===================================================
+ *  1. From factory OWNER:
+ *       factory.setWiring(<LIQUIDITY_POOL>, <USDC>, <CHILIZ_SWAP_ROUTER>)
+ *     Until this is called, `createFootballMatch` / `createBasketballMatch`
+ *     revert with `WiringNotConfigured`.
+ *
+ *  2. From pool DEFAULT_ADMIN_ROLE holder:
+ *       pool.grantRole(MATCH_AUTHORIZER_ROLE, <FACTORY>)
+ *     The factory calls `pool.authorizeMatch(proxy)` atomically when it
+ *     creates a match — without this role the whole match-creation tx
+ *     reverts.
+ *
+ *  3. From ChilizSwapRouter owner (if not already set):
+ *       swapRouter.setMatchFactory(<FACTORY>)
+ *     Without this, every `placeBetWith*` reverts with
+ *     `BettingMatchFactoryNotSet` (C-1 hardening — no silent forwards).
+ *
  * USAGE:
- * =====
- * Set environment variables:
- *   export PRIVATE_KEY=0x...           # Deployer private key
- *   export RPC_URL=https://...         # Network RPC endpoint
- * 
- * Run:
+ * ======
+ *   export PRIVATE_KEY=0x...
+ *   export RPC_URL=https://spicy-rpc.chiliz.com
  *   forge script script/DeployBetting.s.sol --rpc-url $RPC_URL --broadcast --verify
  */
 contract DeployBetting is Script {
-    
-    // ============================================================================
-    // DEPLOYED CONTRACTS
-    // ============================================================================
-    
+
     BettingMatchFactory public factory;
-    
     address public deployer;
-    
-    
-    // ============================================================================
-    // MAIN DEPLOYMENT
-    // ============================================================================
-    
+
     function run() external {
         deployer = msg.sender;
-        
+
         vm.startBroadcast();
-        
         _printHeader();
         _deployFactory();
         _printSummary();
-        
         vm.stopBroadcast();
     }
-    
-    
-    // ============================================================================
-    // DEPLOYMENT STEPS
-    // ============================================================================
-    
+
     /**
-     * @notice Deploy BettingMatchFactory (deploys implementations internally)
-     * @dev Factory creates ERC1967 proxies for both sports
+     * @notice Deploy `BettingMatchFactory`. Football + basketball implementations
+     *         are deployed internally by the factory's constructor.
      */
     function _deployFactory() internal {
         console.log("Deploying BettingMatchFactory");
         console.log("------------------------------");
         factory = new BettingMatchFactory();
-        console.log("BettingMatchFactory:", address(factory));
-        console.log("  Owner:", deployer);
-        console.log("  Implementations deployed internally");
+        console.log("BettingMatchFactory:      ", address(factory));
+        console.log("  Owner:                  ", deployer);
+        console.log("  Football impl:          ", factory.footballImplementation());
+        console.log("  Basketball impl:        ", factory.basketballImplementation());
         console.log("");
     }
-    
-    
-    // ============================================================================
-    // HELPER FUNCTIONS
-    // ============================================================================
-    
+
     function _printHeader() internal view {
         console.log("=========================================");
         console.log("CHILIZ-TV MULTI-SPORT BETTING DEPLOYMENT");
         console.log("=========================================");
-        console.log("");
         console.log("Deployer:", deployer);
         console.log("");
-        console.log("=========================================");
-        console.log("");
     }
-    
+
     function _printSummary() internal view {
-        console.log("=====================================");
-        console.log("DEPLOYMENT COMPLETE!");
-        console.log("=====================================");
-        console.log("");
-        
-        console.log("DEPLOYED CONTRACTS:");
-        console.log("------------------");
+        console.log("=========================================");
+        console.log("DEPLOYMENT COMPLETE");
+        console.log("=========================================");
         console.log("BettingMatchFactory:", address(factory));
-        console.log("  (Implementations deployed internally)");
         console.log("");
-        
-        console.log("CREATE A FOOTBALL MATCH:");
-        console.log("-----------------------");
+
+        console.log("POST-DEPLOYMENT WIRING (MANDATORY):");
+        console.log("-----------------------------------");
+        console.log("1) Configure the factory (factory owner):");
+        console.log("   cast send", address(factory));
+        console.log("     'setWiring(address,address,address)'");
+        console.log("     <LIQUIDITY_POOL> <USDC> <CHILIZ_SWAP_ROUTER>");
+        console.log("");
+        console.log("2) Grant MATCH_AUTHORIZER_ROLE on the pool (pool admin):");
+        console.log("   cast send <LIQUIDITY_POOL>");
+        console.log("     'grantRole(bytes32,address)'");
+        console.log("     $(cast keccak 'MATCH_AUTHORIZER_ROLE')", address(factory));
+        console.log("");
+        console.log("3) Register the factory on the swap router (router owner):");
+        console.log("   cast send <CHILIZ_SWAP_ROUTER>");
+        console.log("     'setMatchFactory(address)'", address(factory));
+        console.log("");
+
+        console.log("CREATE A FOOTBALL MATCH (atomic - wires pool + roles):");
+        console.log("------------------------------------------------------");
         console.log("cast send", address(factory));
-        console.log("  'createFootballMatch(string,address)'");
-        console.log("  'Barcelona vs Real Madrid'  # Match name");
-        console.log("  <OWNER_ADDRESS>             # Match admin");
+        console.log("  'createFootballMatch(string,address,address)'");
+        console.log("  'Barcelona vs Real Madrid'  # match name");
+        console.log("  <MATCH_OWNER>               # DEFAULT_ADMIN / ADMIN / PAUSER / ODDS_SETTER");
+        console.log("  <ORACLE>                    # RESOLVER_ROLE holder");
         console.log("");
-        
+
         console.log("CREATE A BASKETBALL MATCH:");
-        console.log("-------------------------");
+        console.log("--------------------------");
         console.log("cast send", address(factory));
-        console.log("  'createBasketballMatch(string,address)'");
-        console.log("  'Lakers vs Celtics'    # Match name");
-        console.log("  <OWNER_ADDRESS>        # Match admin");
+        console.log("  'createBasketballMatch(string,address,address)'");
+        console.log("  'Lakers vs Celtics'");
+        console.log("  <MATCH_OWNER>");
+        console.log("  <ORACLE>");
         console.log("");
-        
-        console.log("ADD MARKETS TO MATCH:");
-        console.log("--------------------");
-        console.log("cast send <MATCH_ADDRESS>");
-        console.log("  'addMarketWithLine(bytes32,uint32,int16)'");
-        console.log("  keccak256('WINNER')       # Market type (bytes32)");
-        console.log("  20000                     # Odds: 2.0x (20000/10000)");
-        console.log("  0                         # Line: 0 (no line)");
-        console.log("");
-        
-        console.log("BETTING FLOW:");
-        console.log("------------");
-        console.log("1. Open market: match.setMarketState(0, MarketState.Open)");
-        console.log("2. User bets USDC: match.placeBetUSDC(0, 0, 100e6)");
-        console.log("   - marketId: 0 (first market)");
-        console.log("   - selection: 0 (Home/Over/Yes/etc.)");
-        console.log("   - amount: 100 USDC (6 decimals)");
-        console.log("   - Or swap any token via ChilizSwapRouter");
-        console.log("   - Odds locked at time of bet (x10000 precision)");
-        console.log("3. Owner resolves: match.resolveMarket(0, 0)");
-        console.log("   - marketId: 0");
-        console.log("   - result: 0 (actual outcome)");
-        console.log("4. Winner claims: match.claim(0, 0)");
-        console.log("   - Receives USDC: bet * lockedOdds / 10000");
-        console.log("");
-        
+
         console.log("UPGRADING:");
-        console.log("---------");
-        console.log("Implementations are immutable in factory.");
-        console.log("Each match can be upgraded individually via UUPS:");
-        console.log("  1. Deploy new implementation (FootballMatch or BasketballMatch)");
-        console.log("  2. Call match.upgradeToAndCall(newImpl, '') as match owner");
+        console.log("----------");
+        console.log("Each match proxy is UUPS. Upgrade individually from DEFAULT_ADMIN:");
+        console.log("  1. Deploy the new FootballMatch / BasketballMatch implementation.");
+        console.log("  2. proxy.upgradeToAndCall(newImpl, '') from the match admin.");
         console.log("");
     }
 }
