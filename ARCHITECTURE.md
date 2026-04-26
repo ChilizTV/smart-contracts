@@ -380,6 +380,32 @@ graph TD
   - `_authorizeUpgrade` is locked to the `StreamWalletFactory`
   - Upgrades are applied one wallet at a time via `StreamWalletFactory.upgradeWallet(streamer, newImpl)` (multisig recommended as factory owner). **Not atomic** across wallets.
 
+#### ADR — Why some contracts are not UUPS
+
+UUPS is reserved for contracts where redeploying would lose unrecoverable
+state. Factories and the swap router are intentionally **not** upgradeable:
+they hold near-zero state that can't be reconstructed, and upgradeability
+would add (a) an upgrade key with full code-replacement power, (b) a frozen
+storage layout that's a known footgun on every future change, and (c) more
+audit surface — for marginal benefit. When a bug is found, the fix is a
+redeploy + a small number of repointing transactions, not a UUPS upgrade.
+
+| Contract | Pattern | If a bug appears, fix is… |
+|---|---|---|
+| `LiquidityPool` | **UUPS** behind `ERC1967Proxy` | UUPS upgrade — redeploy would orphan LP shares + every open bet liability. |
+| `FootballMatch` / `BasketballMatch` | **UUPS** (per-match `ERC1967Proxy`) | UUPS upgrade — redeploy would abandon every active bet for that match. |
+| `StreamWallet` | **UUPS** (per-streamer `ERC1967Proxy`, factory-gated) | UUPS upgrade — redeploy would abandon subscriptions, donation history, USDC balance for that streamer. |
+| `BettingMatchFactory` | Plain `Ownable` | Redeploy + 3 txs: `pool.grantRole(MATCH_AUTHORIZER_ROLE, newFactory)`, `swapRouter.setMatchFactory(newFactory)`, point future `setWiring` calls at it. Existing matches don't care which factory created them. |
+| `StreamWalletFactory` | Plain `Ownable + ReentrancyGuard` | Redeploy + repoint `swapRouter.setStreamWalletFactory(newFactory)`. The streamer→wallet mapping is rebuildable from `StreamWalletCreated` events; existing wallets keep working since each is its own UUPS proxy. |
+| `ChilizSwapRouter` | Plain `Ownable + ReentrancyGuard` | Redeploy + repoint streaming/factory wiring + re-grant `SWAP_ROUTER_ROLE` on each match. Cost scales with match count — see "future considerations" below. |
+
+**Future consideration** — once the platform has many matches deployed (say
+>20), the swap-router redeploy cost (`2 × N` txs to rotate `SWAP_ROUTER_ROLE`
+across every match) starts to outweigh the UUPS risk. At that point,
+migrating the router to UUPS in a planned upgrade window is a reasonable
+v2 change. Pre-launch / single-digit-matches it's not worth the extra
+upgrade-key surface.
+
 ### 2. Reentrancy Protection
 - `ReentrancyGuardUpgradeable` on all state-changing functions
 - CEI (Checks-Effects-Interactions) pattern enforced
