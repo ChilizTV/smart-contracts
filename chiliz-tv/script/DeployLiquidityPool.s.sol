@@ -11,6 +11,12 @@ import {LiquidityPool} from "../src/liquidity/LiquidityPool.sol";
  * @author ChilizTV
  * @notice Deploys the ERC-4626 LiquidityPool as a UUPS proxy.
  *
+ * @dev    For a fresh platform deployment use `script/DeployAll.s.sol` — it
+ *         already deploys the pool, wires it to the factory, and grants
+ *         `MATCH_AUTHORIZER_ROLE` in one run. Use this standalone script only
+ *         to (a) redeploy a pool against an existing factory or (b) bootstrap
+ *         the pool ahead of an out-of-band factory deploy.
+ *
  * ROLE SEPARATION (critical):
  * ===========================
  * The pool enforces a hard split between two authorities:
