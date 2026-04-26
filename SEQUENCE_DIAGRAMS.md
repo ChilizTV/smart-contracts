@@ -130,7 +130,7 @@ sequenceDiagram
     actor Admin as Admin (ADMIN_ROLE)
     actor OddsSetter as OddsSetter (ODDS_SETTER_ROLE)
     actor Resolver as Resolver (RESOLVER_ROLE)
-    actor Treasury as Treasury (TREASURY_ROLE)
+    actor LP as LP (deposits to LiquidityPool)
     actor User1 as User1 (Winner)
     actor User2 as User2 (Loser)
 
@@ -148,7 +148,7 @@ sequenceDiagram
         Factory->>Proxy: new ERC1967Proxy(FOOTBALL_IMPL, initData)
         activate Proxy
         Proxy->>FImpl: delegatecall initialize("Real Madrid vs BarÃ§a", owner)
-        Note right of FImpl: __BettingMatchV2_init:<br/>Grant owner ALL roles:<br/>DEFAULT_ADMIN, ADMIN, RESOLVER,<br/>PAUSER, TREASURY, ODDS_SETTER<br/>matchName = "Real Madrid vs BarÃ§a"<br/>sportType = "FOOTBALL"
+        Note right of FImpl: __BettingMatch_init:<br/>Grant owner DEFAULT_ADMIN, ADMIN,<br/>PAUSER, ODDS_SETTER (RESOLVER granted later<br/>to backend oracle, not to owner).<br/>matchName = "Real Madrid vs Barça"<br/>sportType = "FOOTBALL"
         FImpl-->>Proxy: Initialized âœ“
         deactivate Proxy
         Factory-->>Admin: emit MatchCreated(proxy, FOOTBALL, owner)
@@ -189,8 +189,8 @@ sequenceDiagram
         Admin->>Proxy: openMarket(1)
         Note right of Proxy: State: Inactive â†’ Open
 
-        Treasury->>Proxy: fundUSDCTreasury(50000e6)
-        Note right of Proxy: onlyRole(TREASURY_ROLE)<br/>safeTransferFrom(treasury, proxy, 50000 USDC)
+        LP->>Pool: deposit(50000e6, lp)
+        Note right of Pool: ERC-4626 deposit<br/>USDC custody on the pool<br/>(match never holds USDC)
     end
 
     rect rgb(255, 240, 220)

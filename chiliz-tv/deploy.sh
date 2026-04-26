@@ -5,11 +5,14 @@
 # All configuration is loaded from .env (see .env.example).
 #
 # Usage:
-#   ./deploy.sh --network chilizTestnet --all
-#   ./deploy.sh --network chilizTestnet --match
-#   ./deploy.sh --network chilizTestnet --stream
-#   ./deploy.sh --network chilizTestnet --swap
+#   ./deploy.sh --network chilizTestnet --all     # full platform (factories + router + pool, fully wired)
+#   ./deploy.sh --network chilizTestnet --match   # BettingMatchFactory only
+#   ./deploy.sh --network chilizTestnet --stream  # StreamWalletFactory only
+#   ./deploy.sh --network chilizTestnet --swap    # ChilizSwapRouter only
+#   ./deploy.sh --network chilizTestnet --pool    # LiquidityPool only (against existing factory)
 #   ./deploy.sh --network chilizMainnet  --all
+#
+# --all and --pool require ADMIN_ADDRESS in .env (must differ from SAFE_ADDRESS).
 #
 # The --network flag is a safety label only: it picks the mainnet warning
 # and is used for output paths (deployments/<network>.json). The actual
@@ -41,18 +44,18 @@ while [[ $# -gt 0 ]]; do
             DEPLOY_TYPE="stream"; shift ;;
         --swap)
             DEPLOY_TYPE="swap"; shift ;;
-        --payout)
-            DEPLOY_TYPE="payout"; shift ;;
+        --pool)
+            DEPLOY_TYPE="pool"; shift ;;
         *)
             echo -e "${RED}Unknown argument: $1${NC}"
-            echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--payout>"
+            echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--pool>"
             exit 1 ;;
     esac
 done
 
 if [ -z "$NETWORK" ] || [ -z "$DEPLOY_TYPE" ]; then
     echo -e "${RED}Missing required arguments.${NC}"
-    echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--payout>"
+    echo "Usage: ./deploy.sh --network <chilizTestnet|chilizMainnet> <--all|--match|--stream|--swap|--pool>"
     exit 1
 fi
 
@@ -111,22 +114,27 @@ fi
 # ── Deploy type → script mapping ─────────────────────────────────────────────
 REQUIRES_KAYEN=false
 REQUIRES_USDC=false
+REQUIRES_ADMIN=false   # ADMIN_ADDRESS — required by anything that deploys the LiquidityPool
 case "$DEPLOY_TYPE" in
     all)
         SCRIPT="script/DeployAll.s.sol"
         REQUIRES_KAYEN=true
-        REQUIRES_USDC=true ;;
+        REQUIRES_USDC=true
+        REQUIRES_ADMIN=true ;;
     match)
         SCRIPT="script/DeployBetting.s.sol" ;;
     stream)
-        SCRIPT="script/DeployStreaming.s.sol" ;;
+        SCRIPT="script/DeployStreaming.s.sol"
+        REQUIRES_KAYEN=true
+        REQUIRES_USDC=true ;;
     swap)
         SCRIPT="script/DeploySwap.s.sol"
         REQUIRES_KAYEN=true
         REQUIRES_USDC=true ;;
-    payout)
-        SCRIPT="script/DeployPayout.s.sol"
-        REQUIRES_USDC=true ;;
+    pool)
+        SCRIPT="script/DeployLiquidityPool.s.sol"
+        REQUIRES_USDC=true
+        REQUIRES_ADMIN=true ;;
 esac
 
 # ── USDC / Kayen validation ──────────────────────────────────────────────────
@@ -147,6 +155,26 @@ if [ "$REQUIRES_KAYEN" = true ]; then
     echo -e "  KAYEN_ROUTER: ${YELLOW}$KAYEN_ROUTER${NC}"
     echo -e "  WCHZ_ADDRESS: ${YELLOW}$WCHZ_ADDRESS${NC}"
     echo -e "  USDC_ADDRESS: ${YELLOW}$USDC_ADDRESS${NC}"
+    echo ""
+fi
+
+# ── Pool-admin validation ────────────────────────────────────────────────────
+# The LiquidityPool enforces a hard split between admin (DEFAULT_ADMIN_ROLE +
+# PAUSER_ROLE) and treasury (the Safe). Reusing the same address would let an
+# admin compromise drain accrued treasury funds, so the script refuses it.
+if [ "$REQUIRES_ADMIN" = true ]; then
+    if [ -z "$ADMIN_ADDRESS" ]; then
+        echo -e "${RED}Missing ADMIN_ADDRESS in $ENV_FILE${NC}"
+        echo -e "${RED}  ADMIN_ADDRESS holds DEFAULT_ADMIN_ROLE + PAUSER_ROLE on the LiquidityPool."
+        echo -e "${RED}  It MUST be different from SAFE_ADDRESS (treasury role separation).${NC}"
+        exit 1
+    fi
+    if [ "${ADMIN_ADDRESS,,}" = "${SAFE_ADDRESS,,}" ]; then
+        echo -e "${RED}ADMIN_ADDRESS and SAFE_ADDRESS must be different addresses.${NC}"
+        echo -e "${RED}  Same address = admin can rotate treasury → no security separation.${NC}"
+        exit 1
+    fi
+    echo -e "  ADMIN_ADDRESS: ${YELLOW}$ADMIN_ADDRESS${NC}"
     echo ""
 fi
 
@@ -171,6 +199,7 @@ echo -e "Deploy Type:  ${YELLOW}$DEPLOY_TYPE${NC}"
 echo -e "Script:       ${YELLOW}$SCRIPT${NC}"
 echo -e "RPC URL:      ${YELLOW}$RPC_URL${NC}"
 echo -e "Safe Address: ${YELLOW}$SAFE_ADDRESS${NC}"
+[ "$REQUIRES_ADMIN" = true ] && echo -e "Admin Address:${YELLOW} $ADMIN_ADDRESS${NC}"
 echo -e "Env File:     ${YELLOW}$ENV_FILE${NC}"
 [ -n "$FORGE_FLAGS" ] && echo -e "Forge Flags:  ${YELLOW}$FORGE_FLAGS${NC}"
 echo -e "${GREEN}========================================${NC}"

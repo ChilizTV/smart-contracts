@@ -33,9 +33,19 @@ The ChilizTV betting system uses a **LiquidityPool-backed payout** architecture.
 totalAssets()   = USDC.balanceOf(pool) - totalLiabilities - accruedTreasury
 freeBalance()   = totalAssets()              (LP-withdrawable USDC)
 utilization()   = totalLiabilities × 10_000 / totalAssets()   (bps)
-totalLiabilities = Σ netExposure across all open winning-side positions
+totalLiabilities = Σ netExposure across ALL open positions on every selection
+                   (sum-based reservation, not max-side — see note below)
 accruedTreasury = Σ 50% of losingNetStake accumulated at settlement (pull-claim)
 ```
+
+> **Reservation model — sum-based, not max-side.**
+> `recordBet` adds `netExposure` to `totalLiabilities` for every bet, regardless
+> of which side it's on. The pool reserves enough capital to pay every open
+> position on every selection if it won, even though only one side can actually
+> win. A future optimisation could switch to max-side reservation (only reserve
+> the worst-case losing side), which is more capital-efficient but harder to
+> reason about across markets — the current design intentionally trades capital
+> efficiency for simpler solvency invariants.
 
 Claims against the pool's USDC balance, in precedence:
 1. **Winners** — `totalLiabilities` (senior, reserved).

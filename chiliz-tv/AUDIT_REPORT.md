@@ -43,12 +43,13 @@ The codebase is **well-structured and functional**. All core payment paths are i
 
 ```
 DEFAULT_ADMIN_ROLE (owner)
-├── ADMIN_ROLE         → Market management, USDC config, pause/unpause
-├── RESOLVER_ROLE      → Set match results
+├── ADMIN_ROLE         → Market management, USDC + pool config, pause/unpause
+├── RESOLVER_ROLE      → Set match results (granted to backend oracle, NOT to owner at init)
 ├── ODDS_SETTER_ROLE   → Update market odds
-├── TREASURY_ROLE      → Fund treasury, emergency withdraw
 ├── PAUSER_ROLE        → Emergency pause
 └── SWAP_ROUTER_ROLE   → ChilizSwapRouter authorization
+
+(TREASURY_ROLE was removed — match no longer custodies USDC; treasury accounting lives on LiquidityPool.)
 ```
 
 ---

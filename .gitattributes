@@ -1,0 +1,30 @@
+# Default to LF line endings on checkout for everything text-detected.
+# Stops Windows clones from rewriting Unix files to CRLF and breaking
+# bash scripts under WSL.
+* text=auto eol=lf
+
+# Files that MUST be LF regardless of OS (executed by bash / Solidity tooling)
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.sol       text eol=lf
+*.toml      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+Makefile    text eol=lf
+.env*       text eol=lf
+
+# Windows-only files keep CRLF so Notepad doesn't mangle them
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary — never touch
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary

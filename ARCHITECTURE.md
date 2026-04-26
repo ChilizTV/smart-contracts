@@ -10,7 +10,8 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - **ERC1967Proxy**: Each match is an independent upgradeable proxy instance
 - **USDC Settlement**: All bets placed and paid out in USDC (6 decimals)
 - **Dynamic Odds**: Real-time odds set by ODDS_SETTER_ROLE (x10000 precision)
-- **Role-Based Access Control**: ADMIN_ROLE, RESOLVER_ROLE, PAUSER_ROLE, TREASURY_ROLE, ODDS_SETTER_ROLE, SWAP_ROUTER_ROLE
+- **Role-Based Access Control**: ADMIN_ROLE, RESOLVER_ROLE, PAUSER_ROLE, ODDS_SETTER_ROLE, SWAP_ROUTER_ROLE
+  - `TREASURY_ROLE` was removed when USDC custody migrated to `LiquidityPool`. Match proxies hold no USDC; treasury accounting lives on the pool.
 
 ### 2. Streaming Wallet System (UUPS Proxy Pattern, factory-gated upgrades)
 - **StreamWalletFactory**: Deploys `ERC1967Proxy` instances for streamers and holds the current implementation pointer
@@ -33,7 +34,8 @@ This document illustrates the complete architecture of the **Chiliz-TV Dual Syst
 - Match-facing API: `recordBet()`, `settleMarket()`, `payWinner()`, `payRefund()`
 - Withdrawal gated on `freeBalance` (unreserved USDC) and per-depositor cooldown to prevent flash-NAV manipulation
 - Per-market and per-match liability caps (in bps of `totalAssets()`) enforce solvency at bet time
-- **Safe** acts as `treasury` (receives protocol fees) and as `DEFAULT_ADMIN_ROLE` (authorizes matches, upgrades, parameters)
+- **Reservation model is sum-based**: `recordBet` adds `netExposure` to `totalLiabilities` for every bet on every side of every market. The pool reserves capital as if every open position on every selection could win — only one side actually does, but the conservative reservation simplifies solvency invariants and makes per-market/per-match caps strict upper bounds. Releases happen on `settleMarket` (losing side) and `payWinner` / `payRefund` (per-bet).
+- Treasury and admin are separated: an **admin key** holds `DEFAULT_ADMIN_ROLE` (authorize/revoke matches, parameter knobs, upgrades), and the **Safe** is the `treasury` (receives `accruedTreasury` via pull-claim only). The Safe is never `DEFAULT_ADMIN_ROLE` on the pool.
 
 ### Deployment Scripts
 - `script/DeployAll.s.sol`: Complete system deployment (betting + streaming + swap router)
@@ -96,7 +98,7 @@ sequenceDiagram
         activate Proxy
         
         Proxy->>FImpl: delegatecall initialize("Real Madrid vs Barcelona", owner)
-        Note right of FImpl: Grant roles to owner:<br/>DEFAULT_ADMIN_ROLE<br/>ADMIN_ROLE<br/>RESOLVER_ROLE<br/>PAUSER_ROLE<br/>TREASURY_ROLE
+        Note right of FImpl: Grant roles to owner:<br/>DEFAULT_ADMIN_ROLE<br/>ADMIN_ROLE<br/>PAUSER_ROLE<br/>ODDS_SETTER_ROLE<br/>(RESOLVER_ROLE granted post-init to backend oracle)
         
         FImpl-->>Proxy: Initialized âœ“
         deactivate FImpl
@@ -122,15 +124,7 @@ sequenceDiagram
         Proxy-->>Admin: Market created âœ“
         deactivate Proxy
         
-        Note over Admin: Fund USDC treasury for payouts
-        Admin->>Proxy: fundUSDCTreasury(10000e6)
-        activate Proxy
-        Proxy->>FImpl: delegatecall fundUSDCTreasury()
-        activate FImpl
-        Note right of FImpl: Requires TREASURY_ROLE<br/>USDC transferred to contract
-        FImpl-->>Proxy: emit USDCTreasuryFunded(10000e6)
-        deactivate FImpl
-        deactivate Proxy
+        Note over Admin: USDC custody lives on LiquidityPool — no per-match treasury funding step.<br/>LPs deposit() to the pool; pool pays winners directly via payWinner().
         
         User1->>Proxy: placeBetUSDC(marketId=0, selection=0, 500e6)
         activate Proxy
@@ -346,12 +340,13 @@ sequenceDiagram
 | Role | Permissions | Granted To |
 |------|-------------|------------|
 | `DEFAULT_ADMIN_ROLE` | Can grant/revoke all roles, authorize upgrades | Match owner (initial) |
-| `ADMIN_ROLE` | Add markets, control market state, unpause contract | Match owner, trusted admins |
+| `ADMIN_ROLE` | Add markets, control market state, unpause contract, `setUSDCToken`, `setLiquidityPool`, `setMaxAllowedOdds` | Match owner, trusted admins |
 | `ODDS_SETTER_ROLE` | Update market odds in real-time | Backend odds service |
-| `RESOLVER_ROLE` | Resolve markets with outcomes | Backend resolver service |
+| `RESOLVER_ROLE` | Resolve markets with outcomes | Backend resolver service (NOT auto-granted at init — must be granted explicitly) |
 | `PAUSER_ROLE` | Emergency pause in critical situations | Match owner, security team |
-| `TREASURY_ROLE` | Fund USDC treasury, emergency USDC withdraw | Treasury multisig |
 | `SWAP_ROUTER_ROLE` | Call `placeBetUSDCFor()` on behalf of users | ChilizSwapRouter contract |
+
+> `TREASURY_ROLE` no longer exists — it was retired when bet custody moved to `LiquidityPool`. The match contract is pure bookkeeping and never holds USDC; emergency-fund and treasury-related operations live on the pool.
 
 ### Role Assignment Flow
 
@@ -359,17 +354,15 @@ sequenceDiagram
 graph TD
     A[Match Created] --> B[Owner granted DEFAULT_ADMIN_ROLE]
     B --> C[Owner granted ADMIN_ROLE]
-    B --> D[Owner granted RESOLVER_ROLE]
     B --> E[Owner granted PAUSER_ROLE]
-    B --> F[Owner granted TREASURY_ROLE]
     B --> G[Owner granted ODDS_SETTER_ROLE]
     C --> H[Can add markets]
     G --> I[Can update odds]
-    D --> J[Can resolve outcomes]
     E --> K[Can pause contract]
-    F --> L[Can fund/withdraw USDC treasury]
     B --> M[Can upgrade via UUPS]
     B --> N[Can grant SWAP_ROUTER_ROLE to router]
+    B -. explicit grant after init .-> D[RESOLVER_ROLE → backend oracle]
+    D --> J[Can resolve outcomes]
 ```
 
 ---
@@ -393,8 +386,8 @@ graph TD
 - State updates before external calls
 
 ### 3. Emergency Controls
-- `PausableUpgradeable` for circuit breakers
-- Emergency withdraw for `TREASURY_ROLE` when paused
+- `PausableUpgradeable` for circuit breakers on both the match and the pool
+- Pool-side emergency drain is **not** a role on the match — it's a pool admin operation, separate from the betting flow
 - Market resolution locked during pause
 
 ### 4. Input Validation

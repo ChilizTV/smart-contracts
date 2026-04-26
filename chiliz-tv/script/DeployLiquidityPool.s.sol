@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.22;
+pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -10,6 +10,12 @@ import {LiquidityPool} from "../src/liquidity/LiquidityPool.sol";
  * @title DeployLiquidityPool
  * @author ChilizTV
  * @notice Deploys the ERC-4626 LiquidityPool as a UUPS proxy.
+ *
+ * @dev    For a fresh platform deployment use `script/DeployAll.s.sol` — it
+ *         already deploys the pool, wires it to the factory, and grants
+ *         `MATCH_AUTHORIZER_ROLE` in one run. Use this standalone script only
+ *         to (a) redeploy a pool against an existing factory or (b) bootstrap
+ *         the pool ahead of an out-of-band factory deploy.
  *
  * ROLE SEPARATION (critical):
  * ===========================

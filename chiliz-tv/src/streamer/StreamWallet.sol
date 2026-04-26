@@ -515,15 +515,16 @@ contract StreamWallet is Initializable, OwnableUpgradeable, UUPSUpgradeable, Ree
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Ensure the Kayen router has sufficient approval to spend a given fan token
-     * @param token The fan token to approve
-     * @param amount The minimum approval needed
+     * @notice Approve the Kayen router for an exact amount of a given fan token.
+     * @dev    Approves only `amount` (not type(uint256).max) so a compromised or
+     *         buggy router cannot drain the wallet beyond the swap currently being
+     *         executed. The router consumes the full allowance during
+     *         `swapExactTokensForTokens`, leaving residual allowance at zero.
+     * @param token  The fan token to approve
+     * @param amount The exact approval needed for this swap
      */
     function _ensureRouterApproval(address token, uint256 amount) internal {
-        uint256 currentAllowance = IERC20(token).allowance(address(this), kayenRouter);
-        if (currentAllowance < amount) {
-            SafeERC20.forceApprove(IERC20(token), kayenRouter, type(uint256).max);
-        }
+        SafeERC20.forceApprove(IERC20(token), kayenRouter, amount);
     }
 
     /*//////////////////////////////////////////////////////////////

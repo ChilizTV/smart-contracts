@@ -53,6 +53,13 @@ abstract contract BettingMatch is
     uint32 public constant MIN_ODDS       = 10001;   // 1.0001x
     uint32 public constant MAX_ODDS       = 1000000; // 100.00x
 
+    /// @notice Minimum net stake (post-fee) in USDC's 6-decimal precision.
+    ///         Set to 0.1 USDC. Two purposes: (1) raise the gas-cost floor of
+    ///         spam bets that would otherwise bloat per-user `_userBets`
+    ///         arrays for free, and (2) keep `netStake * odds / 10000` from
+    ///         truncating to a netExposure of 0 at small odds (e.g. 1.0001x).
+    uint256 public constant MIN_NET_STAKE = 100_000;
+
     // ═══════════════════════════════════════════════════════════════════════
     // ENUMS
     // ═══════════════════════════════════════════════════════════════════════
@@ -182,6 +189,8 @@ abstract contract BettingMatch is
     error InvalidOddsValue(uint32 odds, uint32 min, uint32 max);
     error OddsNotSet(uint256 marketId);
     error ZeroBetAmount();
+    error StakeBelowMinimum(uint256 netStake, uint256 minimum);
+    error ZeroNetExposure(uint256 marketId);
     error BetNotFound(uint256 marketId, address user, uint256 betIndex);
     error AlreadyClaimed(uint256 marketId, address user, uint256 betIndex);
     error BetLost(uint256 marketId, address user, uint256 betIndex);
@@ -463,9 +472,21 @@ abstract contract BettingMatch is
             netStake = amount;
         }
 
+        // Floor on the post-fee stake. The pool charges a flat protocol fee on
+        // gross USDC, so dust bets reach this point with netStake well under
+        // the spam threshold; without this they would (a) bloat _userBets and
+        // (b) potentially round to zero exposure at low odds.
+        if (netStake < MIN_NET_STAKE) revert StakeBelowMinimum(netStake, MIN_NET_STAKE);
+
         uint32 odds = registry.values[registry.currentIndex - 1];
         uint256 potentialPayout = (netStake * odds) / ODDS_PRECISION;
         uint256 netExposure     = potentialPayout - netStake; // odds > 10000
+
+        // Belt-and-braces: even with MIN_NET_STAKE, very low odds (e.g. 1.0001x)
+        // could in principle round netExposure to 0. A zero-exposure bet still
+        // pays out on win — the pool would owe a payout it never reserved
+        // capital for. Reject explicitly.
+        if (netExposure == 0) revert ZeroNetExposure(marketId);
 
         _userBets[marketId][user].push(Bet({
             amount:    netStake,

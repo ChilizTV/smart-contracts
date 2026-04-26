@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.22;
+pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {BettingMatchFactory} from "../src/betting/BettingMatchFactory.sol";
@@ -147,13 +147,22 @@ contract UpgradeAll is Script {
                 continue;
             }
 
-            (bool ok,) = proxy.call(
+            // Surface the underlying revert reason rather than swallowing it.
+            // A half-applied UpgradeAll run (some proxies upgraded, some not) used to
+            // print [FAIL] and exit 0 — operators couldn't tell whether the impl mismatch
+            // was a missing role, a bad bytecode, or a transient RPC issue. Bubble it.
+            (bool ok, bytes memory ret) = proxy.call(
                 abi.encodeWithSignature("upgradeToAndCall(address,bytes)", impl, "")
             );
             if (ok) {
                 console.log("  [ok]  ", proxy, "->", impl);
             } else {
                 console.log("  [FAIL]", proxy, "(check DEFAULT_ADMIN_ROLE)");
+                // Re-revert with the original returndata so forge surfaces the reason
+                // and the broadcast aborts instead of silently leaving a partial upgrade.
+                assembly {
+                    revert(add(ret, 0x20), mload(ret))
+                }
             }
         }
         console.log("");
@@ -204,10 +213,16 @@ contract UpgradeAll is Script {
                 continue;
             }
 
+            // Same rationale as betting upgrades: don't pretend success. If a
+            // single wallet fails to upgrade we want the operator to see the
+            // reason and the broadcast to halt before more partial state lands.
             try streamFactory.upgradeWallet(streamer, newStreamWalletImpl) {
                 console.log("  [ok]   wallet", wallet, "for streamer", streamer);
-            } catch {
+            } catch (bytes memory ret) {
                 console.log("  [FAIL] streamer", streamer, "(check factory owner)");
+                assembly {
+                    revert(add(ret, 0x20), mload(ret))
+                }
             }
         }
         console.log("");
