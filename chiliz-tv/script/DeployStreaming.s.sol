@@ -34,7 +34,9 @@ import {StreamWalletFactory} from "../src/streamer/StreamWalletFactory.sol";
  *   export PRIVATE_KEY=0x...           # Deployer private key
  *   export RPC_URL=https://...         # Network RPC endpoint
  *   export SAFE_ADDRESS=0x...          # Safe multisig (treasury)
- * 
+ *   export KAYEN_ROUTER=0x...          # Kayen DEX MasterRouterV2
+ *   export USDC_ADDRESS=0x...          # USDC token
+ *
  * Run:
  *   forge script script/DeployStreaming.s.sol --rpc-url $RPC_URL --broadcast --verify
  */
@@ -45,36 +47,41 @@ contract DeployStreaming is Script {
     // ============================================================================
     
     StreamWalletFactory public factory;
-    
+
     address public deployer;
-    address public treasury; // Safe multisig
-    
-    
+    address public treasury;    // Safe multisig
+    address public kayenRouter; // Kayen DEX MasterRouterV2
+    address public usdc;        // USDC token
+
+
     // ============================================================================
     // MAIN DEPLOYMENT
     // ============================================================================
-    
+
     function run() external {
         deployer = msg.sender;
-        
-        // Load Safe address
-        try vm.envAddress("SAFE_ADDRESS") returns (address addr) {
-            treasury = addr;
-        } catch {
-            console.log("ERROR: SAFE_ADDRESS environment variable not set!");
-            revert("SAFE_ADDRESS required");
-        }
-        
+
+        // All three are required up-front so the factory ships in a usable state.
+        // The previous version passed address(0) for kayenRouter/usdc and relied on
+        // post-deploy setter txs that were easy to forget — every subscribe/donate
+        // call would revert until they ran. Fail fast here instead.
+        treasury    = vm.envAddress("SAFE_ADDRESS");
+        kayenRouter = vm.envAddress("KAYEN_ROUTER");
+        usdc        = vm.envAddress("USDC_ADDRESS");
+
+        require(treasury    != address(0), "SAFE_ADDRESS required");
+        require(kayenRouter != address(0), "KAYEN_ROUTER required");
+        require(usdc        != address(0), "USDC_ADDRESS required");
+
         vm.startBroadcast();
-        
+
         _printHeader();
         _deployFactory();
         // NOTE: Ownership transfer skipped during deployment.
-        // After all post-deployment setup (setSwapRouter, setUsdc, setKayenRouter),
-        // transfer ownership to Safe manually:
-        //   factory.transferOwnership(SAFE_ADDRESS)
+        // After all post-deployment setup (setSwapRouter), transfer ownership to
+        // the Safe manually:  factory.transferOwnership(SAFE_ADDRESS)
         _printSummary();
-        
+
         vm.stopBroadcast();
     }
     
@@ -90,31 +97,21 @@ contract DeployStreaming is Script {
     function _deployFactory() internal {
         console.log("Deploying StreamWalletFactory");
         console.log("-----------------------------");
-        
+
         factory = new StreamWalletFactory(
             deployer,
             treasury,
-            500,  // 5% platform fee
-            address(0), // kayenRouter - set after deployment
-            address(0)  // usdc - set after deployment
+            500,         // 5% platform fee
+            kayenRouter, // Kayen DEX router (required)
+            usdc         // USDC token       (required)
         );
         console.log("StreamWalletFactory:", address(factory));
         console.log("  Owner:", deployer);
         console.log("  Implementation: deployed internally");
         console.log("  Treasury:", treasury);
+        console.log("  Kayen Router:", kayenRouter);
+        console.log("  USDC:", usdc);
         console.log("  Platform Fee: 5%");
-        console.log("");
-    }
-    
-    /**
-     * @notice Transfer factory ownership to Safe
-     */
-    function _transferOwnership() internal {
-        console.log("Transferring Ownership to Safe");
-        console.log("------------------------------");
-        
-        factory.transferOwnership(treasury);
-        console.log("StreamWalletFactory -> Safe:", treasury);
         console.log("");
     }
     
@@ -129,6 +126,8 @@ contract DeployStreaming is Script {
         console.log("");
         console.log("Deployer:", deployer);
         console.log("Safe/Treasury:", treasury);
+        console.log("Kayen Router:", kayenRouter);
+        console.log("USDC:", usdc);
         console.log("");
         console.log("=====================================");
         console.log("");
@@ -144,7 +143,7 @@ contract DeployStreaming is Script {
         console.log("------------------");
         console.log("StreamWalletFactory:", address(factory));
         console.log("  (Implementation deployed internally)");
-        console.log("  Owner:", treasury);
+        console.log("  Owner:", deployer, "(transfer to Safe after setSwapRouter wiring)");
         console.log("");
         
         console.log("CREATE A STREAM WALLET:");

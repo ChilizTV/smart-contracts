@@ -214,7 +214,10 @@ mapping(uint32 => uint16) globalOddsToIndex;
 | ODDS_SETTER_ROLE  | Change odds                   | Collude with bettors             |
 | RESOLVER_ROLE     | Set result                    | Fraudulent resolution            |
 | ADMIN_ROLE        | State transitions, cancel     | Block legitimate payouts         |
-| TREASURY_ROLE     | Emergency withdraw            | Drain funds                      |
+| SWAP_ROUTER_ROLE  | Place bets on user behalf     | Bet without user consent         |
+
+> Note: `TREASURY_ROLE` was removed when bet custody migrated to `LiquidityPool`.
+> Emergency-fund operations now live on the pool; the match contract holds no USDC.
 
 **Mitigations:**
 - Multi-sig for all roles

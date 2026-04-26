@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.22;
+pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 
@@ -145,18 +145,6 @@ contract DeployAll is Script {
         // — the router never silently forwards USDC to an unvalidated match.
         swapRouter.setMatchFactory(address(bettingFactory));
         console.log("ChilizSwapRouter.setMatchFactory    ->", address(bettingFactory));
-        console.log("");
-    }
-
-    function _transferOwnership() internal {
-        console.log("OWNERSHIP TRANSFER");
-        console.log("==================");
-        bettingFactory.transferOwnership(treasury);
-        console.log("BettingMatchFactory -> Safe:", treasury);
-        streamFactory.transferOwnership(treasury);
-        console.log("StreamWalletFactory -> Safe:", treasury);
-        swapRouter.transferOwnership(treasury);
-        console.log("ChilizSwapRouter    -> Safe:", treasury);
         console.log("");
     }
 
