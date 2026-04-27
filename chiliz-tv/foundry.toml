@@ -9,9 +9,11 @@ remappings = [
     "forge-std/=lib/forge-std/src/"
 ]
 optimizer = true
-optimizer_runs = 200
+optimizer_runs = 1
 solc_version = "0.8.24"
 evm_version = "shanghai"  # Chiliz Chain requirement — do not change
+# ...existing settings...
+via_ir = true
 
 # Etherscan API configuration for Chiliz chains
 [etherscan]
